@@ -8,6 +8,8 @@ add_library(pdexa::options ALIAS pdexa-options)
 
 include(cmake/BuildSettings.cmake)
 include(cmake/CompilerWarnings.cmake)
+include(third-party/enable_packages.cmake)
 
 set_project_warnings(pdexa-options)
 
+target_link_libraries(pdexa-options INTERFACE Ginkgo::ginkgo)
