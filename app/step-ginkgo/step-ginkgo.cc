@@ -37,40 +37,14 @@
 #include <deal.II/numerics/vector_tools_rhs.templates.h>
 #include <deal.II/numerics/matrix_creator.h>
 #include <deal.II/numerics/matrix_creator.templates.h>
+#include <deal.II/numerics/data_out.h>
+#include <pdexa-ext/deal.II/numerics/data_out_dof_data.templates.h>
 #include <pdexa-ext/deal.II/lac/ginkgo_vector.h>
 #include <pdexa-ext/deal.II/lac/ginkgo_sparse_matrix.h>
 #include <pdexa-ext/deal.II/lac/ginkgo_solver.h>
 
 #include <fstream>
 #include <iostream>
-
-
-namespace dealii::internal::DataOutImplementation {
-namespace {
-template<typename Number>
-void copy_locally_owned_data_from(const GinkgoWrappers::Vector<Number> &src,
-                                  LinearAlgebra::distributed::Vector<Number> &dst) {
-  LinearAlgebra::ReadWriteVector<Number> temp;
-  temp.reinit(src.locally_owned_elements());
-
-  auto gko_obj = src.get_gko_object();
-  GinkgoWrappers::Vector<Number> host_src(gko_obj->get_executor()->get_master());
-  host_src = src;
-  std::copy_n(host_src.begin(), host_src.size(), temp.begin());
-
-  LinearAlgebra::ReadWriteVector<Number> temp2;
-  temp2.reinit(temp, true);
-  temp2 = temp;
-
-  dst.import_elements(temp2, VectorOperation::insert);
-}
-}
-}
-
-
-#include <deal.II/numerics/data_out.h>
-#include <deal.II/numerics/data_out_dof_data.h>
-#include <deal.II/numerics/data_out_dof_data.templates.h>
 
 #include <deal.II/base/logstream.h>
 
