@@ -129,7 +129,9 @@ Vector<Number>::print(std::ostream &out,
 template<typename Number>
 IndexSet
 Vector<Number>::locally_owned_elements() const {
-  return IndexSet(size());
+  IndexSet is(size());
+  is.add_range(0, size());
+  return is;
 }
 
 template<typename Number>
