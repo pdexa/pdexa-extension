@@ -5,6 +5,6 @@ include(${CMAKE_SOURCE_DIR}/third-party/ginkgo.cmake)
 
 include(${CMAKE_SOURCE_DIR}/third-party/deal.ii.cmake)
 
-if(${PROJECT_NAME}_ENABLE_UNIT_TESTING)
+if (PDEXA_ENABLE_TESTS)
   include(${CMAKE_SOURCE_DIR}/third-party/gtest.cmake)
-endif()
+endif ()

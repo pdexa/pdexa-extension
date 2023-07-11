@@ -4,8 +4,6 @@
 # do not add warnings for Release builds
 
 function(set_project_warnings project_name)
-    option(WARNINGS_AS_ERRORS "Treat compiler warnings as errors" FALSE)
-
     set(MSVC_WARNINGS
             /W4 # Baseline reasonable warnings
             /w14242 # 'identifier': conversion from 'type1' to 'type1', possible loss of data
@@ -59,12 +57,12 @@ function(set_project_warnings project_name)
             -Wuseless-cast # warn if you perform a cast to the same type
             )
 
-    if(WARNINGS_AS_ERRORS)
+    if (PDEXA_WARNINGS_AS_ERRORS)
         message(TRACE "Warnings are treated as errors")
         list(APPEND CLANG_WARNINGS -Werror)
         list(APPEND GCC_WARNINGS -Werror)
         list(APPEND MSVC_WARNINGS /WX)
-    endif()
+    endif ()
 
     if(MSVC)
         set(PROJECT_WARNINGS ${MSVC_WARNINGS})
