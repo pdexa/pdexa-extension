@@ -24,8 +24,34 @@
 #include <memory>
 
 namespace dealii {
-
 namespace GinkgoWrappers {
+namespace detail{
+
+    std::shared_ptr<gko::Executor> exec_from_name(const std::string &exec_type) {
+        if (exec_type == "reference") {
+            return gko::ReferenceExecutor::create();
+        }
+        if (exec_type == "omp") {
+            return gko::OmpExecutor::create();
+        }
+        if (exec_type == "cuda" && gko::CudaExecutor::get_num_devices() > 0) {
+            return gko::CudaExecutor::create(0, gko::OmpExecutor::create());
+        }
+        if (exec_type == "hip" && gko::HipExecutor::get_num_devices() > 0) {
+            return gko::HipExecutor::create(0, gko::OmpExecutor::create());
+        }
+        if (exec_type == "dpcpp" &&
+            gko::DpcppExecutor::get_num_devices("all") > 0) {
+            return gko::DpcppExecutor::create(0, gko::OmpExecutor::create());
+        }
+        Assert(
+                false,
+                ExcMessage(
+                        " exec_type needs to be one of the following strings: \"cuda\", \"dpcpp\", \"hip\", \"omp\", or \"reference\" "));
+    }
+
+}
+
 template<typename ValueType, typename IndexType>
 SolverBase<ValueType, IndexType>::SolverBase(SolverControl &solver_control,
                                              const std::string &exec_type)
