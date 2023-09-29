@@ -12,7 +12,7 @@ if(NOT Ginkgo_FOUND)
   FetchContent_Declare(
       Ginkgo
       GIT_REPOSITORY https://github.com/ginkgo-project/ginkgo.git
-      GIT_TAG pdexa-dev
+      GIT_TAG kokkos-mapping
       GIT_SHALLOW ON
   )
 
