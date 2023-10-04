@@ -19,4 +19,3 @@ if(NOT Ginkgo_FOUND)
   set(GINKGO_BUILD_HWLOC OFF CACHE INTERNAL "")
   FetchContent_MakeAvailable(Ginkgo)
 endif()
-
