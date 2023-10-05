@@ -13,8 +13,8 @@
 //
 // ---------------------------------------------------------------------
 
-#ifndef dealii_ginkgo_preconditioner_h
-#define dealii_ginkgo_preconditioner_h
+#ifndef dealii_ginkgo_interface_h
+#define dealii_ginkgo_interface_h
 
 #include <deal.II/base/config.h>
 #include <deal.II/base/array_view.h>
@@ -232,4 +232,4 @@ inverse_operator(const std::shared_ptr<gko::LinOp> &gko_op, const std::shared_pt
 } // namespace dealii
 
 
-#endif //dealii_ginkgo_preconditioner_h
+#endif //dealii_ginkgo_interface_h
