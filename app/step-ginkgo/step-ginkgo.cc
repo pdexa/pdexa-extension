@@ -176,6 +176,7 @@ void StepGinkgo<dim>::assemble_system() {
 
   // This will assemble the right-hand-side vector on the CPU and copy it to the
   // correct executor, which could be a GPU, afterward.
+  dealii::Vector<double> vector(dof_handler.n_dofs());
   dealii::VectorTools::create_right_hand_side(dof_handler,
                                       quadrature_formula,
                                       dealii::FunctionFromFunctionObjects<dim>{
@@ -186,8 +187,9 @@ void StepGinkgo<dim>::assemble_system() {
                                                   4.0 * std::pow(p(i), 4.0);
                                             return return_value;
                                           }}},
-                                      system_rhs,
+                                      vector,
                                       constraints);
+  system_rhs = *dealii::GinkgoWrappers::Vector<double>::create_view(exec, vector);
 }
 
 template<int dim>
