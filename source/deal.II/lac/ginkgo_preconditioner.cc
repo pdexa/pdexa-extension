@@ -63,7 +63,7 @@ PreconditionJacobi<ValueType, IndexType>::PreconditionJacobi(
                 .with_max_block_size(
                     static_cast<gko::uint32>(data.max_block_size))
                 .on(A.get_gko_object()->get_executor()))
-        .with_relaxation_factor(data.relaxation)
+        .with_relaxation_factor(ValueType(data.relaxation))
         .with_criteria(gko::stop::Iteration::build()
                            .with_max_iters(data.n_iterations)
                            .on(A.get_gko_object()->get_executor()))

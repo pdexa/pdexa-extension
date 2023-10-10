@@ -49,12 +49,10 @@
 #include <deal.II/base/logstream.h>
 
 
-using namespace dealii;
-
 template<int dim>
 class StepGinkgo {
-  using mtx = GinkgoWrappers::AbstractMatrix<double>;
-  using vec = GinkgoWrappers::Vector<double>;
+  using mtx = dealii::GinkgoWrappers::AbstractMatrix<double>;
+  using vec = dealii::GinkgoWrappers::Vector<double>;
 
 public:
   StepGinkgo(std::shared_ptr<const gko::Executor> exec,
@@ -73,9 +71,9 @@ private:
 
   void output_results() const;
 
-  Triangulation<dim> triangulation;
-  FE_Q<dim> fe;
-  DoFHandler<dim> dof_handler;
+  dealii::Triangulation<dim> triangulation;
+  dealii::FE_Q<dim> fe;
+  dealii::DoFHandler<dim> dof_handler;
 
   std::shared_ptr<const gko::Executor> exec;
 
@@ -87,28 +85,28 @@ private:
 };
 
 template<typename Number, typename... Args>
-std::unique_ptr<GinkgoWrappers::AbstractMatrix<Number>>
+std::unique_ptr<dealii::GinkgoWrappers::AbstractMatrix<Number>>
 create_from_type(std::shared_ptr<const gko::Executor> exec,
                  const std::string &type,
                  Args &&...args) {
   if (type == "csr") {
-    return std::make_unique<GinkgoWrappers::Csr<Number>>(
+    return std::make_unique<dealii::GinkgoWrappers::Csr<Number>>(
         std::move(exec), std::forward<Args>(args)...);
   }
   if (type == "coo") {
-    return std::make_unique<GinkgoWrappers::Coo<Number>>(
+    return std::make_unique<dealii::GinkgoWrappers::Coo<Number>>(
         std::move(exec), std::forward<Args>(args)...);
   }
   if (type == "ell") {
-    return std::make_unique<GinkgoWrappers::Ell<Number>>(
+    return std::make_unique<dealii::GinkgoWrappers::Ell<Number>>(
         std::move(exec), std::forward<Args>(args)...);
   }
   if (type == "hybrid") {
-    return std::make_unique<GinkgoWrappers::Hybrid<Number>>(
+    return std::make_unique<dealii::GinkgoWrappers::Hybrid<Number>>(
         std::move(exec), std::forward<Args>(args)...);
   }
   if (type == "sellp") {
-    return std::make_unique<GinkgoWrappers::Sellp<Number>>(
+    return std::make_unique<dealii::GinkgoWrappers::Sellp<Number>>(
         std::move(exec), std::forward<Args>(args)...);
   }
 }
@@ -121,7 +119,7 @@ StepGinkgo<dim>::StepGinkgo(std::shared_ptr<const gko::Executor> exec,
 
 template<int dim>
 void StepGinkgo<dim>::make_grid() {
-  GridGenerator::hyper_cube(triangulation, -1, 1);
+  dealii::GridGenerator::hyper_cube(triangulation, -1, 1);
   triangulation.refine_global(4);
 
   std::cout << "   Number of active cells: " << triangulation.n_active_cells()
@@ -150,18 +148,18 @@ void StepGinkgo<dim>::setup_system() {
 
 template<int dim>
 void StepGinkgo<dim>::assemble_system() {
-  QGauss<dim> quadrature_formula(fe.degree + 1);
+  dealii::QGauss<dim> quadrature_formula(fe.degree + 1);
 
-  AffineConstraints<double> constraints;
+  dealii::AffineConstraints<double> constraints;
 
-  FEValues<dim> fe_values(fe,
+  dealii::FEValues<dim> fe_values(fe,
                           quadrature_formula,
-                          update_values | update_gradients |
-                              update_quadrature_points | update_JxW_values);
+                          dealii::update_values | dealii::update_gradients |
+                              dealii::update_quadrature_points | dealii::update_JxW_values);
 
-  VectorTools::interpolate_boundary_values(dof_handler,
+  dealii::VectorTools::interpolate_boundary_values(dof_handler,
                                            0,
-                                           FunctionFromFunctionObjects<dim>{
+                                           dealii::FunctionFromFunctionObjects<dim>{
                                                {[](const auto &p) {
                                                  return p.square();
                                                }}},
@@ -170,17 +168,18 @@ void StepGinkgo<dim>::assemble_system() {
 
   // This will assemble the matrix on the CPU and copy it to the correct
   // executor, which could be a GPU, afterward.
-  MatrixCreator::create_laplace_matrix(dof_handler,
+  dealii::MatrixCreator::create_laplace_matrix(dof_handler,
                                        quadrature_formula,
                                        *system_matrix,
-                                       static_cast<Function<dim>*>(nullptr),
+                                       static_cast<dealii::Function<dim>*>(nullptr),
                                        constraints);
 
   // This will assemble the right-hand-side vector on the CPU and copy it to the
   // correct executor, which could be a GPU, afterward.
-  VectorTools::create_right_hand_side(dof_handler,
+  dealii::Vector<double> vector(dof_handler.n_dofs());
+  dealii::VectorTools::create_right_hand_side(dof_handler,
                                       quadrature_formula,
-                                      FunctionFromFunctionObjects<dim>{
+                                      dealii::FunctionFromFunctionObjects<dim>{
                                           {[](const auto &p) {
                                             double return_value = 0.0;
                                             for (unsigned int i = 0; i < dim; ++i)
@@ -188,20 +187,21 @@ void StepGinkgo<dim>::assemble_system() {
                                                   4.0 * std::pow(p(i), 4.0);
                                             return return_value;
                                           }}},
-                                      system_rhs,
+                                      vector,
                                       constraints);
+  system_rhs = *dealii::GinkgoWrappers::Vector<double>::create_view(exec, vector);
 }
 
 template<int dim>
 void StepGinkgo<dim>::solve() {
   solution = 0.0;
 
-  SolverControl solver_control(1000, 1e-12);
-  GinkgoWrappers::SolverCG<double> solver(exec, solver_control);
+  dealii::SolverControl solver_control(1000, 1e-12);
+  dealii::GinkgoWrappers::SolverCG<double> solver(exec, solver_control);
   solver.solve(*system_matrix,
                solution,
                system_rhs,
-               GinkgoWrappers::PreconditionIdentity<double>());
+               dealii::GinkgoWrappers::PreconditionIdentity<double>());
 
   std::cout << "   " << solver_control.last_step()
             << " CG iterations needed to obtain convergence." << std::endl;
@@ -209,7 +209,7 @@ void StepGinkgo<dim>::solve() {
 
 template<int dim>
 void StepGinkgo<dim>::output_results() const {
-  DataOut<dim> data_out;
+  dealii::DataOut<dim> data_out;
 
   data_out.attach_dof_handler(dof_handler);
   data_out.add_data_vector(solution, "solution");
