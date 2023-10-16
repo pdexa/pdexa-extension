@@ -8,6 +8,7 @@ target_sources(
         deal.II/lac/ginkgo_solver.cc
         deal.II/lac/ginkgo_sparse_matrix.cc
         deal.II/lac/ginkgo_vector.cc
+        ginkgo/core/base/block_operator.cpp
 )
 
 target_include_directories(
