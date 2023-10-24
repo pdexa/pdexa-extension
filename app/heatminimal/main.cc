@@ -983,11 +983,43 @@ namespace IRK
   // Multigrid machenery
   using mg = gko::solver::Multigrid;
   using pgm = gko::multigrid::Pgm<double>;
-  std::shared_ptr<gko::LinOpFactory> multigrid_gen = mg::build().with_mg_level(pgm::build().with_deterministic(true).on(exec))
-        .with_criteria(gko::stop::Iteration::build().with_max_iters(1u).on(exec)).on(exec);
+  using ic = gko::preconditioner::Ic<gko::solver::LowerTrs<double>>;
+  using cg = gko::solver::Cg<double>;
+
+  auto ic_gen = gko::share(
+      ic::build()
+          .on(exec));
+
+  auto smoother_gen = gko::share(
+      gko::solver::build_smoother(ic_gen, 1u, static_cast<double>(0.9)));
+
+  const gko::remove_complex<double> tolerance_amg = 1e-8;
+
+
+  auto iter_stop =
+      gko::share(gko::stop::Iteration::build().with_max_iters(3u).on(exec));
+  auto tol_stop = gko::share(gko::stop::ResidualNorm<double>::build()
+                                  .with_baseline(gko::stop::mode::absolute)
+                                  .with_reduction_factor(tolerance_amg)
+                                  .on(exec));
+  auto exact_tol_stop =
+      gko::share(gko::stop::ResidualNorm<double>::build()
+                      .with_baseline(gko::stop::mode::rhs_norm)
+                      .with_reduction_factor(1e-8)
+                      .on(exec));
+
+auto coarsest_gen = gko::share(cg::build()
+                                  .with_preconditioner(ic_gen)
+                                  .with_criteria(iter_stop, exact_tol_stop)
+                                  .on(exec));
+
+  std::shared_ptr<gko::LinOpFactory> multigrid_gen = mg::build().with_mg_level(pgm::build().with_deterministic(true).on(exec)).with_min_coarse_rows(32u).with_max_levels(10u).with_coarsest_solver(coarsest_gen).with_pre_smoother(smoother_gen)
+  .with_criteria(iter_stop, tol_stop).on(exec);
+  
+//         .with_criteria(iter_stop, tol_stop).on(exec);
+//.with_criteria(gko::stop::Iteration::build().with_max_iters(1u).on(exec)).on(exec);
 
   double tolerance = tol_inner; 
-  using cg = gko::solver::Cg<double>;
   auto solver_gen = cg::build().with_criteria(
               gko::stop::Iteration::build().with_max_iters(100u).on(exec),
               gko::stop::ResidualNorm<double>::build()
