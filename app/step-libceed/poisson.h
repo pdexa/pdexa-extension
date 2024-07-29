@@ -159,7 +159,7 @@ public:
                               &sol_restriction);
 
     // 4) create mapping -> MappingInfo
-    const unsigned int n_components_metric = (dim * (dim + 1) / 2);
+    const unsigned int n_components_metric = (dim * (dim + 1) / 2 + 1);
 
     this->weights = compute_metric_data(ceed, mapping, tria, quadrature);
 
@@ -188,10 +188,12 @@ public:
     // CeedQFunctionCreateInterior(ceed, 1, f_apply_poisson_vec, f_apply_poisson_vec_loc, &qf_apply);
     
     CeedQFunctionAddInput(qf_apply, "u", dim * n_components, CEED_EVAL_GRAD);
+    CeedQFunctionAddInput(qf_apply, "uval", n_components, CEED_EVAL_INTERP);
 
     CeedQFunctionAddInput(qf_apply, "qdata", n_components_metric, CEED_EVAL_NONE);
 
     CeedQFunctionAddOutput(qf_apply, "v", dim * n_components, CEED_EVAL_GRAD);
+    CeedQFunctionAddOutput(qf_apply, "vval", n_components, CEED_EVAL_INTERP);
 
     CeedQFunctionSetContext(qf_apply, build_ctx);
 
@@ -199,8 +201,10 @@ public:
     CeedOperatorCreate(ceed, qf_apply, CEED_QFUNCTION_NONE, CEED_QFUNCTION_NONE, &op_apply);
 
     CeedOperatorSetField(op_apply, "u", sol_restriction, sol_basis, CEED_VECTOR_ACTIVE);
+    CeedOperatorSetField(op_apply, "uval", sol_restriction, sol_basis, CEED_VECTOR_ACTIVE);
     CeedOperatorSetField(op_apply, "qdata", q_data_restriction, CEED_BASIS_NONE, q_data);
     CeedOperatorSetField(op_apply, "v", sol_restriction, sol_basis, CEED_VECTOR_ACTIVE);
+    CeedOperatorSetField(op_apply, "vval", sol_restriction, sol_basis, CEED_VECTOR_ACTIVE);
   }
 
   /**
@@ -333,7 +337,7 @@ public:
 
     const unsigned int n_q_points = quadrature.get_tensor_basis()[0].size();
 
-    const unsigned int n_components = (dim * (dim + 1) / 2);
+    const unsigned int n_components = (dim * (dim + 1) / 2 + 1);
 
     const auto mapping_q = dynamic_cast<const MappingQ<dim> *>(&mapping);
 

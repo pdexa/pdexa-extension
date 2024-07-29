@@ -280,7 +280,20 @@ StepGinkgo<dim>::solve()
 template <int dim>
 void
 StepGinkgo<dim>::output_results() const
-{}
+{
+  DataOut<dim> data_out;
+  data_out.attach_dof_handler(dof_handler);
+  dealii::Vector<double> vector(dof_handler.n_dofs());
+  ArrayView<double> deal_view(solution->get_values(),
+                              solution->get_num_stored_elements());
+  AssertDimension(vector.size(), deal_view.size());
+  for (unsigned int i = 0; i < deal_view.size(); ++i)
+    vector[i] = deal_view[i];
+  data_out.add_data_vector(vector, "solution");
+  data_out.build_patches(fe.degree);
+  std::ofstream file("solution.vtu");
+  data_out.write_vtu(file);
+}
 
 template <int dim>
 void

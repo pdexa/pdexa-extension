@@ -40,7 +40,8 @@ CEED_QFUNCTION(f_build_poisson)
       case 11:
         CeedPragmaSIMD for (CeedInt i = 0; i < Q; i++)
         {
-          qdata[i] = w[i] / J[i];
+          qdata[i + Q * 0] = w[i] / J[i];
+          qdata[i + Q * 1] = w[i] * J[i];
         }
         break;
       case 22:
@@ -54,6 +55,7 @@ CEED_QFUNCTION(f_build_poisson)
           qdata[i + Q * 0]     = qw * (J12 * J12 + J22 * J22);
           qdata[i + Q * 1]     = qw * (J11 * J11 + J21 * J21);
           qdata[i + Q * 2]     = -qw * (J11 * J12 + J21 * J22);
+          qdata[i + Q * 3]     = w[i] * (J11 * J22 - J21 * J12);
         }
         break;
       case 33:
@@ -84,6 +86,7 @@ CEED_QFUNCTION(f_build_poisson)
           qdata[i + Q * 3]     = qw * (A21 * A31 + A22 * A32 + A23 * A33);
           qdata[i + Q * 4]     = qw * (A11 * A31 + A12 * A32 + A13 * A33);
           qdata[i + Q * 5]     = qw * (A11 * A21 + A12 * A22 + A13 * A23);
+          qdata[i + Q * 6]     = w[i] * (J11 * A11 + J21 * A12 + J31 * A13);
         }
         break;
     }
@@ -99,15 +102,16 @@ CEED_QFUNCTION(f_apply_poisson)
 (void *ctx, const CeedInt Q, const CeedScalar *const *in, CeedScalar *const *out)
 {
   BuildContext     *bc = (BuildContext *)ctx;
-  const CeedScalar *ug = in[0], *qdata = in[1];
-  CeedScalar       *vg = out[0];
+  const CeedScalar *ug = in[0], *uv = in[1], *qdata = in[2];
+  CeedScalar       *vg = out[0], *vv = out[1];
 
   switch (bc->dim)
     {
       case 1:
         CeedPragmaSIMD for (CeedInt i = 0; i < Q; i++)
         {
-          vg[i] = ug[i] * qdata[i];
+          vg[i] = ug[i] * qdata[i + Q * 0];
+          vv[i] = uv[i] * qdata[i + Q * 1];
         }
         break;
       case 2:
@@ -117,6 +121,7 @@ CEED_QFUNCTION(f_apply_poisson)
           const CeedScalar ug1 = ug[i + Q * 1];
           vg[i + Q * 0]        = qdata[i + Q * 0] * ug0 + qdata[i + Q * 2] * ug1;
           vg[i + Q * 1]        = qdata[i + Q * 2] * ug0 + qdata[i + Q * 1] * ug1;
+          vv[i + Q * 0]        = qdata[i + Q * 3] * uv[i];
         }
         break;
       case 3:
@@ -128,6 +133,7 @@ CEED_QFUNCTION(f_apply_poisson)
           vg[i + Q * 0] = qdata[i + Q * 0] * ug0 + qdata[i + Q * 5] * ug1 + qdata[i + Q * 4] * ug2;
           vg[i + Q * 1] = qdata[i + Q * 5] * ug0 + qdata[i + Q * 1] * ug1 + qdata[i + Q * 3] * ug2;
           vg[i + Q * 2] = qdata[i + Q * 4] * ug0 + qdata[i + Q * 3] * ug1 + qdata[i + Q * 2] * ug2;
+          vv[i + Q * 0] = qdata[i + Q * 6] * uv[i];
         }
         break;
     }
