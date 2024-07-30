@@ -201,12 +201,11 @@ struct solver_traits;
 
 template<typename ValueType,
     typename IndexType,
-    template<class>
     class GinkgoType,
     typename AdditionalDataType>
 class EnableSolverBase : public SolverBase<ValueType, IndexType> {
 public:
-  using ginkgo_type = GinkgoType<ValueType>;
+  using ginkgo_type = GinkgoType;
   using parameters_type =
       decltype(std::declval<ginkgo_type>()
           .
@@ -309,11 +308,11 @@ struct GmresAdditionalData {
 template<typename ValueType = double, typename IndexType = int32_t>
 class SolverCG : public EnableSolverBase<ValueType,
                                          IndexType,
-                                         gko::solver::Cg,
+                                         gko::solver::Cg<ValueType>,
                                          detail::EmptyAdditionalData> {
   using Base = EnableSolverBase<ValueType,
                                 IndexType,
-                                gko::solver::Cg,
+                                gko::solver::Cg<ValueType>,
                                 detail::EmptyAdditionalData>;
 
 public:
@@ -369,11 +368,11 @@ public:
 template<typename ValueType = double, typename IndexType = int32_t>
 class SolverBicgstab : public EnableSolverBase<ValueType,
                                                IndexType,
-                                               gko::solver::Bicgstab,
+                                               gko::solver::Bicgstab<ValueType>,
                                                detail::EmptyAdditionalData> {
   using Base = EnableSolverBase<ValueType,
                                 IndexType,
-                                gko::solver::Bicgstab,
+                                gko::solver::Bicgstab<ValueType>,
                                 detail::EmptyAdditionalData>;
 
 public:
@@ -430,11 +429,11 @@ public:
 template<typename ValueType = double, typename IndexType = int32_t>
 class SolverCGS : public EnableSolverBase<ValueType,
                                           IndexType,
-                                          gko::solver::Cgs,
+                                          gko::solver::Cgs<ValueType>,
                                           detail::EmptyAdditionalData> {
   using Base = EnableSolverBase<ValueType,
                                 IndexType,
-                                gko::solver::Cgs,
+                                gko::solver::Cgs<ValueType>,
                                 detail::EmptyAdditionalData>;
 
 public:
@@ -500,11 +499,11 @@ public:
 template<typename ValueType = double, typename IndexType = int32_t>
 class SolverFCG : public EnableSolverBase<ValueType,
                                           IndexType,
-                                          gko::solver::Fcg,
+                                          gko::solver::Fcg<ValueType>,
                                           detail::EmptyAdditionalData> {
   using Base = EnableSolverBase<ValueType,
                                 IndexType,
-                                gko::solver::Fcg,
+                                gko::solver::Fcg<ValueType>,
                                 detail::EmptyAdditionalData>;
 
 public:
@@ -558,11 +557,11 @@ public:
 template<typename ValueType = double, typename IndexType = int32_t>
 class SolverGMRES : public EnableSolverBase<ValueType,
                                             IndexType,
-                                            gko::solver::Gmres,
+                                            gko::solver::Gmres<ValueType>,
                                             detail::GmresAdditionalData> {
   using Base = EnableSolverBase<ValueType,
                                 IndexType,
-                                gko::solver::Gmres,
+                                gko::solver::Gmres<ValueType>,
                                 detail::GmresAdditionalData>;
 
 public:
@@ -620,11 +619,11 @@ public:
 template<typename ValueType = double, typename IndexType = int32_t>
 class SolverIR : public EnableSolverBase<ValueType,
                                          IndexType,
-                                         gko::solver::Ir,
+                                         gko::solver::Ir<ValueType>,
                                          detail::EmptyAdditionalData> {
   using Base = EnableSolverBase<ValueType,
                                 IndexType,
-                                gko::solver::Ir,
+                                gko::solver::Ir<ValueType>,
                                 detail::EmptyAdditionalData>;
 
 public:

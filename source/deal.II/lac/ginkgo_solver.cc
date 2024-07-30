@@ -109,7 +109,6 @@ SolverBase<ValueType, IndexType>::solve(
 
 template<typename ValueType,
     typename IndexType,
-    template<class>
     class GinkgoType,
     typename AdditionalDataType>
 void
@@ -162,7 +161,6 @@ add_preconditioner(
 
 template<typename ValueType,
     typename IndexType,
-    template<class>
     class GinkgoType,
     typename AdditionalDataType>
 EnableSolverBase<ValueType, IndexType, GinkgoType, AdditionalDataType>::
@@ -179,7 +177,6 @@ EnableSolverBase(std::shared_ptr<const gko::Executor> exec,
 
 template<typename ValueType,
     typename IndexType,
-    template<class>
     class GinkgoType,
     typename AdditionalDataType>
 void
