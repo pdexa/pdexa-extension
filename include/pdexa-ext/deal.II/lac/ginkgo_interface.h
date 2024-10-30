@@ -24,7 +24,7 @@
 #include <deal.II/lac/sparse_matrix.h>
 #include <ginkgo/core/matrix/csr.hpp>
 #include <ginkgo/core/matrix/dense.hpp>
-#include <pdexa-ext/ginkgo/extensions/kokkos.hpp>
+#include <ginkgo/extensions/kokkos.hpp>
 
 namespace dealii {
 namespace GinkgoInterface {
