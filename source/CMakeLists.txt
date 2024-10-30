@@ -16,5 +16,19 @@ target_include_directories(
         $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
 )
 
+foreach (exec IN ITEMS REFERENCE OMP CUDA HIP SYCL)
+    if (${GINKGO_BUILD_${exec}})
+        set(val 1)
+    else ()
+        set(val 0)
+    endif ()
+    target_compile_definitions(
+            pdexa-ext
+            PUBLIC
+            GINKGO_BUILD_${exec}=${val}
+    )
+    unset(val)
+endforeach ()
+
 target_link_libraries(pdexa-ext pdexa-options Ginkgo::ginkgo Kokkos::kokkos)  # can't use PUBLIC because of deal.ii
 deal_ii_setup_target(pdexa-ext)
