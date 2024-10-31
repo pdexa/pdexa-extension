@@ -284,7 +284,7 @@ int main(int argc, char* argv[]) {
       auto diag_val = 2.0 + value_type(id) / static_cast<value_type>(batch_mat_size.get_num_batch_items());
       vals[0] = diag_val;
       vals[1] = -1.0;
-      for (index_type i = 0; i < static_cast<index_type>(num_rows - 1); ++i) {
+      for (index_type i = 0; i < static_cast<index_type>(num_rows - 2); ++i) {
         vals[2 + i * 3 + 0] = -1.0;
         vals[2 + i * 3 + 1] = diag_val;
         vals[2 + i * 3 + 2] = -1.0;
