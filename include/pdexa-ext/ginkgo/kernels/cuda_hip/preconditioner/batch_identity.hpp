@@ -10,9 +10,9 @@
 #include <ginkgo/core/base/math.hpp>
 #include <ginkgo/core/base/types.hpp>
 
-#include "common/cuda_hip/base/batch_struct.hpp"
+#include <pdexa-ext/ginkgo/kernels/base/batch_struct.hpp>
+
 #include "common/cuda_hip/base/config.hpp"
-#include "common/cuda_hip/matrix/batch_struct.hpp"
 
 
 namespace gko {

@@ -30,7 +30,7 @@ template <typename ValueType>
 inline int local_memory_requirement(const int num_rows, const int num_rhs)
 {
     return (5 * num_rows * num_rhs + 3 * num_rhs) * sizeof(ValueType) +
-           2 * num_rhs * sizeof(typename gko::remove_complex<ValueType>);
+           2 * num_rhs * sizeof(gko::remove_complex<ValueType>);
 }
 
 

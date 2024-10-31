@@ -10,7 +10,8 @@
 #include <ginkgo/core/base/types.hpp>
 #include <ginkgo/core/matrix/batch_csr.hpp>
 
-#include "common/cuda_hip/base/batch_struct.hpp"
+#include <pdexa-ext/ginkgo/kernels/base/batch_struct.hpp>
+
 #include "common/cuda_hip/base/config.hpp"
 #include "common/cuda_hip/base/math.hpp"
 #include "common/cuda_hip/base/runtime.hpp"
@@ -18,7 +19,6 @@
 #include "common/cuda_hip/base/types.hpp"
 #include "common/cuda_hip/components/cooperative_groups.hpp"
 #include "common/cuda_hip/components/thread_ids.hpp"
-#include "common/cuda_hip/matrix/batch_struct.hpp"
 
 
 namespace gko {

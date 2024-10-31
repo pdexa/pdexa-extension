@@ -9,7 +9,8 @@
 #include <ginkgo/core/base/math.hpp>
 #include <ginkgo/core/base/types.hpp>
 
-#include "common/cuda_hip/base/batch_struct.hpp"
+#include <pdexa-ext/ginkgo/kernels/base/batch_struct.hpp>
+
 #include "common/cuda_hip/base/config.hpp"
 #include "common/cuda_hip/base/math.hpp"
 #include "common/cuda_hip/base/runtime.hpp"
@@ -18,6 +19,8 @@
 #include "common/cuda_hip/components/reduction.hpp"
 #include "common/cuda_hip/components/thread_ids.hpp"
 #include "common/cuda_hip/components/warp_blas.hpp"
+
+
 
 
 namespace gko {
