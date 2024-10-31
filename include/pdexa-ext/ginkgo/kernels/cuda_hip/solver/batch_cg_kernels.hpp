@@ -13,10 +13,10 @@
 #include "../../common/log/batch_logger.hpp"
 #include "../matrix/batch_matrix_apply.hpp"
 #include "../base/batch_multi_vector_kernels.hpp"
-#include "common/cuda_hip/components/cooperative_groups.hpp"
-#include "common/cuda_hip/components/thread_ids.hpp"
-#include "common/cuda_hip/components/uninitialized_array.hpp"
-#include "hip/base/config.hip.hpp"
+#include "../base/config.hpp"
+#include "../base/uninitialized_array.hpp"
+#include "../base/cooperative_groups.hpp"
+
 
 
 namespace gko {

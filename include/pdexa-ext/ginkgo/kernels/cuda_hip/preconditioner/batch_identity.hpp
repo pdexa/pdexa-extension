@@ -12,8 +12,6 @@
 
 #include <pdexa-ext/ginkgo/kernels/base/batch_struct.hpp>
 
-#include "common/cuda_hip/base/config.hpp"
-
 
 namespace gko {
 namespace kernels {

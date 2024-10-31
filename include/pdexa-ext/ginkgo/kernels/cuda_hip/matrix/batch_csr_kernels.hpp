@@ -12,14 +12,6 @@
 
 #include <pdexa-ext/ginkgo/kernels/base/batch_struct.hpp>
 
-#include "common/cuda_hip/base/config.hpp"
-#include "common/cuda_hip/base/math.hpp"
-#include "common/cuda_hip/base/runtime.hpp"
-#include "common/cuda_hip/base/thrust.hpp"
-#include "common/cuda_hip/base/types.hpp"
-#include "common/cuda_hip/components/cooperative_groups.hpp"
-#include "common/cuda_hip/components/thread_ids.hpp"
-
 
 namespace gko {
 namespace kernels {

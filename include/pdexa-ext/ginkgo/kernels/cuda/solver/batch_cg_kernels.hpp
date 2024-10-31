@@ -16,10 +16,6 @@
 #include "../../cuda_hip/matrix/batch_csr_kernels.hpp"
 #include "../../cuda_hip/preconditioner/batch_identity.hpp"
 #include "../../cuda_hip/solver/batch_cg_kernels.hpp"
-#include "common/cuda_hip/components/cooperative_groups.hpp"
-#include "common/cuda_hip/components/thread_ids.hpp"
-#include "common/cuda_hip/components/uninitialized_array.hpp"
-#include "cuda/base/config.hpp"
 
 
 namespace gko {
