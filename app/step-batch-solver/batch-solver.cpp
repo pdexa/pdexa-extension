@@ -269,24 +269,33 @@ int main(int argc, char* argv[]) {
   if (args["print-residuals"].as<bool>() || !args["matrix-free"].as<bool>()) {
     gko::matrix_data<value_type, index_type> md(
       batch_mat_size.get_common_size());
-    auto create_batch = [batch_mat_size, num_rows, nnz](gko::size_type id,
-                                                        auto& md_) {
-      md_.nonzeros.reserve(nnz);
-      for (index_type i = 0; i < static_cast<index_type>(num_rows); ++i) {
-        if (i > 0) { md_.nonzeros.emplace_back(i, i - 1, -1); }
-        md_.nonzeros.emplace_back(
-          i,
-          i,
-          2 + value_type(id) / static_cast<value_type>(batch_mat_size.get_num_batch_items()));
-        if (i < static_cast<index_type>(num_rows - 1)) { md_.nonzeros.emplace_back(i, i + 1, -1); }
+    for (index_type i = 0; i < static_cast<index_type>(num_rows); ++i) {
+      if (i > 0) {
+        md.nonzeros.emplace_back(i, i - 1, -1);
       }
+      md.nonzeros.emplace_back(i, i, 1);
+      if (i < static_cast<index_type>(num_rows - 1)) {
+        md.nonzeros.emplace_back(i, i + 1, -1);
+      }
+    }
+    A_mtx->create_view_for_item(0)->read(md);
+
+    auto fill_values = [num_rows, nnz, batch_mat_size](gko::size_type id, auto* vals) {
+      auto diag_val = 2.0 + value_type(id) / static_cast<value_type>(batch_mat_size.get_num_batch_items());
+      vals[0] = diag_val;
+      vals[1] = -1.0;
+      for (index_type i = 0; i < static_cast<index_type>(num_rows - 1); ++i) {
+        vals[2 + i * 3 + 0] = -1.0;
+        vals[2 + i * 3 + 1] = diag_val;
+        vals[2 + i * 3 + 2] = -1.0;
+      }
+      vals[nnz - 2] = -1.0;
+      vals[nnz - 1] = diag_val;
     };
 #pragma omp parallel for firstprivate(md)
     for (gko::size_type id = 0; id < batch_mat_size.get_num_batch_items();
          ++id) {
-      md.nonzeros.clear();
-      create_batch(id, md);
-      A_mtx->create_view_for_item(id)->read(md);
+      fill_values(id, A_mtx->get_values_for_item(id));
     }
     A_mtx = gko::clone(exec, A_mtx);
   }
