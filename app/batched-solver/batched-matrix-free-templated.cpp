@@ -108,7 +108,7 @@ constexpr void simple_apply(
 }
 
 
-#if defined(GKO_COMPILING_CUDA) || defined(GKO_COMPILING_HIP)
+#if defined(PDEXA_EXT_ENABLE_CUDA) || defined(PDEXA_EXT_ENABLE_HIP)
 
 __device__ void advanced_apply(
     double alpha, custom_operator_item a,
