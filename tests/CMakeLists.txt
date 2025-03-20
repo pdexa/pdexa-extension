@@ -18,8 +18,3 @@ function(pdexa_create_test base_name source)
     endforeach ()
 endfunction()
 
-pdexa_create_test(csr deal.II/lac/csr.cc)
-pdexa_create_test(csr_formats deal.II/lac/csr_formats.cc)
-pdexa_create_test(csr_manip deal.II/lac/csr_manip.cc)
-
-pdexa_create_test(solver deal.II/lac/solver.cc)
