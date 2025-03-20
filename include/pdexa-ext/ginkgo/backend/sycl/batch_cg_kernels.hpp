@@ -8,7 +8,7 @@
 
 #include "pdexa-ext/ginkgo/core/base/batch_struct.hpp"
 
-#if GINKGO_BUILD_SYCL
+#if PDEXA_EXT_ENABLE_SYCL
 
 #include <ginkgo/core/log/batch_logger.hpp>
 

@@ -19,11 +19,13 @@ target_compile_definitions(
         PDEXA_EXT_ENABLE_REFERENCE=1
 )
 foreach (exec OPENMP CUDA HIP SYCL)
-    if (${Kokkos_ENABLE_${exec_uc}})
+    if (${Kokkos_ENABLE_${exec}})
+        string(TOLOWER ${exec} exec_lc)
         target_compile_definitions(
                 pdexa-ext
                 PUBLIC
-                PDEXA_EXT_ENABLE_{exec}=1
+                PDEXA_EXT_ENABLE_${exec}=1
+                GKO_DEVICE_NAMESPACE=${exec_lc}
         )
     endif ()
 endforeach ()
