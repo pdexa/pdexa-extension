@@ -8,116 +8,81 @@
 
 #include "pdexa-ext/ginkgo/core/base/batch_struct.hpp"
 
-#if GINKGO_BUILD_HIP
+#if PDEXA_EXT_ENABLE_HIP
 
 #include <hip/hip_runtime.h>
 
 #include <ginkgo/core/log/batch_logger.hpp>
 
-#include "../../batch_cg_settings.hpp"
-#include "../../batch_criteria.hpp"
-#include "../../batch_identity.hpp"
-#include "../../batch_logger.hpp"
+#include "pdexa-ext/ginkgo/core/log/batch_simple_logger.hpp"
+#include "pdexa-ext/ginkgo/core/preconditioner/batch_identity.hpp"
+#include "pdexa-ext/ginkgo/core/solver/batch_cg_settings.hpp"
+#include "pdexa-ext/ginkgo/core/stop/batch_criteria.hpp"
 #include "../cuda_hip/batch_cg_kernels.hpp"
-#include "../cuda_hip/batch_csr_kernels.hpp"
-#include "../cuda_hip/batch_multi_vector_kernels.hpp"
-#include "common/cuda_hip/components/cooperative_groups.hpp"
-#include "common/cuda_hip/components/thread_ids.hpp"
-#include "common/cuda_hip/components/uninitialized_array.hpp"
-#include "hip/base/config.hip.hpp"
 
+namespace gko::kernels::hip::batch_template::batch_cg {
 
-namespace gko {
-namespace kernels {
-namespace hip {
-namespace batch_template {
-namespace batch_cg {
-
-
-template <typename BatchMatrixType>
-int get_num_threads_per_block(std::shared_ptr<const DefaultExecutor> exec,
-                              const int num_rows)
-{
-    int num_warps = std::max(num_rows / 4, 2);
-    constexpr int warp_sz = static_cast<int>(config::warp_size);
-    const int min_block_size = 2 * warp_sz;
-    const int device_max_threads =
-        ((std::max(num_rows, min_block_size)) / warp_sz) * warp_sz;
-    // This value has been taken from ROCm docs. This is the number of registers
-    // that maximizes the occupancy on an AMD GPU (MI200). HIP does not have an
-    // API to query the number of registers a function uses.
-    const int num_regs_used_per_thread = 64;
-    int max_regs_blk = 0;
-    GKO_ASSERT_NO_HIP_ERRORS(hipDeviceGetAttribute(
-        &max_regs_blk, hipDeviceAttributeMaxRegistersPerBlock,
-        exec->get_device_id()));
-    int max_threads_regs = (max_regs_blk / num_regs_used_per_thread);
-    max_threads_regs = (max_threads_regs / warp_sz) * warp_sz;
-    int max_threads = std::min(max_threads_regs, device_max_threads);
-    max_threads = max_threads <= 1024 ? max_threads : 1024;
-    return std::max(std::min(num_warps * warp_sz, max_threads), min_block_size);
+inline int get_num_threads_per_block(std::shared_ptr<const DefaultExecutor> exec, const int num_rows) {
+  int num_warps = std::max(num_rows / 4, 2);
+  constexpr int warp_sz = static_cast<int>(config::warp_size);
+  const int min_block_size = 2 * warp_sz;
+  const int device_max_threads = ((std::max(num_rows, min_block_size)) / warp_sz) * warp_sz;
+  // This value has been taken from ROCm docs. This is the number of registers
+  // that maximizes the occupancy on an AMD GPU (MI200). HIP does not have an
+  // API to query the number of registers a function uses.
+  const int num_regs_used_per_thread = 64;
+  int max_regs_blk = 0;
+  GKO_ASSERT_NO_HIP_ERRORS(
+    hipDeviceGetAttribute(&max_regs_blk, hipDeviceAttributeMaxRegistersPerBlock, exec->get_device_id()));
+  int max_threads_regs = (max_regs_blk / num_regs_used_per_thread);
+  max_threads_regs = (max_threads_regs / warp_sz) * warp_sz;
+  int max_threads = std::min(max_threads_regs, device_max_threads);
+  max_threads = max_threads <= 1024 ? max_threads : 1024;
+  return std::max(std::min(num_warps * warp_sz, max_threads), min_block_size);
 }
 
-template <typename ValueType, typename Op>
-void apply(
-    std::shared_ptr<const DefaultExecutor> exec,
-    const kernels::batch_cg::settings<remove_complex<ValueType>>& settings,
-    const Op mat, batch::multi_vector::uniform_batch<const ValueType> b,
-    batch::multi_vector::uniform_batch<ValueType> x,
-    batch::log::detail::log_data<remove_complex<ValueType>>& logdata)
-{
-    using PrecType = batch_preconditioner::Identity<ValueType>;
-    using StopType = batch_stop::SimpleAbsResidual<ValueType>;
-    using real_type = gko::remove_complex<ValueType>;
-    const size_type num_batch_items = mat.num_batch_items;
-    constexpr int align_multiple = 8;
-    const int padded_num_rows =
-        ceildiv(mat.num_rows, align_multiple) * align_multiple;
-    int shmem_per_blk = 0;
-    GKO_ASSERT_NO_HIP_ERRORS(hipDeviceGetAttribute(
-        &shmem_per_blk, hipDeviceAttributeMaxSharedMemoryPerBlock,
-        exec->get_device_id()));
-    const int block_size = get_num_threads_per_block<Op>(exec, mat.num_rows);
-    GKO_ASSERT(block_size >= 2 * config::warp_size);
-    GKO_ASSERT(block_size % config::warp_size == 0);
+template<typename ValueType, typename Op>
+void apply(std::shared_ptr<const DefaultExecutor> exec,
+           const kernels::batch_cg::settings<remove_complex<ValueType>>& settings,
+           const Op mat,
+           batch::multi_vector::uniform_batch<const ValueType> b,
+           batch::multi_vector::uniform_batch<ValueType> x,
+           batch::log::detail::log_data<remove_complex<ValueType>>& logdata) {
+  using PrecType = batch_preconditioner::Identity<ValueType>;
+  using StopType = batch_stop::SimpleAbsResidual<ValueType>;
+  using real_type = gko::remove_complex<ValueType>;
+  const size_type num_batch_items = mat.num_batch_items;
+  constexpr int align_multiple = 8;
+  const int padded_num_rows = ceildiv(mat.num_rows, align_multiple) * align_multiple;
+  int shmem_per_blk = 0;
+  GKO_ASSERT_NO_HIP_ERRORS(
+    hipDeviceGetAttribute(&shmem_per_blk, hipDeviceAttributeMaxSharedMemoryPerBlock, exec->get_device_id()));
+  const int block_size = get_num_threads_per_block(exec, mat.num_rows);
+  GKO_ASSERT(block_size >= 2 * config::warp_size);
+  GKO_ASSERT(block_size % config::warp_size == 0);
 
-    // Returns amount required in bytes
-    const size_t prec_size = PrecType::dynamic_work_size(padded_num_rows, -1);
-    const auto sconf =
-        ::gko::kernels::batch_cg::compute_shared_storage<PrecType, ValueType>(
-            shmem_per_blk, padded_num_rows, -1, b.num_rhs);
-    const size_t shared_size =
-        sconf.n_shared * padded_num_rows * sizeof(ValueType) +
-        (sconf.prec_shared ? prec_size : 0);
-    auto workspace = gko::array<ValueType>(
-        exec, sconf.gmem_stride_bytes * num_batch_items / sizeof(ValueType));
-    GKO_ASSERT(sconf.gmem_stride_bytes % sizeof(ValueType) == 0);
+  // Returns amount required in bytes
+  const size_t prec_size = PrecType::dynamic_work_size(padded_num_rows, -1);
+  const auto sconf = ::gko::kernels::batch_cg::compute_shared_storage<PrecType, ValueType>(
+    shmem_per_blk, padded_num_rows, -1, b.num_rhs);
+  const size_t shared_size = sconf.n_shared * padded_num_rows * sizeof(ValueType) + (sconf.prec_shared ? prec_size : 0);
+  auto workspace = gko::array<ValueType>(exec, sconf.gmem_stride_bytes * num_batch_items / sizeof(ValueType));
+  GKO_ASSERT(sconf.gmem_stride_bytes % sizeof(ValueType) == 0);
 
-    ValueType* const workspace_data = workspace.get_data();
+  ValueType* const workspace_data = workspace.get_data();
 
-    auto prec = PrecType();
-    auto logger = batch_log::SimpleFinalLogger<real_type>(
-        logdata.res_norms.get_data(), logdata.iter_counts.get_data());
+  auto prec = PrecType();
+  auto logger = batch_log::SimpleFinalLogger<real_type>(logdata.res_norms.get_data(), logdata.iter_counts.get_data());
 
-    batch_single_kernels::batch_cg::apply_kernel<StopType, 0, false>
-        <<<mat.num_batch_items, block_size, shared_size, exec->get_stream()>>>(
-            sconf, settings.max_iterations, settings.residual_tol, logger, prec,
-            mat, b, x, workspace_data);
+  batch_single_kernels::batch_cg::apply_kernel<StopType, 0, false>
+    <<<mat.num_batch_items, block_size, shared_size, exec->get_stream()>>>(
+      sconf, settings.max_iterations, settings.residual_tol, logger, prec, mat, b, x, workspace_data);
 }
-}  // namespace batch_cg
-}  // namespace batch_template
-}  // namespace hip
-}  // namespace kernels
-}  // namespace gko
+} // namespace gko::kernels::hip::batch_template::batch_cg
 
 #else
 
-namespace gko {
-namespace kernels {
-namespace hip {
-namespace batch_template {
-namespace batch_cg {
-
+namespace gko::kernels::hip::batch_template::batch_cg {
 
 template <typename ValueType, typename Op>
 void apply(
@@ -128,11 +93,6 @@ void apply(
     batch::log::detail::log_data<remove_complex<ValueType>>& )
     GKO_NOT_IMPLEMENTED;
 
-
-}  // namespace batch_cg
-}  // namespace batch_template
-}  // namespace hip
-}  // namespace kernels
-}  // namespace gko
+}
 
 #endif
