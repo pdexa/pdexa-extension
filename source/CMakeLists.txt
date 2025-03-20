@@ -4,10 +4,7 @@ add_library(pdexa::ext ALIAS pdexa-ext)
 target_sources(
         pdexa-ext
         PRIVATE
-        deal.II/lac/ginkgo_preconditioner.cc
-        deal.II/lac/ginkgo_solver.cc
-        deal.II/lac/ginkgo_sparse_matrix.cc
-        deal.II/lac/ginkgo_vector.cc
+        dummy.cpp
 )
 
 target_include_directories(
