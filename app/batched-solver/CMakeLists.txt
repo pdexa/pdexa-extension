@@ -1,0 +1,33 @@
+include(FetchContent)
+FetchContent_Declare(
+        cxxopts
+        GIT_REPOSITORY https://github.com/jarro2783/cxxopts.git
+        GIT_TAG        v3.2.0
+)
+FetchContent_MakeAvailable(cxxopts)
+
+# This is taken from the kokkos extension test CMake
+function(_ginkgo_check_build_config _build)
+    string(TOUPPER ${_build} _build)
+    if(NOT GINKGO_BUILD_${_build})
+        message(FATAL_ERROR "Building example with ${_build} enabled for Kokkos, but not for Ginkgo.")
+    endif()
+    unset(_build)
+endfunction()
+
+if(Kokkos_ENABLE_CUDA)
+    _ginkgo_check_build_config(cuda)
+elseif(Kokkos_ENABLE_HIP)
+    _ginkgo_check_build_config(hip)
+elseif(Kokkos_ENABLE_SYCL)
+    _ginkgo_check_build_config(sycl)
+endif()
+if(Kokkos_ENABLE_OPENMP)
+    _ginkgo_check_build_config(omp)
+endif ()
+if (Kokkos_ENABLE_SERIAL)
+    _ginkgo_check_build_config(reference)
+endif()
+
+add_executable(batched-matrix-free-templated batched-matrix-free-templated.cpp)
+target_link_libraries(batched-matrix-free-templated pdexa::ext cxxopts::cxxopts)
