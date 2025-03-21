@@ -43,7 +43,7 @@ public:
      * @param iter  The final iteration count (0-based).
      * @param res_norm  Norm of final residual norm
      */
-    constexpr void log_iteration(const size_type batch_idx, const int iter,
+    constexpr void log_iteration(const int64 batch_idx, const int iter,
                                  const real_type res_norm)
     {
         final_iters_[batch_idx] = iter;

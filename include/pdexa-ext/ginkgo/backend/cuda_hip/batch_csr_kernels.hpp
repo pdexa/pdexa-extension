@@ -20,7 +20,7 @@ __device__ __forceinline__ void simple_apply_impl(const batch::matrix::csr::batc
   const auto num_rows = mat.num_rows;
   const auto val = mat.values;
   const auto col = mat.col_idxs;
-  for (int row = threadIdx.x; row < num_rows; row += blockDim.x) {
+  for (int row = static_cast<int>(threadIdx.x); row < num_rows; row += static_cast<int>(blockDim.x)) {
     auto temp = zero<ValueType>();
     for (auto nnz = mat.row_ptrs[row]; nnz < mat.row_ptrs[row + 1]; nnz++) {
       const auto col_idx = col[nnz];
@@ -40,7 +40,7 @@ advanced_apply_impl(const ValueType alpha,
   const auto num_rows = mat.num_rows;
   const auto val = mat.values;
   const auto col = mat.col_idxs;
-  for (int row = threadIdx.x; row < num_rows; row += blockDim.x) {
+  for (auto row = static_cast<int>(threadIdx.x); row < num_rows; row += static_cast<int>(blockDim.x)) {
     auto temp = zero<ValueType>();
     for (auto nnz = mat.row_ptrs[row]; nnz < mat.row_ptrs[row + 1]; nnz++) {
       const auto col_idx = col[nnz];

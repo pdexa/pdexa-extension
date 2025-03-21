@@ -23,7 +23,7 @@ __device__ __forceinline__ void single_rhs_compute_conj_dot(Group subgroup,
 
 {
   ValueType val = zero<ValueType>();
-  for (int r = subgroup.thread_rank(); r < num_rows; r += subgroup.size()) { val += conj(x.values[r]) * y.values[r]; }
+  for (int r = static_cast<int>(subgroup.thread_rank()); r < num_rows; r += static_cast<int>(subgroup.size())) { val += conj(x.values[r]) * y.values[r]; }
 
   // subgroup level reduction
   val = reduce(subgroup, val, thrust::plus<ValueType>{});
@@ -39,7 +39,7 @@ __device__ __forceinline__ void single_rhs_compute_norm2(Group subgroup,
   using real_type = remove_complex<ValueType>;
   real_type val = zero<real_type>();
 
-  for (int r = subgroup.thread_rank(); r < num_rows; r += subgroup.size()) { val += squared_norm(x.values[r]); }
+  for (int r = static_cast<int>(subgroup.thread_rank()); r < num_rows; r += static_cast<int>(subgroup.size())) { val += squared_norm(x.values[r]); }
 
   // subgroup level reduction
   val = reduce(subgroup, val, thrust::plus<remove_complex<ValueType>>{});
@@ -51,7 +51,7 @@ template<typename ValueType>
 __device__ __forceinline__ void single_rhs_copy(const int num_rows,
                                                 const batch::multi_vector::batch_item<const ValueType> in,
                                                 batch::multi_vector::batch_item<ValueType> out) {
-  for (int iz = threadIdx.x; iz < num_rows; iz += blockDim.x) { out.values[iz] = in.values[iz]; }
+  for (auto iz = static_cast<int>(threadIdx.x); iz < num_rows; iz += static_cast<int>(blockDim.x)) { out.values[iz] = in.values[iz]; }
 }
 
 } // namespace gko::kernels::GKO_DEVICE_NAMESPACE::batch_template::batch_single_kernels
