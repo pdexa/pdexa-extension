@@ -10,12 +10,11 @@
 #include <ginkgo/core/base/exception_helpers.hpp>
 #include <ginkgo/core/base/types.hpp>
 #include <ginkgo/core/log/batch_logger.hpp>
-#include <ginkgo/core/solver/batch_solver_base.hpp>
-#include <ginkgo/core/stop/batch_stop_enum.hpp>
 
 #include "pdexa-ext/ginkgo/core/base/view.hpp"
 
 #include "pdexa-ext/ginkgo/core/solver/batch_cg_settings.hpp"
+#include "pdexa-ext/ginkgo/core/solver/batch_solver_base.hpp"
 
 #include "pdexa-ext/ginkgo/backend/cuda/batch_cg_kernels.hpp"
 #include "pdexa-ext/ginkgo/backend/hip/batch_cg_kernels.hpp"
@@ -29,38 +28,6 @@ namespace cg {
 GKO_REGISTER_OPERATION(apply, batch_template::batch_cg::apply);
 
 }
-
-template<typename T>
-class BatchSolver {
-public:
-  std::shared_ptr<const T> get_system_matrix() const { return this->system_matrix_; }
-
-  double get_tolerance() const { return this->residual_tol_; }
-
-  int get_max_iterations() const { return this->max_iterations_; }
-
-  batch::stop::tolerance_type get_tolerance_type() const { return this->tol_type_; }
-
-protected:
-  BatchSolver() {}
-
-  BatchSolver(std::shared_ptr<const T> system_matrix,
-              const double res_tol,
-              const int max_iterations,
-              const ::gko::batch::stop::tolerance_type tol_type) :
-      system_matrix_{std::move(system_matrix)}, residual_tol_{res_tol}, max_iterations_{max_iterations},
-      tol_type_{tol_type}, workspace_{} {}
-
-  void set_system_matrix_base(std::shared_ptr<const T> system_matrix) {
-    this->system_matrix_ = std::move(system_matrix);
-  }
-
-  std::shared_ptr<const T> system_matrix_{};
-  double residual_tol_{};
-  int max_iterations_{};
-  ::gko::batch::stop::tolerance_type tol_type_{};
-  mutable array<unsigned char> workspace_{};
-};
 
 template<typename T>
 class Cg final : public BatchSolver<T>, public batch::EnableBatchLinOp<Cg<T>> {
