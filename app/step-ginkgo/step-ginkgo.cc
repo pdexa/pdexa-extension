@@ -22,26 +22,25 @@
 
 // The first few (many?) include files have already been used in the previous
 // example, so we will not explain their meaning here again.
-#include <deal.II/grid/tria.h>
+#include <deal.II/base/function.h>
+#include <deal.II/base/quadrature_lib.h>
 #include <deal.II/dofs/dof_handler.h>
-#include <deal.II/grid/grid_generator.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_values.h>
-#include <deal.II/base/quadrature_lib.h>
+#include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/tria.h>
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/affine_constraints.templates.h>
-#include <deal.II/base/function.h>
+#include <deal.II/numerics/data_out.h>
+#include <deal.II/numerics/matrix_creator.h>
+#include <deal.II/numerics/matrix_creator.templates.h>
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/numerics/vector_tools.templates.h>
 #include <deal.II/numerics/vector_tools_rhs.h>
 #include <deal.II/numerics/vector_tools_rhs.templates.h>
-#include <deal.II/numerics/matrix_creator.h>
-#include <deal.II/numerics/matrix_creator.templates.h>
-#include <deal.II/numerics/data_out.h>
-#include <pdexa-ext/deal.II/numerics/data_out_dof_data.templates.h>
-#include <pdexa-ext/deal.II/lac/ginkgo_vector.h>
-#include <pdexa-ext/deal.II/lac/ginkgo_sparse_matrix.h>
-#include <pdexa-ext/deal.II/lac/ginkgo_solver.h>
+#include <pdexa-ext/deal.II/lac/ginkgo_interface.h>
+
+#include <ginkgo/ginkgo.hpp>
 
 #include <fstream>
 #include <iostream>
@@ -53,8 +52,8 @@ using namespace dealii;
 
 template<int dim>
 class StepGinkgo {
-  using mtx = GinkgoWrappers::AbstractMatrix<double>;
-  using vec = GinkgoWrappers::Vector<double>;
+  using mtx = SparseMatrix<double>;
+  using vec = LinearAlgebra::distributed::Vector<double, MemorySpace::Host>;
 
 public:
   StepGinkgo(std::shared_ptr<const gko::Executor> exec,
@@ -79,45 +78,18 @@ private:
 
   std::shared_ptr<const gko::Executor> exec;
 
-  std::unique_ptr<mtx> system_matrix;
+  SparsityPattern      sparsity_pattern;
+  mtx system_matrix;
   std::string mtx_type;
 
   vec solution;
   vec system_rhs;
 };
 
-template<typename Number, typename... Args>
-std::unique_ptr<GinkgoWrappers::AbstractMatrix<Number>>
-create_from_type(std::shared_ptr<const gko::Executor> exec,
-                 const std::string &type,
-                 Args &&...args) {
-  if (type == "csr") {
-    return std::make_unique<GinkgoWrappers::Csr<Number>>(
-        std::move(exec), std::forward<Args>(args)...);
-  }
-  if (type == "coo") {
-    return std::make_unique<GinkgoWrappers::Coo<Number>>(
-        std::move(exec), std::forward<Args>(args)...);
-  }
-  if (type == "ell") {
-    return std::make_unique<GinkgoWrappers::Ell<Number>>(
-        std::move(exec), std::forward<Args>(args)...);
-  }
-  if (type == "hybrid") {
-    return std::make_unique<GinkgoWrappers::Hybrid<Number>>(
-        std::move(exec), std::forward<Args>(args)...);
-  }
-  if (type == "sellp") {
-    return std::make_unique<GinkgoWrappers::Sellp<Number>>(
-        std::move(exec), std::forward<Args>(args)...);
-  }
-}
-
 template<int dim>
 StepGinkgo<dim>::StepGinkgo(std::shared_ptr<const gko::Executor> exec,
-                            const std::string &mtx_type)
-    : fe(1), dof_handler(triangulation), exec(exec), system_matrix(), mtx_type(mtx_type), solution(exec->get_master()),
-      system_rhs(exec->get_master()) {}
+                            const std::string &mtx_type) :
+    fe(1), dof_handler(triangulation), exec(exec), mtx_type(mtx_type) {}
 
 template<int dim>
 void StepGinkgo<dim>::make_grid() {
@@ -137,15 +109,14 @@ void StepGinkgo<dim>::setup_system() {
   std::cout << "   Number of degrees of freedom: " << dof_handler.n_dofs()
             << std::endl;
 
-  system_matrix = create_from_type<double>(exec,
-                                           mtx_type,
-                                           dof_handler.n_dofs(),
-                                           dof_handler.n_dofs());
+  DynamicSparsityPattern dsp(dof_handler.n_dofs());
+  DoFTools::make_sparsity_pattern(dof_handler, dsp);
+  sparsity_pattern.copy_from(dsp);
 
-  solution =
-      vec{solution.get_gko_object()->get_executor(), dof_handler.n_dofs()};
-  system_rhs =
-      vec{system_rhs.get_gko_object()->get_executor(), dof_handler.n_dofs()};
+  system_matrix.reinit(sparsity_pattern);
+
+  solution.reinit(dof_handler.n_dofs());
+  system_rhs.reinit(dof_handler.n_dofs());
 }
 
 template<int dim>
@@ -172,7 +143,7 @@ void StepGinkgo<dim>::assemble_system() {
   // executor, which could be a GPU, afterward.
   MatrixCreator::create_laplace_matrix(dof_handler,
                                        quadrature_formula,
-                                       *system_matrix,
+                                       system_matrix,
                                        static_cast<Function<dim>*>(nullptr),
                                        constraints);
 
@@ -196,14 +167,19 @@ template<int dim>
 void StepGinkgo<dim>::solve() {
   solution = 0.0;
 
-  SolverControl solver_control(1000, 1e-12);
-  GinkgoWrappers::SolverCG<double> solver(exec, solver_control);
-  solver.solve(*system_matrix,
-               solution,
-               system_rhs,
-               GinkgoWrappers::PreconditionIdentity<double>());
+  auto logger = gko::share(gko::log::Convergence<double>::create());
 
-  std::cout << "   " << solver_control.last_step()
+  std::shared_ptr<gko::LinOp> gko_mtx = GinkgoInterface::create_csr_matrix(exec->get_master(), system_matrix);
+  auto solver = GinkgoInterface::inverse_operator(
+    gko_mtx,
+    gko::solver::Cg<double>::build()
+      .with_criteria(gko::stop::Iteration::build().with_max_iters(1000),
+                     gko::stop::ResidualNorm<double>::build().with_reduction_factor(1e-12))
+      .on(exec),
+    logger);
+  solver.vmult(system_rhs, solution);
+
+  std::cout << "   " << logger->get_num_iterations()
             << " CG iterations needed to obtain convergence." << std::endl;
 }
 
