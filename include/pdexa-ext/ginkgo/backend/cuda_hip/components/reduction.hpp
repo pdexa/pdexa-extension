@@ -42,7 +42,7 @@ template<typename Group,
          typename = std::enable_if_t<group::is_communicator_group<Group>::value>>
 __device__ __forceinline__ ValueType reduce(const Group& group, ValueType local_data, Operator reduce_op = Operator{}) {
 #pragma unroll
-  for (int32 bitmask = 1; bitmask < group.size(); bitmask <<= 1) {
+  for (int32 bitmask = 1; bitmask < static_cast<int32>(group.size()); bitmask <<= 1) {
     const auto remote_data = group.shfl_xor(local_data, bitmask);
     local_data = reduce_op(local_data, remote_data);
   }
@@ -90,7 +90,7 @@ template<typename Group,
 __device__ void reduce(const Group& __restrict__ group, ValueType* __restrict__ data, Operator reduce_op = Operator{}) {
   const auto local_id = group.thread_rank();
 
-  for (int k = group.size() / 2; k >= config::warp_size; k /= 2) {
+  for (auto k = group.size() / 2; k >= config::warp_size; k /= 2) {
     group.sync();
     if (local_id < k) { data[local_id] = reduce_op(data[local_id], data[local_id + k]); }
   }
@@ -126,10 +126,10 @@ __device__ void multireduce(const Group& __restrict__ group,
                             Operator reduce_op = Operator{}) {
   const auto local_id = group.thread_rank();
 
-  for (int k = group.size() / 2; k >= config::warp_size; k /= 2) {
+  for (auto k = group.size() / 2; k >= config::warp_size; k /= 2) {
     group.sync();
     if (local_id < k) {
-      for (int j = 0; j < num; j++) {
+      for (size_type j = 0; j < num; j++) {
         data[j * stride + local_id] = reduce_op(data[j * stride + local_id], data[j * stride + local_id + k]);
       }
     }
@@ -138,7 +138,7 @@ __device__ void multireduce(const Group& __restrict__ group,
   const auto warp = group::tiled_partition<config::warp_size>(group);
   const auto warp_id = group.thread_rank() / warp.size();
   if (warp_id > 0) { return; }
-  for (int j = 0; j < num; j++) {
+  for (size_type j = 0; j < num; j++) {
     auto result = reduce(warp, data[j * stride + warp.thread_rank()], reduce_op);
     if (warp.thread_rank() == 0) { data[j * stride] = result; }
   }
@@ -165,77 +165,6 @@ __device__ void reduce_array(size_type size,
 
   // Stores the result of the reduction inside `result[0]`
   reduce(group::this_thread_block(), result, reduce_op);
-}
-
-/**
- * @internal
- *
- * Computes a reduction using the add operation (+) on an array
- * `source` of any size. Has to be called a second time on `result` to reduce
- * an array larger than `default_reduce_block_size`.
- */
-template<typename ValueType>
-__global__ __launch_bounds__(default_reduce_block_size) void reduce_add_array(size_type size,
-                                                                              const ValueType* __restrict__ source,
-                                                                              ValueType* __restrict__ result) {
-  __shared__ uninitialized_array<ValueType, default_reduce_block_size> block_sum;
-  reduce_array(size, source, static_cast<ValueType*>(block_sum),
-               [](const ValueType& x, const ValueType& y) { return x + y; });
-
-  if (threadIdx.x == 0) { result[blockIdx.x] = block_sum[0]; }
-}
-
-/**
- * @internal
- *
- * Computes a reduction using the add operation (+) on an array
- * `source` of any size. Has to be called a second time on `result` to reduce
- * an array larger than `default_block_size`.
- *
- * @note uses existing value in result
- */
-template<typename ValueType>
-__global__ __launch_bounds__(default_reduce_block_size) void reduce_add_array_with_initial_value(
-  size_type size, const ValueType* __restrict__ source, ValueType* __restrict__ result) {
-  __shared__ uninitialized_array<ValueType, default_reduce_block_size> block_sum;
-  reduce_array(size, source, static_cast<ValueType*>(block_sum),
-               [](const ValueType& x, const ValueType& y) { return x + y; });
-
-  if (threadIdx.x == 0) { result[blockIdx.x] += block_sum[0]; }
-}
-
-/**
- * Compute a reduction using add operation (+).
- *
- * @param exec  Executor associated to the array
- * @param size  size of the array
- * @param source  the pointer of the array
- *
- * @return the reduction result
- */
-template<typename ValueType>
-ValueType reduce_add_array(std::shared_ptr<const DefaultExecutor> exec, size_type size, const ValueType* source) {
-  auto block_results_val = source;
-  size_type grid_dim = size;
-  auto block_results = array<ValueType>(exec);
-  if (size > default_reduce_block_size) {
-    const auto n = ceildiv(size, default_reduce_block_size);
-    grid_dim = (n <= default_reduce_block_size) ? n : default_reduce_block_size;
-
-    block_results.resize_and_reset(grid_dim);
-
-    reduce_add_array<<<grid_dim, default_reduce_block_size, 0, exec->get_stream()>>>(
-      size, as_device_type(source), as_device_type(block_results.get_data()));
-
-    block_results_val = block_results.get_const_data();
-  }
-
-  auto d_result = array<ValueType>(exec, 1);
-
-  reduce_add_array<<<1, default_reduce_block_size, 0, exec->get_stream()>>>(grid_dim, as_device_type(block_results_val),
-                                                                            as_device_type(d_result.get_data()));
-  auto answer = get_element(d_result, 0);
-  return answer;
 }
 
 } // namespace gko::kernels::hip

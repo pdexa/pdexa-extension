@@ -27,10 +27,9 @@ struct settings {
 };
 
 template <typename ValueType>
-inline int local_memory_requirement(const int num_rows, const int num_rhs)
-{
-    return (5 * num_rows * num_rhs + 3 * num_rhs) * sizeof(ValueType) +
-           2 * num_rhs * sizeof(typename gko::remove_complex<ValueType>);
+int local_memory_requirement(const int num_rows, const int num_rhs) {
+  return (5 * num_rows * num_rhs + 3 * num_rhs) * static_cast<int>(sizeof(ValueType)) +
+         2 * num_rhs * static_cast<int>(sizeof(remove_complex<ValueType>));
 }
 
 
@@ -58,20 +57,17 @@ void set_gmem_stride_bytes(storage_config& sconf,
         gmem_stride += prec_storage_bytes;
     }
     // align global memory chunks
-    sconf.gmem_stride_bytes = ceildiv(gmem_stride, align_bytes) * align_bytes;
+    sconf.gmem_stride_bytes = static_cast<int>(ceildiv(gmem_stride, align_bytes)) * align_bytes;
 }
 
-
-template <typename Prectype, typename ValueType, int align_bytes = 32>
-storage_config compute_shared_storage(const int available_shared_mem,
+template<typename Prectype, typename ValueType, int align_bytes = 32>
+storage_config compute_shared_storage([[maybe_unused]] const int available_shared_mem,
                                       const int num_rows, const int num_nz,
                                       const int num_rhs)
 {
-    using real_type = remove_complex<ValueType>;
-    const int vec_bytes = num_rows * num_rhs * sizeof(ValueType);
-    const int num_main_vecs = 5;
+    const int vec_bytes = num_rows * num_rhs * static_cast<int>(sizeof(ValueType));
+  const int num_main_vecs = 5;
     const int prec_storage = Prectype::dynamic_work_size(num_rows, num_nz);
-    int rem_shared = available_shared_mem;
     // Set default values. Initially all vecs are in global memory.
     // {prec_shared, n_shared, n_global, gmem_stride_bytes, padded_vec_len}
     storage_config sconf{false, 0, num_main_vecs, 0, num_rows};

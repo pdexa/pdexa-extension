@@ -53,7 +53,7 @@ private:
 
 struct custom_operator_item {
     gko::size_type num_batches;
-    gko::size_type batch_id;
+    gko::int64 batch_id;
     gko::int32 num_rows;
     gko::int32 num_cols;
 };
@@ -68,7 +68,7 @@ struct custom_operator_item {
 
 
 constexpr custom_operator_item extract_batch_item(custom_operator_view op,
-                                                  gko::size_type batch_id)
+                                                  gko::int64 batch_id)
 {
     return {op.num_batch_items, batch_id, op.num_rows, op.num_cols};
 }
@@ -88,7 +88,7 @@ constexpr void advanced_apply(
             acc += -gko::one<double>() * b.values[row - 1];
         }
         acc +=
-            (static_cast<double>(2.0) + static_cast<double>(a.batch_id) /
+            (2.0 + static_cast<double>(a.batch_id) /
                                             static_cast<double>(num_batches)) *
             b.values[row];
         if (row < a.num_rows - 1) {
@@ -116,9 +116,9 @@ __device__ void advanced_apply(
     gko::batch::multi_vector::batch_item<double> x,
     [[maybe_unused]] gko::cuda_hip_kernel)
 {
-    auto tidx = threadIdx.x;
+    auto tidx = static_cast<int>(threadIdx.x);
     auto num_batches = a.num_batches;
-    for (gko::size_type row = tidx; row < a.num_rows; row += blockDim.x) {
+    for (auto row = tidx; row < a.num_rows; row += static_cast<int>(blockDim.x)) {
         double acc{};
 
         if (row > 0) {
