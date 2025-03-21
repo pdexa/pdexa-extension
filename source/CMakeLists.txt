@@ -1,6 +1,3 @@
-add_library(pdexa-ext "")
-add_library(pdexa::ext ALIAS pdexa-ext)
-
 target_sources(
         pdexa-ext
         PRIVATE
