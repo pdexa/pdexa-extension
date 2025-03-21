@@ -1,6 +1,6 @@
 message(STATUS "Enabling package Ginkgo")
 
-find_package(Ginkgo QUIET)
+find_package(Ginkgo 1.10 QUIET)
 
 if(NOT Ginkgo_FOUND)
   message(STATUS "Fetching external Ginkgo")
