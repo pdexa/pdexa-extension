@@ -30,7 +30,8 @@ public:
      * The size of the work vector required in case of dynamic allocation in
      * bytes.
      */
-    static constexpr int dynamic_work_size(int, int) { return 0; }
+    template<typename OpType>
+    static constexpr int dynamic_work_size(int, OpType) { return 0; }
 
     /**
      * Sets the input and generates the identity preconditioner.(Nothing needs
