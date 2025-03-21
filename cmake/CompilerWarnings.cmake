@@ -75,7 +75,7 @@ function(set_project_warnings project_name)
     endif()
 
     if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
-        target_compile_options(${project_name} INTERFACE ${PROJECT_WARNINGS})
+        target_compile_options(${project_name} PRIVATE ${PROJECT_WARNINGS})
     endif()
 
 endfunction()
