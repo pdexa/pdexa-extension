@@ -37,7 +37,7 @@ public:
      * to be actually generated.)
      */
     template <typename batch_item_type>
-    constexpr void generate(size_type, const batch_item_type&, ValueType* const)
+    constexpr void generate(int64, const batch_item_type&, ValueType* const)
     {}
 
     /**

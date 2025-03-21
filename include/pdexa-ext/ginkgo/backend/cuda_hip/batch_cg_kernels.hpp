@@ -24,14 +24,14 @@ __device__ __forceinline__ void initialize(Group subgroup,
                                            batch::multi_vector::batch_item<const ValueType> x_global_entry,
                                            batch::multi_vector::batch_item<ValueType> x_shared_entry,
                                            batch::multi_vector::batch_item<ValueType> r_shared_entry,
-                                           const PrecType& prec_shared,
+                                           [[maybe_unused]] const PrecType& prec_shared,
                                            batch::multi_vector::batch_item<ValueType> z_shared_entry,
                                            ValueType& rho_old_shared_entry,
                                            batch::multi_vector::batch_item<ValueType> p_shared_entry,
-                                           typename gko::remove_complex<ValueType>& rhs_norms_sh) {
+                                           remove_complex<ValueType>& rhs_norms_sh) {
   // copy x from global to shared memory
   // r = b
-  for (int iz = threadIdx.x; iz < num_rows; iz += blockDim.x) {
+  for (auto iz = static_cast<int>(threadIdx.x); iz < num_rows; iz += static_cast<int>(blockDim.x)) {
     x_shared_entry.values[iz] = x_global_entry.values[iz];
     r_shared_entry.values[iz] = b_global_entry.values[iz];
   }
@@ -58,7 +58,7 @@ __device__ __forceinline__ void initialize(Group subgroup,
   }
 
   // p = z
-  for (int iz = threadIdx.x; iz < num_rows; iz += blockDim.x) { p_shared_entry.values[iz] = z_shared_entry.values[iz]; }
+  for (auto iz = static_cast<int>(threadIdx.x); iz < num_rows; iz += static_cast<int>(blockDim.x)) { p_shared_entry.values[iz] = z_shared_entry.values[iz]; }
 }
 
 template<typename ValueType>
@@ -67,7 +67,7 @@ __device__ __forceinline__ void update_p(const int num_rows,
                                          const ValueType& rho_old_shared_entry,
                                          batch::multi_vector::batch_item<const ValueType> z_shared_entry,
                                          batch::multi_vector::batch_item<ValueType> p_shared_entry) {
-  for (int li = threadIdx.x; li < num_rows; li += blockDim.x) {
+  for (auto li = static_cast<int>(threadIdx.x); li < num_rows; li += static_cast<int>(blockDim.x)) {
     const ValueType beta = rho_new_shared_entry / rho_old_shared_entry;
     p_shared_entry.values[li] = z_shared_entry.values[li] + beta * p_shared_entry.values[li];
   }
@@ -88,7 +88,7 @@ __device__ __forceinline__ void update_x_and_r(Group subgroup,
   }
   __syncthreads();
 
-  for (int li = threadIdx.x; li < num_rows; li += blockDim.x) {
+  for (auto li = static_cast<int>(threadIdx.x); li < num_rows; li += static_cast<int>(blockDim.x)) {
     const ValueType alpha = rho_old_shared_entry / alpha_shared_entry;
     x_shared_entry.values[li] += alpha * p_shared_entry.values[li];
     r_shared_entry.values[li] -= alpha * Ap_shared_entry.values[li];
@@ -104,14 +104,14 @@ template<typename StopType,
          typename ValueType>
 __global__ void apply_kernel(const kernels::batch_cg::storage_config sconf,
                              const int max_iter,
-                             const gko::remove_complex<ValueType> tol,
+                             const remove_complex<ValueType> tol,
                              LogType logger,
                              PrecType prec_shared,
                              const BatchMatrixType mat,
                              batch::multi_vector::uniform_batch<const ValueType> b,
                              batch::multi_vector::uniform_batch<ValueType> x,
                              ValueType* const __restrict__ workspace = nullptr) {
-  using real_type = typename gko::remove_complex<ValueType>;
+  using real_type = remove_complex<ValueType>;
   const auto num_batch_items = static_cast<int32>(mat.num_batch_items);
   const auto num_rows = static_cast<int32>(mat.num_rows);
   const auto num_rhs = static_cast<int32>(b.num_rhs);
@@ -120,9 +120,9 @@ __global__ void apply_kernel(const kernels::batch_cg::storage_config sconf,
   auto thread_block = group::this_thread_block();
   auto subgroup = group::tiled_partition<tile_size>(thread_block);
 
-  for (size_type batch_id = blockIdx.x; batch_id < num_batch_items; batch_id += gridDim.x) {
-    const int gmem_offset = batch_id * sconf.gmem_stride_bytes / sizeof(ValueType);
-    extern __shared__ char local_mem_sh[];
+  for (auto batch_id = static_cast<int>(blockIdx.x); batch_id < num_batch_items; batch_id += static_cast<int>(gridDim.x)) {
+    const int gmem_offset = batch_id * sconf.gmem_stride_bytes / static_cast<int>(sizeof(ValueType));
+    [[maybe_unused]] extern __shared__ char local_mem_sh[];
 
     const batch::multi_vector::batch_item<ValueType> r_sh{workspace + gmem_offset, num_rhs, num_rows, num_rhs};
     const batch::multi_vector::batch_item<ValueType> z_sh{r_sh.values + sconf.padded_vec_len, num_rhs, num_rows,
@@ -134,7 +134,7 @@ __global__ void apply_kernel(const kernels::batch_cg::storage_config sconf,
     const batch::multi_vector::batch_item<ValueType> x_sh{Ap_sh.values + sconf.padded_vec_len, num_rhs, num_rows,
                                                           num_rhs};
 
-    ValueType* prec_work_sh = x_sh.values + sconf.padded_vec_len;
+    [[maybe_unused]] ValueType* prec_work_sh = x_sh.values + sconf.padded_vec_len;
 
     __shared__ uninitialized_array<ValueType, 1> rho_old_sh;
     __shared__ uninitialized_array<ValueType, 1> rho_new_sh;

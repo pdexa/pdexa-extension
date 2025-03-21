@@ -53,21 +53,23 @@ void apply(std::shared_ptr<const DefaultExecutor> exec,
   using real_type = gko::remove_complex<ValueType>;
   const size_type num_batch_items = mat.num_batch_items;
   constexpr int align_multiple = 8;
-  const int padded_num_rows = ceildiv(mat.num_rows, align_multiple) * align_multiple;
+  const int padded_num_rows = static_cast<int>(ceildiv(mat.num_rows, align_multiple)) * align_multiple;
   int shmem_per_blk = 0;
   GKO_ASSERT_NO_HIP_ERRORS(
     hipDeviceGetAttribute(&shmem_per_blk, hipDeviceAttributeMaxSharedMemoryPerBlock, exec->get_device_id()));
   const int block_size = get_num_threads_per_block(exec, mat.num_rows);
-  GKO_ASSERT(block_size >= 2 * config::warp_size);
-  GKO_ASSERT(block_size % config::warp_size == 0);
+  GKO_ASSERT(block_size >= static_cast<int>(2 * config::warp_size));
+  GKO_ASSERT(block_size % static_cast<int>(config::warp_size) == 0);
 
   // Returns amount required in bytes
-  const size_t prec_size = PrecType::dynamic_work_size(padded_num_rows, -1);
-  const auto sconf = ::gko::kernels::batch_cg::compute_shared_storage<PrecType, ValueType>(
-    shmem_per_blk, padded_num_rows, -1, b.num_rhs);
-  const size_t shared_size = sconf.n_shared * padded_num_rows * sizeof(ValueType) + (sconf.prec_shared ? prec_size : 0);
-  auto workspace = gko::array<ValueType>(exec, sconf.gmem_stride_bytes * num_batch_items / sizeof(ValueType));
-  GKO_ASSERT(sconf.gmem_stride_bytes % sizeof(ValueType) == 0);
+  auto prec_size = static_cast<uint32>(PrecType::dynamic_work_size(padded_num_rows, -1));
+  auto sconf =
+    kernels::batch_cg::compute_shared_storage<PrecType, ValueType>(shmem_per_blk, padded_num_rows, -1, b.num_rhs);
+  auto shared_size =
+    static_cast<uint32>(sconf.n_shared * padded_num_rows) * sizeof(ValueType) + (sconf.prec_shared ? prec_size : 0u);
+  auto workspace =
+    gko::array<ValueType>(exec, static_cast<size_type>(sconf.gmem_stride_bytes) * num_batch_items / sizeof(ValueType));
+  GKO_ASSERT(sconf.gmem_stride_bytes % static_cast<int>(sizeof(ValueType)) == 0);
 
   ValueType* const workspace_data = workspace.get_data();
 
@@ -75,7 +77,7 @@ void apply(std::shared_ptr<const DefaultExecutor> exec,
   auto logger = batch_log::SimpleFinalLogger<real_type>(logdata.res_norms.get_data(), logdata.iter_counts.get_data());
 
   batch_single_kernels::batch_cg::apply_kernel<StopType, 0, false>
-    <<<mat.num_batch_items, block_size, shared_size, exec->get_stream()>>>(
+    <<<static_cast<uint32>(mat.num_batch_items), static_cast<uint32>(block_size), shared_size, exec->get_stream()>>>(
       sconf, settings.max_iterations, settings.residual_tol, logger, prec, mat, b, x, workspace_data);
 }
 } // namespace gko::kernels::hip::batch_template::batch_cg

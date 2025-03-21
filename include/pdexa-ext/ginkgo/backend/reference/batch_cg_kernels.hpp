@@ -96,7 +96,7 @@ void batch_entry_cg_impl(const kernels::batch_cg::settings<remove_complex<ValueT
                          const BatchMatrixType& a,
                          batch::multi_vector::batch_item<const ValueType> b,
                          batch::multi_vector::batch_item<ValueType> x,
-                         const size_type batch_item_id,
+                         const int64 batch_item_id,
                          unsigned char* const local_space) {
   using real_type = remove_complex<ValueType>;
   const auto num_rows = static_cast<int32>(a.num_rows);
@@ -192,19 +192,19 @@ void apply(std::shared_ptr<const DefaultExecutor> exec,
            batch::multi_vector::uniform_batch<ValueType> x,
            batch::log::detail::log_data<remove_complex<ValueType>>& logdata) {
   using real_type = remove_complex<ValueType>;
-  const size_type num_batch_items = mat.num_batch_items;
+  const auto num_batch_items = static_cast<int64>(mat.num_batch_items);
   const auto num_rows = mat.num_rows;
   const auto num_rhs = b.num_rhs;
   if (num_rhs > 1) { GKO_NOT_IMPLEMENTED; }
 
-  const size_type local_size_bytes = kernels::batch_cg::local_memory_requirement<ValueType>(num_rows, num_rhs);
+  auto local_size_bytes = static_cast<size_type>(kernels::batch_cg::local_memory_requirement<ValueType>(num_rows, num_rhs));
   array<unsigned char> local_space(exec, local_size_bytes);
 
   batch_log::SimpleFinalLogger<real_type> logger(logdata.res_norms.get_data(), logdata.iter_counts.get_data());
 
   auto prec = batch_preconditioner::Identity<ValueType>();
 
-  for (size_type batch_id = 0; batch_id < num_batch_items; batch_id++) {
+  for (int64 batch_id = 0; batch_id < num_batch_items; batch_id++) {
     batch_single_kernels::batch_cg::batch_entry_cg_impl<batch_stop::SimpleRelResidual<ValueType>>(
       options, logger, prec, mat, batch::extract_batch_item(b, batch_id), batch::extract_batch_item(x, batch_id),
       batch_id, local_space.get_data());
