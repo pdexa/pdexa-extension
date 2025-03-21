@@ -7,6 +7,7 @@
 #include <ginkgo/config.hpp>
 
 #include "pdexa-ext/ginkgo/core/base/batch_struct.hpp"
+#include "pdexa-ext/ginkgo/core/solver/batch_cg_settings.hpp"
 
 #if PDEXA_EXT_ENABLE_HIP
 
@@ -14,11 +15,10 @@
 
 #include <ginkgo/core/log/batch_logger.hpp>
 
+#include "../cuda_hip/batch_cg_kernels.hpp"
 #include "pdexa-ext/ginkgo/core/log/batch_simple_logger.hpp"
 #include "pdexa-ext/ginkgo/core/preconditioner/batch_identity.hpp"
-#include "pdexa-ext/ginkgo/core/solver/batch_cg_settings.hpp"
 #include "pdexa-ext/ginkgo/core/stop/batch_criteria.hpp"
-#include "../cuda_hip/batch_cg_kernels.hpp"
 
 namespace gko::kernels::hip::batch_template::batch_cg {
 
@@ -62,9 +62,9 @@ void apply(std::shared_ptr<const DefaultExecutor> exec,
   GKO_ASSERT(block_size % static_cast<int>(config::warp_size) == 0);
 
   // Returns amount required in bytes
-  auto prec_size = static_cast<uint32>(PrecType::dynamic_work_size(padded_num_rows, -1));
-  auto sconf =
-    kernels::batch_cg::compute_shared_storage<PrecType, ValueType>(shmem_per_blk, padded_num_rows, -1, b.num_rhs);
+  auto prec_size = static_cast<uint32>(PrecType::dynamic_work_size(padded_num_rows, mat));
+  auto sconf = kernels::batch_cg::compute_shared_storage<PrecType, ValueType>(
+    shmem_per_blk, padded_num_rows, std::numeric_limits<int>::min(), b.num_rhs);
   auto shared_size =
     static_cast<uint32>(sconf.n_shared * padded_num_rows) * sizeof(ValueType) + (sconf.prec_shared ? prec_size : 0u);
   auto workspace =
@@ -86,14 +86,13 @@ void apply(std::shared_ptr<const DefaultExecutor> exec,
 
 namespace gko::kernels::hip::batch_template::batch_cg {
 
-template <typename ValueType, typename Op>
-void apply(
-    std::shared_ptr<const DefaultExecutor> ,
-    const kernels::batch_cg::settings<remove_complex<ValueType>>& ,
-    const Op , batch::multi_vector::uniform_batch<const ValueType> ,
-    batch::multi_vector::uniform_batch<ValueType> ,
-    batch::log::detail::log_data<remove_complex<ValueType>>& )
-    GKO_NOT_IMPLEMENTED;
+template<typename ValueType, typename Op>
+void apply(std::shared_ptr<const DefaultExecutor>,
+           const kernels::batch_cg::settings<remove_complex<ValueType>>&,
+           const Op,
+           batch::multi_vector::uniform_batch<const ValueType>,
+           batch::multi_vector::uniform_batch<ValueType>,
+           batch::log::detail::log_data<remove_complex<ValueType>>&) GKO_NOT_IMPLEMENTED;
 
 }
 
