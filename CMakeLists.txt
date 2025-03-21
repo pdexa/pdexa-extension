@@ -8,15 +8,13 @@ option(PDEXA_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" FALSE)
 add_library(pdexa-ext "")
 add_library(pdexa::ext ALIAS pdexa-ext)
 
-add_library(pdexa-options INTERFACE)
-target_compile_features(pdexa-options INTERFACE cxx_std_17)
-add_library(pdexa::options ALIAS pdexa-options)
+target_compile_features(pdexa-ext INTERFACE cxx_std_17)
 
 include(cmake/BuildSettings.cmake)
 include(cmake/CompilerWarnings.cmake)
 include(third-party/enable_packages.cmake)
 
-set_project_warnings(pdexa-options)
+set_project_warnings(pdexa-ext)
 
 add_subdirectory(source)
 add_subdirectory(app)
