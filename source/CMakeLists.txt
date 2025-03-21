@@ -10,5 +10,5 @@ target_include_directories(
         $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
 )
 
-target_link_libraries(pdexa-ext pdexa-options Ginkgo::ginkgo Kokkos::kokkos)  # can't use PUBLIC because of deal.ii
+target_link_libraries(pdexa-ext Ginkgo::ginkgo Kokkos::kokkos)  # can't use PUBLIC because of deal.ii
 deal_ii_setup_target(pdexa-ext)
