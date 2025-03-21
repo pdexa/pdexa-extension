@@ -21,6 +21,10 @@ struct batch_item {
   int32 stride;
   int32 num_rows;
   int32 num_rhs;
+
+  constexpr GKO_INLINE ValueType& operator[](int64 i) const {
+    return values[i];
+  }
 };
 
 /**
