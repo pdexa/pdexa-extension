@@ -35,9 +35,9 @@ public:
 
   [[nodiscard]] gko::batch_dim<2> get_size() const { return size_; }
 
-  [[nodiscard]] constexpr gko::dim<2> get_common_size() const { return size_.get_common_size(); }
+  [[nodiscard]] gko::dim<2> get_common_size() const { return size_.get_common_size(); }
 
-  [[nodiscard]] constexpr gko::size_type get_num_batch_items() const { return size_.get_num_batch_items(); }
+  [[nodiscard]] gko::size_type get_num_batch_items() const { return size_.get_num_batch_items(); }
 
 private:
   gko::batch_dim<2> size_;
@@ -50,7 +50,7 @@ struct custom_operator_item {
   gko::int32 num_cols;
 };
 
-[[nodiscard]] constexpr custom_operator_view create_view(const CustomOperator* op) {
+[[nodiscard]] custom_operator_view create_view(const CustomOperator* op) {
   return {op->get_num_batch_items(), static_cast<gko::int32>(op->get_common_size()[0]),
           static_cast<gko::int32>(op->get_common_size()[1])};
 }
