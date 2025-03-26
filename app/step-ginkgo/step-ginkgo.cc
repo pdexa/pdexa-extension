@@ -173,7 +173,7 @@ void StepGinkgo<dim>::solve() {
   auto solver = GinkgoInterface::inverse_operator(
     gko_mtx,
     gko::solver::Cg<double>::build()
-      .with_criteria(gko::stop::Iteration::build().with_max_iters(1000),
+      .with_criteria(gko::stop::Iteration::build().with_max_iters(1000lu),
                      gko::stop::ResidualNorm<double>::build().with_reduction_factor(1e-12))
       .on(exec),
     logger);
