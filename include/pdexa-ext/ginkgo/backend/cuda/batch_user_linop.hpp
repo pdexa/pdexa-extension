@@ -6,36 +6,25 @@
 
 #include <ginkgo/config.hpp>
 
-#if GINKGO_BUILD_CUDA && GKO_COMPILING_CUDA
+#if PDEXA_EXT_ENABLE_CUDA
 #include "../cuda_hip/batch_user_linop.hpp"
 #endif
 
 
-namespace gko {
-namespace kernels {
-namespace cuda {
-namespace batch_template {
-namespace batch_user {
+namespace gko::kernels::cuda::batch_template::batch_user {
 
-
-template <typename ValueType, typename UserOpView>
-void apply(std::shared_ptr<const DefaultExecutor> exec, const UserOpView mat,
+template<typename ValueType, typename UserOpView>
+void apply(std::shared_ptr<const DefaultExecutor> exec,
+           const UserOpView mat,
            batch::multi_vector::uniform_batch<const ValueType> b,
-           batch::multi_vector::uniform_batch<ValueType> x)
-{
-#if GINKGO_BUILD_CUDA && GKO_COMPILING_CUDA
-    auto num_rows = mat.num_rows;
+           batch::multi_vector::uniform_batch<ValueType> x) {
+#if PDEXA_EXT_ENABLE_CUDA
+  auto num_rows = mat.num_rows;
 
-    apply_kernel<<<mat.num_batch_items, get_num_threads_per_block(num_rows), 0,
-                   exec->get_stream()>>>(mat, b, x);
+  apply_kernel<<<mat.num_batch_items, get_num_threads_per_block(num_rows), 0, exec->get_stream()>>>(mat, b, x);
 #else
-    GKO_NOT_IMPLEMENTED;
+  GKO_NOT_IMPLEMENTED;
 #endif
 }
 
-
-}  // namespace batch_user
-}  // namespace batch_template
-}  // namespace cuda
-}  // namespace kernels
-}  // namespace gko
+} // namespace gko::kernels::cuda::batch_template::batch_user

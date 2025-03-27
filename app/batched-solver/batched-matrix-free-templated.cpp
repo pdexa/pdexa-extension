@@ -18,6 +18,7 @@
 
 #include "pdexa-ext/ginkgo/core/solver/batch_bicgstab.hpp"
 #include "pdexa-ext/ginkgo/core/solver/batch_cg.hpp"
+#include "pdexa-ext/ginkgo/core/matrix/batch_user_linop.hpp"
 
 namespace dummy {
 struct custom_operator_view {
@@ -26,12 +27,10 @@ struct custom_operator_view {
   gko::int32 num_cols;
 };
 
-class CustomOperator : public gko::EnablePolymorphicObject<CustomOperator> {
+class CustomOperator : public gko::batch_template::EnableBatchUserLinOp<double, CustomOperator> {
 public:
-  using value_type = double;
-
   explicit CustomOperator(std::shared_ptr<const gko::Executor> exec, gko::batch_dim<2> size = {}) :
-      EnablePolymorphicObject(std::move(exec)), size_(size) {}
+      EnableBatchUserLinOp(std::move(exec)), size_(size) {}
 
   [[nodiscard]] gko::batch_dim<2> get_size() const { return size_; }
 
@@ -95,11 +94,9 @@ __device__ void advanced_apply(double alpha,
   auto num_batches = a.num_batches;
   for (auto row = tidx; row < a.num_rows; row += static_cast<int>(blockDim.x)) {
     double acc{};
-
     if (row > 0) { acc += -gko::one<double>() * b[row - 1]; }
-    acc += (static_cast<double>(2.0) + static_cast<double>(a.batch_id) / static_cast<double>(num_batches)) * b[row];
+    acc += (2.0 + static_cast<double>(a.batch_id) / static_cast<double>(num_batches)) * b[row];
     if (row < a.num_rows - 1) { acc += -gko::one<double>() * b[row + 1]; }
-    // auto dummy = alpha * acc + beta * x[row];
     x[row] = alpha * acc + beta * x[row];
   }
 }
