@@ -31,7 +31,7 @@ install(
 install(
         EXPORT pdexa-targets
         NAMESPACE pdexa::
-        DESTINATION lib/cmake/pdexa
+        DESTINATION lib64/cmake/pdexa
 )
 export(
         EXPORT pdexa-targets
@@ -43,12 +43,25 @@ include(CMakePackageConfigHelpers)
 configure_package_config_file(
         ${PROJECT_SOURCE_DIR}/cmake/pdexa-config.cmake.in
         ${CMAKE_CURRENT_BINARY_DIR}/pdexa-config.cmake
-        INSTALL_DESTINATION lib/cmake/pdexa
+        INSTALL_DESTINATION lib64/cmake/pdexa
         NO_SET_AND_CHECK_MACRO
         NO_CHECK_REQUIRED_COMPONENTS_MACRO
 )
 install(
         FILES
         ${CMAKE_CURRENT_BINARY_DIR}/pdexa-config.cmake
-        DESTINATION lib/cmake/pdexa
+        DESTINATION lib64/cmake/pdexa
 )
+
+# install internal ginkgo version
+if (Ginkgo_POPULATED)
+    install(
+            TARGETS ginkgo
+            EXPORT GinkgoTargets
+            INCLUDES DESTINATION include
+    )
+    install(
+            EXPORT GinkgoTargets
+            NAMESPACE Ginkgo::
+    )
+endif ()
