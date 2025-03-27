@@ -7,7 +7,7 @@
 #include <ginkgo/config.hpp>
 
 #include "pdexa-ext/ginkgo/core/solver/batch_cg_settings.hpp"
-#include "pdexa-ext/ginkgo/backend/cuda_hip/batch_csr_kernels.hpp"
+#include "pdexa-ext/ginkgo/backend/cuda_hip/batch_apply.hpp"
 #include "pdexa-ext/ginkgo/backend/cuda_hip/batch_multi_vector_kernels.hpp"
 #include "pdexa-ext/ginkgo/backend/cuda_hip/components/cooperative_groups.hpp"
 #include "pdexa-ext/ginkgo/backend/cuda_hip/components/uninitialized_array.hpp"
