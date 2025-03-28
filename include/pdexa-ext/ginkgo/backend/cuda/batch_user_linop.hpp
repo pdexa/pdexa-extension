@@ -10,6 +10,8 @@
 #include "../cuda_hip/batch_user_linop.hpp"
 #endif
 
+#include "pdexa-ext/ginkgo/core/base/batch_struct.hpp"
+
 
 namespace gko::kernels::cuda::batch_template::batch_user {
 
