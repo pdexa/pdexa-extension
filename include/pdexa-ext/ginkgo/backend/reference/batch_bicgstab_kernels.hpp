@@ -48,15 +48,7 @@ inline void initialize(const BatchMatrixType_entry& A_entry,
   // r = b
   copy_kernel(b_entry, r_entry);
 
-  // compute r = b - A*x via:
-  // r = A*x
-  simple_apply(A_entry, batch::to_const(x_entry), r_entry);
-  // r *= -1
-  auto neg_one_v = -one<ValueType>();
-  scale_kernel(batch::multi_vector::batch_item<const ValueType>{&neg_one_v, 1, 1, 1}, r_entry);
-  // r = r + b
-  auto one_v = one<ValueType>();
-  add_scaled_kernel(batch::multi_vector::batch_item<const ValueType>{&one_v, 1, 1, 1}, b_entry, r_entry);
+  compute_residual(A_entry, x_entry, b_entry, r_entry);
 
   compute_norm2_kernel<ValueType>(batch::to_const(r_entry), res_norms_entry);
 

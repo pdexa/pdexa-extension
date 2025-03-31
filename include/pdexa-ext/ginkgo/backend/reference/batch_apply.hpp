@@ -30,5 +30,28 @@ struct simple_apply_fn {
 
 inline constexpr simple_apply_fn simple_apply{};
 
+template<typename ValueType, typename IndexType>
+void compute_residual(const batch::matrix::csr::batch_item<const ValueType, IndexType> a,
+                      const batch::multi_vector::batch_item<const ValueType> x,
+                      const batch::multi_vector::batch_item<const ValueType> b,
+                      batch::multi_vector::batch_item<ValueType> r) {
+  copy_kernel(b, r);
+  advanced_apply_impl(-one<ValueType>(), a, x, one<ValueType>(), r);
+}
+
+template<typename T, typename ValueType>
+void compute_residual(const T a,
+                      const batch::multi_vector::batch_item<const ValueType> x,
+                      const batch::multi_vector::batch_item<const ValueType> b,
+                      batch::multi_vector::batch_item<ValueType> r) {
+  // r = A*x
+  simple_apply(a, batch::to_const(x), r);
+  // r *= -1
+  auto neg_one_v = -one<ValueType>();
+  scale_kernel(batch::multi_vector::batch_item<const ValueType>{&neg_one_v, 1, 1, 1}, r);
+  // r = r + b
+  auto one_v = one<ValueType>();
+  add_scaled_kernel(batch::multi_vector::batch_item<const ValueType>{&one_v, 1, 1, 1}, b, r);
+}
 
 } // namespace gko::kernels::reference::batch_template::batch_single_kernels

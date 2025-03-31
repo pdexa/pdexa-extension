@@ -37,20 +37,12 @@ __device__ __forceinline__ void initialize(Group subgroup,
   }
   __syncthreads();
 
-  // compute r = b - A*x via:
-  // r = A*x
-  simple_apply(mat_entry, batch::to_const(x_shared_entry), r_shared_entry);
-  // r *= -1
-  auto neg_one_v = -one<ValueType>();
-  scale(batch::multi_vector::batch_item<const ValueType>{&neg_one_v, 1, 1, 1}, r_shared_entry, [](auto...) {return 0;});
-  // r = r + b
-  auto one_v = one<ValueType>();
-  add_scaled(batch::multi_vector::batch_item<const ValueType>{&one_v, 1, 1, 1}, b_global_entry, r_shared_entry, [](auto...) {return 0;});
+  compute_residual(mat_entry, batch::to_const(x_shared_entry), b_global_entry, r_shared_entry);
   __syncthreads();
 
   // z = precond * r
   // TODO: add preconditioner again
-  single_rhs_copy(num_rows, batch::to_const(r_shared_entry), z_shared_entry);
+  single_rhs_copy(batch::to_const(r_shared_entry), z_shared_entry);
   __syncthreads();
 
   if (threadIdx.x / config::warp_size == 0) {
@@ -190,7 +182,7 @@ __global__ void apply_kernel(const kernels::batch_cg::storage_config sconf,
 
       // z = precond * r
       // TODO: add preconditioner again
-      single_rhs_copy(num_rows, batch::to_const(r_sh), z_sh);
+      single_rhs_copy(batch::to_const(r_sh), z_sh);
       __syncthreads();
 
       if (threadIdx.x / config::warp_size == 0) {
@@ -212,7 +204,7 @@ __global__ void apply_kernel(const kernels::batch_cg::storage_config sconf,
     logger.log_iteration(batch_id, iter, norms_res_sh[0]);
 
     // copy x back to global memory
-    single_rhs_copy(num_rows, batch::to_const(x_sh), x_global_entry);
+    single_rhs_copy(batch::to_const(x_sh), x_global_entry);
     __syncthreads();
   }
 }

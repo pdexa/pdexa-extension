@@ -75,10 +75,11 @@ __device__ __forceinline__ void single_rhs_compute_norm2(Group subgroup,
 }
 
 template<typename ValueType>
-__device__ __forceinline__ void single_rhs_copy(const int num_rows,
+__device__ __forceinline__ void single_rhs_copy(
                                                 const batch::multi_vector::batch_item<const ValueType> in,
                                                 batch::multi_vector::batch_item<ValueType> out) {
-  for (auto iz = static_cast<int>(threadIdx.x); iz < num_rows; iz += static_cast<int>(blockDim.x)) { out.values[iz] = in.values[iz]; }
+  assert(in.num_rows == out.num_rows);
+  for (auto iz = static_cast<int>(threadIdx.x); iz < in.num_rows; iz += static_cast<int>(blockDim.x)) { out.values[iz] = in.values[iz]; }
 }
 
 } // namespace gko::kernels::GKO_DEVICE_NAMESPACE::batch_template::batch_single_kernels
