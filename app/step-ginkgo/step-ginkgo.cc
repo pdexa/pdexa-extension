@@ -210,6 +210,7 @@ void StepGinkgo<dim>::run() {
 }
 
 int main(int argc, char** argv) {
+  auto g = Kokkos::ScopeGuard(argc, argv);
   auto exec = gko::ext::kokkos::create_executor(memory_space::kokkos_space{});
 
   auto mtx_type = argc >= 2 ? argv[1] : "csr"; {
