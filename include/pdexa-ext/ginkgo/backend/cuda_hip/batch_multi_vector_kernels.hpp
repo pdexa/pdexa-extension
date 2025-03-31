@@ -14,6 +14,33 @@
 
 namespace gko::kernels::GKO_DEVICE_NAMESPACE::batch_template::batch_single_kernels {
 
+template<typename ValueType, typename Mapping>
+__device__ __forceinline__ void scale(const batch::multi_vector::batch_item<const ValueType>& alpha,
+                                      const batch::multi_vector::batch_item<ValueType>& x,
+                                      Mapping map) {
+  const int max_li = x.num_rows * x.num_rhs;
+  for (auto li = static_cast<int>(threadIdx.x); li < max_li; li += static_cast<int>(blockDim.x)) {
+    const int row = li / x.num_rhs;
+    const int col = li % x.num_rhs;
+
+    x[row * x.stride + col] = alpha[map(row, col, alpha.stride)] * x[row * x.stride + col];
+  }
+}
+
+template<typename ValueType, typename Mapping>
+__device__ __forceinline__ void add_scaled(const batch::multi_vector::batch_item<const ValueType>& alpha,
+                                           const batch::multi_vector::batch_item<const ValueType>& x,
+                                           const batch::multi_vector::batch_item<ValueType>& y,
+                                           Mapping map) {
+  const int max_li = x.num_rows * x.num_rhs;
+  for (auto li = static_cast<int>(threadIdx.x); li < max_li; li += static_cast<int>(blockDim.x)) {
+    const int row = li / x.num_rhs;
+    const int col = li % x.num_rhs;
+
+    y[row * y.stride + col] += alpha[map(col)] * x[row * x.stride + col];
+  }
+}
+
 template<typename Group, typename ValueType>
 __device__ __forceinline__ void single_rhs_compute_conj_dot(Group subgroup,
                                                             const int num_rows,
