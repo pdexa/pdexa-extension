@@ -57,7 +57,7 @@ class StepGinkgo {
 
 public:
   StepGinkgo(std::shared_ptr<const gko::Executor> exec,
-             const std::string &mtx_type = "csr");
+             const std::string& mtx_type = "csr");
 
   void run();
 
@@ -78,7 +78,7 @@ private:
 
   std::shared_ptr<const gko::Executor> exec;
 
-  SparsityPattern      sparsity_pattern;
+  SparsityPattern sparsity_pattern;
   mtx system_matrix;
   std::string mtx_type;
 
@@ -88,8 +88,8 @@ private:
 
 template<int dim>
 StepGinkgo<dim>::StepGinkgo(std::shared_ptr<const gko::Executor> exec,
-                            const std::string &mtx_type) :
-    fe(1), dof_handler(triangulation), exec(exec), mtx_type(mtx_type) {}
+                            const std::string& mtx_type) :
+  fe(1), dof_handler(triangulation), exec(exec), mtx_type(mtx_type) {}
 
 template<int dim>
 void StepGinkgo<dim>::make_grid() {
@@ -97,9 +97,9 @@ void StepGinkgo<dim>::make_grid() {
   triangulation.refine_global(4);
 
   std::cout << "   Number of active cells: " << triangulation.n_active_cells()
-            << std::endl
-            << "   Total number of cells: " << triangulation.n_cells()
-            << std::endl;
+    << std::endl
+    << "   Total number of cells: " << triangulation.n_cells()
+    << std::endl;
 }
 
 template<int dim>
@@ -107,7 +107,7 @@ void StepGinkgo<dim>::setup_system() {
   dof_handler.distribute_dofs(fe);
 
   std::cout << "   Number of degrees of freedom: " << dof_handler.n_dofs()
-            << std::endl;
+    << std::endl;
 
   DynamicSparsityPattern dsp(dof_handler.n_dofs());
   DoFTools::make_sparsity_pattern(dof_handler, dsp);
@@ -128,14 +128,12 @@ void StepGinkgo<dim>::assemble_system() {
   FEValues<dim> fe_values(fe,
                           quadrature_formula,
                           update_values | update_gradients |
-                              update_quadrature_points | update_JxW_values);
+                          update_quadrature_points | update_JxW_values);
 
   VectorTools::interpolate_boundary_values(dof_handler,
                                            0,
                                            FunctionFromFunctionObjects<dim>{
-                                               {[](const auto &p) {
-                                                 return p.square();
-                                               }}},
+                                             {[](const auto& p) { return p.square(); }}},
                                            constraints);
   constraints.close();
 
@@ -152,13 +150,13 @@ void StepGinkgo<dim>::assemble_system() {
   VectorTools::create_right_hand_side(dof_handler,
                                       quadrature_formula,
                                       FunctionFromFunctionObjects<dim>{
-                                          {[](const auto &p) {
-                                            double return_value = 0.0;
-                                            for (unsigned int i = 0; i < dim; ++i)
-                                              return_value +=
-                                                  4.0 * std::pow(p(i), 4.0);
-                                            return return_value;
-                                          }}},
+                                        {[](const auto& p) {
+                                          double return_value = 0.0;
+                                          for (unsigned int i = 0; i < dim; ++i)
+                                            return_value +=
+                                              4.0 * std::pow(p(i), 4.0);
+                                          return return_value;
+                                        }}},
                                       system_rhs,
                                       constraints);
 }
@@ -173,14 +171,15 @@ void StepGinkgo<dim>::solve() {
   auto solver = GinkgoInterface::inverse_operator(
     gko_mtx,
     gko::solver::Cg<double>::build()
-      .with_criteria(gko::stop::Iteration::build().with_max_iters(1000lu),
-                     gko::stop::ResidualNorm<double>::build().with_reduction_factor(1e-12))
-      .on(exec),
+    .with_criteria(gko::stop::Iteration::build().with_max_iters(1000lu),
+                   gko::stop::ResidualNorm<double>::build().with_baseline(gko::stop::mode::rhs_norm).
+                                                            with_reduction_factor(1e-6))
+    .on(exec),
     logger);
-  solver.vmult(system_rhs, solution);
+  solver.vmult(solution, system_rhs);
 
   std::cout << "   " << logger->get_num_iterations()
-            << " CG iterations needed to obtain convergence." << std::endl;
+    << " CG iterations needed to obtain convergence." << std::endl;
 }
 
 template<int dim>
@@ -199,7 +198,7 @@ void StepGinkgo<dim>::output_results() const {
 template<int dim>
 void StepGinkgo<dim>::run() {
   std::cout << "Solving problem in " << dim << " space dimensions."
-            << std::endl;
+    << std::endl;
 
   make_grid();
   setup_system();
@@ -212,31 +211,21 @@ int main(int argc, char** argv) {
   const auto executor_string = argc >= 2 ? argv[1] : "reference";
 
   const std::map<std::string, std::function<std::shared_ptr<gko::Executor>()>>
-      executor_factory{
+    executor_factory{
       {"reference", []() { return gko::ReferenceExecutor::create(); }},
       {"omp", []() { return gko::OmpExecutor::create(); }},
       {"cuda",
-       []() {
-         return gko::CudaExecutor::create(0, gko::ReferenceExecutor::create());
-       }},
+       []() { return gko::CudaExecutor::create(0, gko::ReferenceExecutor::create()); }},
       {"hip",
-       []() {
-         return gko::HipExecutor::create(0, gko::ReferenceExecutor::create());
-       }},
-      {"dpcpp", []() {
-        return gko::DpcppExecutor::create(0, gko::ReferenceExecutor::create());
-      }}};
+       []() { return gko::HipExecutor::create(0, gko::ReferenceExecutor::create()); }},
+      {"dpcpp", []() { return gko::DpcppExecutor::create(0, gko::ReferenceExecutor::create()); }}};
 
   auto exec = executor_factory.at(executor_string)();
 
-  auto mtx_type = argc >= 3 ? argv[2] : "csr";
-
-  {
+  auto mtx_type = argc >= 3 ? argv[2] : "csr"; {
     StepGinkgo<2> laplace_problem_2d{exec, mtx_type};
     laplace_problem_2d.run();
-  }
-
-  {
+  } {
     StepGinkgo<3> laplace_problem_3d{exec, mtx_type};
     laplace_problem_3d.run();
   }
