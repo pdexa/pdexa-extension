@@ -50,11 +50,15 @@ void initialize(const BatchMatrixType_entry& A_entry,
   // Compute norms of rhs
   compute_norm2_kernel<ValueType>(b_entry, rhs_norms_entry);
 
-  // r = b
-  copy_kernel(b_entry, r_entry);
-
-  // r = b - A*x
-  advanced_apply(static_cast<ValueType>(-1.0), A_entry, batch::to_const(x_entry), static_cast<ValueType>(1.0), r_entry);
+  // compute r = b - A*x via:
+  // r = A*x
+  simple_apply(A_entry, batch::to_const(x_entry), r_entry);
+  // r *= -1
+  auto neg_one_v = -one<ValueType>();
+  scale_kernel(batch::multi_vector::batch_item<const ValueType>{&neg_one_v, 1, 1, 1}, r_entry);
+  // r = r + b
+  auto one_v = one<ValueType>();
+  add_scaled_kernel(batch::multi_vector::batch_item<const ValueType>{&one_v, 1, 1, 1}, b_entry, r_entry);
 }
 
 template<typename ValueType>
