@@ -37,9 +37,15 @@ __device__ __forceinline__ void initialize(Group subgroup,
   }
   __syncthreads();
 
-  // r = b - A*x
-  advanced_apply(static_cast<ValueType>(-1.0), mat_entry, batch::to_const(x_shared_entry), static_cast<ValueType>(1.0),
-                 r_shared_entry);
+  // compute r = b - A*x via:
+  // r = A*x
+  simple_apply(mat_entry, batch::to_const(x_shared_entry), r_shared_entry);
+  // r *= -1
+  auto neg_one_v = -one<ValueType>();
+  scale(batch::multi_vector::batch_item<const ValueType>{&neg_one_v, 1, 1, 1}, r_shared_entry, [](auto...) {return 0;});
+  // r = r + b
+  auto one_v = one<ValueType>();
+  add_scaled(batch::multi_vector::batch_item<const ValueType>{&one_v, 1, 1, 1}, b_global_entry, r_shared_entry, [](auto...) {return 0;});
   __syncthreads();
 
   // z = precond * r
