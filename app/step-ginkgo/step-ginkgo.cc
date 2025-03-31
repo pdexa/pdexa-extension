@@ -50,10 +50,12 @@
 
 using namespace dealii;
 
+using memory_space = MemorySpace::Host;
+
 template<int dim>
 class StepGinkgo {
   using mtx = SparseMatrix<double>;
-  using vec = LinearAlgebra::distributed::Vector<double, MemorySpace::Host>;
+  using vec = LinearAlgebra::distributed::Vector<double, memory_space>;
 
 public:
   StepGinkgo(std::shared_ptr<const gko::Executor> exec,
@@ -208,21 +210,9 @@ void StepGinkgo<dim>::run() {
 }
 
 int main(int argc, char** argv) {
-  const auto executor_string = argc >= 2 ? argv[1] : "reference";
+  auto exec = gko::ext::kokkos::create_executor(memory_space::kokkos_space{});
 
-  const std::map<std::string, std::function<std::shared_ptr<gko::Executor>()>>
-    executor_factory{
-      {"reference", []() { return gko::ReferenceExecutor::create(); }},
-      {"omp", []() { return gko::OmpExecutor::create(); }},
-      {"cuda",
-       []() { return gko::CudaExecutor::create(0, gko::ReferenceExecutor::create()); }},
-      {"hip",
-       []() { return gko::HipExecutor::create(0, gko::ReferenceExecutor::create()); }},
-      {"dpcpp", []() { return gko::DpcppExecutor::create(0, gko::ReferenceExecutor::create()); }}};
-
-  auto exec = executor_factory.at(executor_string)();
-
-  auto mtx_type = argc >= 3 ? argv[2] : "csr"; {
+  auto mtx_type = argc >= 2 ? argv[1] : "csr"; {
     StepGinkgo<2> laplace_problem_2d{exec, mtx_type};
     laplace_problem_2d.run();
   } {
