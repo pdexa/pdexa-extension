@@ -139,16 +139,12 @@ void StepGinkgo<dim>::assemble_system() {
                                            constraints);
   constraints.close();
 
-  // This will assemble the matrix on the CPU and copy it to the correct
-  // executor, which could be a GPU, afterward.
   MatrixCreator::create_laplace_matrix(dof_handler,
                                        quadrature_formula,
                                        system_matrix,
                                        static_cast<Function<dim>*>(nullptr),
                                        constraints);
 
-  // This will assemble the right-hand-side vector on the CPU and copy it to the
-  // correct executor, which could be a GPU, afterward.
   VectorTools::create_right_hand_side(dof_handler,
                                       quadrature_formula,
                                       FunctionFromFunctionObjects<dim>{
@@ -210,10 +206,22 @@ void StepGinkgo<dim>::run() {
 }
 
 int main(int argc, char** argv) {
-  auto g = Kokkos::ScopeGuard(argc, argv);
-  auto exec = gko::ext::kokkos::create_executor(memory_space::kokkos_space::execution_space{});
+  const auto executor_string = argc >= 2 ? argv[1] : "reference";
 
-  auto mtx_type = argc >= 2 ? argv[1] : "csr"; {
+  const std::map<std::string, std::function<std::shared_ptr<gko::Executor>()>>
+    executor_factory{
+      {"reference", []() { return gko::ReferenceExecutor::create(); }},
+      {"omp", []() { return gko::OmpExecutor::create(); }},
+      {"cuda",
+       []() { return gko::CudaExecutor::create(0, gko::ReferenceExecutor::create()); }},
+      {"hip",
+       []() { return gko::HipExecutor::create(0, gko::ReferenceExecutor::create()); }},
+      {"dpcpp", []() { return gko::DpcppExecutor::create(0, gko::ReferenceExecutor::create()); }}};
+  auto exec = gko::ext::kokkos::create_executor(memory_space::kokkos_space{});
+
+  auto exec = executor_factory.at(executor_string)();
+
+  auto mtx_type = argc >= 3 ? argv[2] : "csr"; {
     StepGinkgo<2> laplace_problem_2d{exec, mtx_type};
     laplace_problem_2d.run();
   } {
