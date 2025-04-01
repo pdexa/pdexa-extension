@@ -217,7 +217,6 @@ int main(int argc, char** argv) {
       {"hip",
        []() { return gko::HipExecutor::create(0, gko::ReferenceExecutor::create()); }},
       {"dpcpp", []() { return gko::DpcppExecutor::create(0, gko::ReferenceExecutor::create()); }}};
-  auto exec = gko::ext::kokkos::create_executor(memory_space::kokkos_space{});
 
   auto exec = executor_factory.at(executor_string)();
 
