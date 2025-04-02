@@ -36,6 +36,7 @@ using namespace dealii::LinearAlgebraTrilinos;
 } // namespace LA
 
 #include <deal.II/lac/affine_constraints.h>
+#include <deal.II/lac/affine_constraints.templates.h> // required bc we mix deal.ii vectors and petsc matrices
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/full_matrix.h>
 #include <deal.II/lac/solver_cg.h>
@@ -126,8 +127,8 @@ private:
   AffineConstraints<double> constraints;
 
   LA::MPI::SparseMatrix system_matrix;
-  LA::MPI::Vector locally_relevant_solution;
-  LA::MPI::Vector system_rhs;
+  Vector locally_relevant_solution;
+  Vector system_rhs;
 
   ConditionalOStream pcout;
   TimerOutput computing_timer;
@@ -155,7 +156,7 @@ void LaplaceProblem<dim>::setup_system() {
   locally_relevant_dofs = DoFTools::extract_locally_relevant_dofs(dof_handler);
 
   locally_relevant_solution.reinit(locally_owned_dofs, locally_relevant_dofs, mpi_communicator);
-  system_rhs.reinit(locally_owned_dofs, mpi_communicator);
+  system_rhs.reinit(locally_owned_dofs, locally_relevant_dofs, mpi_communicator);
 
   constraints.clear();
   constraints.reinit(locally_owned_dofs, locally_relevant_dofs);
@@ -223,26 +224,7 @@ template<int dim>
 void LaplaceProblem<dim>::solve() {
   TimerOutput::Scope t(computing_timer, "solve");
 
-  auto exec = gko::ReferenceExecutor::create();
-  auto gko_mtx = create_dist_matrix<double>(pcout, exec, system_matrix);
-
-  LA::MPI::Vector completely_distributed_solution(locally_owned_dofs, mpi_communicator);
-
-  SolverControl solver_control(dof_handler.n_dofs(), 1e-6 * system_rhs.l2_norm());
-  LA::SolverCG solver(solver_control);
-
-  LA::MPI::PreconditionAMG::AdditionalData data;
-#ifdef USE_PETSC_LA
-  data.symmetric_operator = true;
-#else
-  /* Trilinos defaults are good */
-#endif
-  LA::MPI::PreconditionAMG preconditioner;
-  preconditioner.initialize(system_matrix, data);
-
-  solver.solve(system_matrix, completely_distributed_solution, system_rhs, preconditioner);
-
-  pcout << "   Solved in " << solver_control.last_step() << " iterations." << std::endl;
+  Vector completely_distributed_solution(locally_owned_dofs, mpi_communicator);
 
   constraints.distribute(completely_distributed_solution);
 
