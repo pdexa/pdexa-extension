@@ -21,6 +21,7 @@
 #include <deal.II/base/timer.h>
 
 #include <deal.II/lac/generic_linear_algebra.h>
+#include <ginkgo/core/distributed/matrix.hpp>
 
 namespace LA {
 #if defined(DEAL_II_WITH_PETSC) && !defined(DEAL_II_PETSC_WITH_COMPLEX) &&                                             \
@@ -56,11 +57,47 @@ using namespace dealii::LinearAlgebraTrilinos;
 #include <deal.II/distributed/tria.h>
 #include <deal.II/lac/sparsity_tools.h>
 
+#include <ginkgo/ginkgo.hpp>
+#include <pdexa-ext/deal.II/lac/ginkgo_interface.h>
+
 #include <fstream>
 #include <iostream>
 
 namespace Step40 {
 using namespace dealii;
+
+using Vector = LinearAlgebra::distributed::Vector<double, MemorySpace::Host>;
+
+template<typename ValueType, typename IndexType = gko::int32>
+std::unique_ptr<gko::experimental::distributed::Matrix<ValueType, IndexType, gko::int64>>
+create_dist_matrix(ConditionalOStream& ostream,
+                   std::shared_ptr<const gko::Executor> exec,
+                   const LA::MPI::SparseMatrix& deal_csr,
+                   GinkgoInterface::csr_strategy strategy = GinkgoInterface::csr_strategy::exec_based) {
+  auto comm = deal_csr.get_mpi_communicator();
+
+  auto local_idxs = deal_csr.locally_owned_domain_indices();
+  Assert(local_idxs.is_contiguous(), ExcInternalError("Can handle only contiguous partitions at the moment"));
+  local_idxs.print(ostream);
+
+  const auto& interval = *local_idxs.begin_intervals();
+
+  auto row_partition = gko::share(gko::experimental::distributed::build_partition_from_local_range<IndexType, gko::int64>(
+    exec, comm, {*interval.begin(), interval.last() + 1}));
+
+  // todo: need to create column partition
+
+  gko::dim<2> size = {static_cast<gko::size_type>(deal_csr.m()), static_cast<gko::size_type>(deal_csr.n())};
+  gko::matrix_data<ValueType, gko::int64> md{size};
+  for (auto el_it = deal_csr.begin(*interval.begin()); el_it != deal_csr.end(interval.last()); ++el_it) {
+    md.nonzeros.emplace_back(static_cast<gko::int64>(el_it->row()), static_cast<gko::int64>(el_it->column()),
+                             static_cast<ValueType>(el_it->value()));
+  }
+  auto gko_mtx =
+    gko::experimental::distributed::Matrix<ValueType, IndexType>::create(exec, comm);
+  gko_mtx->read_distributed(std::move(md), row_partition);
+  return gko_mtx;
+}
 
 template<int dim>
 class LaplaceProblem {
@@ -185,6 +222,9 @@ void LaplaceProblem<dim>::assemble_system() {
 template<int dim>
 void LaplaceProblem<dim>::solve() {
   TimerOutput::Scope t(computing_timer, "solve");
+
+  auto exec = gko::ReferenceExecutor::create();
+  auto gko_mtx = create_dist_matrix<double>(pcout, exec, system_matrix);
 
   LA::MPI::Vector completely_distributed_solution(locally_owned_dofs, mpi_communicator);
 
