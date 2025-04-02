@@ -340,9 +340,11 @@ template<typename DomainValueType = double,
 LinearOperator<LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>,
                LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>,
                detail::GinkgoPayload>
-inverse_operator(const std::shared_ptr<gko::LinOp>& gko_op, const std::shared_ptr<gko::LinOpFactory>& solver) {
+inverse_operator(const std::shared_ptr<gko::LinOp>& gko_op,
+                 const std::shared_ptr<gko::LinOpFactory>& solver,
+                 const std::shared_ptr<gko::log::Logger>& logger = nullptr) {
   return inverse_operator<DomainValueType, RangeValueType, DomainMemorySpace, RangeMemorySpace>(
-    gko_op->get_executor(), gko_op->get_executor(), gko_op, solver);
+    gko_op->get_executor(), gko_op->get_executor(), gko_op, solver, logger);
 }
 
 } // namespace GinkgoInterface
