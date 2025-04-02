@@ -91,9 +91,12 @@ create_dist_matrix(ConditionalOStream& ostream,
 
   gko::dim<2> size = {static_cast<gko::size_type>(deal_csr.m()), static_cast<gko::size_type>(deal_csr.n())};
   gko::matrix_data<ValueType, gko::int64> md{size};
-  for (auto el_it = deal_csr.begin(*interval.begin()); el_it != deal_csr.end(interval.last()); ++el_it) {
-    md.nonzeros.emplace_back(static_cast<gko::int64>(el_it->row()), static_cast<gko::int64>(el_it->column()),
-                             static_cast<ValueType>(el_it->value()));
+
+  for (auto it = local_idxs.begin_intervals(); it != local_idxs.end_intervals(); ++it) {
+    for (auto el_it = deal_csr.begin(*it->begin()); el_it != deal_csr.end(it->last()); ++el_it) {
+      md.nonzeros.emplace_back(static_cast<gko::int64>(el_it->row()), static_cast<gko::int64>(el_it->column()),
+                               static_cast<ValueType>(el_it->value()));
+    }
   }
   auto gko_mtx = gko::experimental::distributed::Matrix<ValueType, IndexType>::create(exec, comm);
   gko_mtx->read_distributed(std::move(md), row_partition);
