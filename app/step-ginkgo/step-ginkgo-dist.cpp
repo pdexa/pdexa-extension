@@ -224,11 +224,7 @@ template<int dim>
 void LaplaceProblem<dim>::solve() {
   TimerOutput::Scope t(computing_timer, "solve");
 
-  Vector completely_distributed_system_rhs(locally_owned_dofs, mpi_communicator);
   Vector completely_distributed_solution(locally_owned_dofs, mpi_communicator);
-
-  constraints.distribute(system_rhs);
-  completely_distributed_system_rhs = system_rhs;
 
   auto logger = gko::share(gko::log::Convergence<double>::create());
 
@@ -242,7 +238,7 @@ void LaplaceProblem<dim>::solve() {
         gko::stop::ResidualNorm<double>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(1e-6))
       .on(exec),
     logger);
-  solver.vmult(completely_distributed_solution, completely_distributed_system_rhs);
+  solver.vmult(completely_distributed_solution, system_rhs);
 
   pcout << "   " << logger->get_num_iterations() << " CG iterations needed to obtain convergence." << std::endl;
 
