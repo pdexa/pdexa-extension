@@ -20,13 +20,13 @@
 #include <deal.II/base/config.h>
 #include <deal.II/lac/la_parallel_vector.h>
 #include <deal.II/lac/linear_operator.h>
+#include <ginkgo/core/distributed/vector.hpp>
 #include <ginkgo/core/matrix/csr.hpp>
 #include <ginkgo/core/matrix/dense.hpp>
 #include <ginkgo/extensions/kokkos.hpp>
 
 namespace dealii {
 namespace GinkgoInterface {
-namespace detail {}
 
 template<typename ValueType, typename MemorySpace>
 std::unique_ptr<gko::matrix::Dense<ValueType>> create_vector(std::shared_ptr<const gko::Executor> exec,
@@ -38,22 +38,16 @@ std::unique_ptr<gko::matrix::Dense<ValueType>> create_vector(std::shared_ptr<con
   return gko::matrix::Dense<ValueType>::create(exec, size, gko::make_array_view(exec, size[0], array.data()), 1);
 }
 
-
 template<typename ValueType, typename MemorySpace>
-std::unique_ptr<const gko::matrix::Dense<std::decay_t<ValueType>>> create_vector(
-  std::shared_ptr<const gko::Executor> exec,
-  ArrayView<const ValueType, MemorySpace> array) {
+std::unique_ptr<const gko::matrix::Dense<std::decay_t<ValueType>>>
+create_vector(std::shared_ptr<const gko::Executor> exec, ArrayView<const ValueType, MemorySpace> array) {
   Assert(gko::ext::kokkos::detail::check_compatibility<typename MemorySpace::kokkos_space>(exec),
          ExcMessage("Incompatible Ginkgo executor"));
 
   gko::dim<2> size = {static_cast<gko::size_type>(array.size()), 1};
   return gko::matrix::Dense<std::decay_t<ValueType>>::create_const(
-    exec,
-    size,
-    gko::make_const_array_view(exec, size[0], array.data()),
-    1);
+    exec, size, gko::make_const_array_view(exec, size[0], array.data()), 1);
 }
-
 
 namespace detail {
 template<typename F>
@@ -74,9 +68,8 @@ std::unique_ptr<Matrix> create_matrix(std::shared_ptr<const gko::Executor> exec,
   gko::dim<2> size = {static_cast<gko::size_type>(deal_csr.m()), static_cast<gko::size_type>(deal_csr.n())};
   gko::matrix_data<value_type, index_type> md{size};
   md.nonzeros.reserve(deal_csr.n_nonzero_elements());
-  for (const auto& e : deal_csr) {
-    md.nonzeros.emplace_back(static_cast<index_type>(e.row()),
-                             static_cast<index_type>(e.column()),
+  for (const auto& e: deal_csr) {
+    md.nonzeros.emplace_back(static_cast<index_type>(e.row()), static_cast<index_type>(e.column()),
                              static_cast<value_type>(e.value()));
   }
   auto device_md = gko::device_matrix_data<value_type, index_type>::create_from_host(exec, md);
@@ -90,36 +83,31 @@ std::unique_ptr<Matrix> create_matrix(std::shared_ptr<const gko::Executor> exec,
 enum class csr_strategy { exec_based, classical, merge_path, sparselib, load_balance, automatical };
 
 template<typename ValueType, typename IndexType, typename DealValueType>
-std::unique_ptr<gko::matrix::Csr<ValueType, IndexType>> create_csr_matrix(std::shared_ptr<const gko::Executor> exec,
-                                                                          const SparseMatrix<DealValueType>& deal_csr,
-                                                                          csr_strategy strategy =
-                                                                            csr_strategy::exec_based) {
+std::unique_ptr<gko::matrix::Csr<ValueType, IndexType>>
+create_csr_matrix(std::shared_ptr<const gko::Executor> exec,
+                  const SparseMatrix<DealValueType>& deal_csr,
+                  csr_strategy strategy = csr_strategy::exec_based) {
   using CsrType = gko::matrix::Csr<ValueType, IndexType>;
   std::shared_ptr<typename CsrType::strategy_type> strategy_ptr;
   if (strategy == csr_strategy::exec_based) {
     strategy = std::dynamic_pointer_cast<const gko::ReferenceExecutor>(exec) ||
-               std::dynamic_pointer_cast<const gko::OmpExecutor>(exec)
+                   std::dynamic_pointer_cast<const gko::OmpExecutor>(exec)
                  ? csr_strategy::classical
                  : csr_strategy::automatical;
   }
   switch (strategy) {
-    case csr_strategy::classical: strategy_ptr = std::make_shared<typename CsrType::classical>();
-      break;
-    case csr_strategy::merge_path: strategy_ptr = std::make_shared<typename CsrType::merge_path>();
-      break;
-    case csr_strategy::sparselib: strategy_ptr = std::make_shared<typename CsrType::sparselib>();
-      break;
+    case csr_strategy::classical: strategy_ptr = std::make_shared<typename CsrType::classical>(); break;
+    case csr_strategy::merge_path: strategy_ptr = std::make_shared<typename CsrType::merge_path>(); break;
+    case csr_strategy::sparselib: strategy_ptr = std::make_shared<typename CsrType::sparselib>(); break;
     case csr_strategy::load_balance:
-      detail::run_with_device_exec(exec,
-                                   [&](auto concrete_exec) {
-                                     strategy_ptr = std::make_shared<typename CsrType::load_balance>(concrete_exec);
-                                   });
+      detail::run_with_device_exec(exec, [&](auto concrete_exec) {
+        strategy_ptr = std::make_shared<typename CsrType::load_balance>(concrete_exec);
+      });
       break;
     case csr_strategy::automatical:
-      detail::run_with_device_exec(exec,
-                                   [&](auto concrete_exec) {
-                                     strategy_ptr = std::make_shared<typename CsrType::automatical>(concrete_exec);
-                                   });
+      detail::run_with_device_exec(exec, [&](auto concrete_exec) {
+        strategy_ptr = std::make_shared<typename CsrType::automatical>(concrete_exec);
+      });
       break;
     default: Assert(false, ExcMessage(" encountered unknown Csr strategy type "));
   }
@@ -127,11 +115,10 @@ std::unique_ptr<gko::matrix::Csr<ValueType, IndexType>> create_csr_matrix(std::s
 }
 
 template<typename IndexType = gko::int32, typename DealValueType>
-std::unique_ptr<gko::matrix::Csr<DealValueType, IndexType>> create_csr_matrix(std::shared_ptr<const gko::Executor> exec,
-                                                                              const SparseMatrix<DealValueType>&
-                                                                              deal_csr,
-                                                                              csr_strategy strategy =
-                                                                                csr_strategy::exec_based) {
+std::unique_ptr<gko::matrix::Csr<DealValueType, IndexType>>
+create_csr_matrix(std::shared_ptr<const gko::Executor> exec,
+                  const SparseMatrix<DealValueType>& deal_csr,
+                  csr_strategy strategy = csr_strategy::exec_based) {
   return create_csr_matrix<DealValueType, IndexType>(std::move(exec), deal_csr, strategy);
 }
 
@@ -145,11 +132,35 @@ ArrayView<ValueType, MemorySpace> create_array_view(LinearAlgebra::distributed::
 }
 
 template<typename ValueType, typename MemorySpace>
-ArrayView<const ValueType, MemorySpace> create_array_view(
-  const LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
+ArrayView<const ValueType, MemorySpace>
+create_array_view(const LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
   Assert(v.locally_owned_size() == v.size(), ExcMessage(" truly distributed vectors are not yet supported "));
   return {v.begin(), v.locally_owned_size()};
 }
+
+namespace mpi {
+
+template<typename ValueType, typename MemorySpace>
+std::unique_ptr<gko::experimental::distributed::Vector<ValueType>>
+create_vector(std::shared_ptr<const gko::Executor> exec,
+              LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
+  Assert(!v.has_ghost_elements(), ExcMessage(" Vectors with ghost elements are not supported "));
+  return gko::experimental::distributed::Vector<ValueType>::create(
+    exec, v.get_mpi_communicator(), gko::dim<2>{v.size(), 1},
+    GinkgoInterface::create_vector(exec, ArrayView<ValueType, MemorySpace>{v.begin(), v.locally_owned_size()}));
+}
+
+template<typename ValueType, typename MemorySpace>
+std::unique_ptr<const gko::experimental::distributed::Vector<ValueType>>
+create_vector(std::shared_ptr<const gko::Executor> exec,
+              const LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
+  Assert(!v.has_ghost_elements(), ExcMessage(" Vectors with ghost elements are not supported "));
+  return gko::experimental::distributed::Vector<ValueType>::create_const(
+    exec, v.get_mpi_communicator(), gko::dim<2>{v.size(), 1},
+    GinkgoInterface::create_vector(exec, ArrayView<const ValueType, MemorySpace>{v.begin(), v.locally_owned_size()}));
+}
+
+} // namespace mpi
 } // namespace detail
 
 template<typename DomainValueType = double,
@@ -158,7 +169,8 @@ template<typename DomainValueType = double,
          typename RangeMemorySpace = MemorySpace::Host>
 LinearOperator<LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>,
                LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>,
-               detail::GinkgoPayload> linear_operator(const std::shared_ptr<gko::LinOp>& gko_op) {
+               detail::GinkgoPayload>
+linear_operator(const std::shared_ptr<gko::LinOp>& gko_op) {
   using Domain = LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>;
   using Range = LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>;
   using domain_value_type = DomainValueType;
@@ -178,25 +190,25 @@ LinearOperator<LinearAlgebra::distributed::Vector<DomainValueType, DomainMemoryS
     v.reinit(static_cast<size_type>(gko_op->get_size()[0]), omit_zeroing_entries);
   };
   return_op.vmult = [exec, gko_op](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, detail::create_array_view(u));
-    auto gko_v = create_vector(exec, detail::create_array_view(v));
+    auto gko_u = detail::mpi::create_vector(exec, u);
+    auto gko_v = detail::mpi::create_vector(exec, v);
     gko_op->apply(gko_u, gko_v);
   };
   return_op.vmult_add = [exec, gko_op, one](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, detail::create_array_view(u));
-    auto gko_v = create_vector(exec, detail::create_array_view(v));
+    auto gko_u = detail::mpi::create_vector(exec, u);
+    auto gko_v = detail::mpi::create_vector(exec, v);
     gko_op->apply(one, gko_u, one, gko_v);
   };
   return_op.Tvmult = [exec, gko_op](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, detail::create_array_view(u));
-    auto gko_v = create_vector(exec, detail::create_array_view(v));
+    auto gko_u = detail::mpi::create_vector(exec, u);
+    auto gko_v = detail::mpi::create_vector(exec, v);
 
     // @todo: this creates a temporary transposed matrix
     gko::as<gko::Transposable>(gko_op)->transpose()->apply(gko_u, gko_v);
   };
   return_op.Tvmult_add = [exec, gko_op, one](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, detail::create_array_view(u));
-    auto gko_v = create_vector(exec, detail::create_array_view(v));
+    auto gko_u = detail::mpi::create_vector(exec, u);
+    auto gko_v = detail::mpi::create_vector(exec, v);
 
     // @todo: this creates a temporary transposed matrix
     gko::as<gko::Transposable>(gko_op)->transpose()->apply(one, gko_u, one, gko_v);
@@ -210,9 +222,10 @@ template<typename DomainValueType = double,
          typename RangeMemorySpace = MemorySpace::Host>
 LinearOperator<LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>,
                LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>,
-               detail::GinkgoPayload> inverse_operator(const std::shared_ptr<gko::LinOp>& gko_op,
-                                                       const std::shared_ptr<gko::LinOpFactory>& solver,
-                                                       const std::shared_ptr<gko::log::Logger>& logger = nullptr) {
+               detail::GinkgoPayload>
+inverse_operator(const std::shared_ptr<gko::LinOp>& gko_op,
+                 const std::shared_ptr<gko::LinOpFactory>& solver,
+                 const std::shared_ptr<gko::log::Logger>& logger = nullptr) {
   auto solver_op = solver->generate(gko_op);
   if (logger) { solver_op->add_logger(logger); }
   return linear_operator<RangeValueType, DomainValueType, RangeMemorySpace, DomainMemorySpace>(std::move(solver_op));
