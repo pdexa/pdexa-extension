@@ -103,6 +103,47 @@ create_dist_matrix(ConditionalOStream& ostream,
   return gko_mtx;
 }
 
+// Implement right-hand side and solution of the Laplace equation.
+template<int dim>
+class AnalyticalSolution : public dealii::Function<dim>
+{
+public:
+  AnalyticalSolution() : dealii::Function<dim>(1, 0.0)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & p, unsigned int const component = 0) const final
+  {
+    if(component == 0)
+    {
+      return std::sin(p[0]);
+    }
+    else
+    {
+      AssertThrow(false, dealii::ExcMessage("This equation has only 1 component."));
+      return 0.0;
+    }
+  }
+};
+
+template<int dim>
+class RightHandSide : public dealii::Function<dim>
+{
+public:
+  RightHandSide() : dealii::Function<dim>(1, 0.0)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & p, unsigned int const component = 0) const final
+  {
+    AssertThrow(component == 0, dealii::ExcMessage("This equation has only 1 component."));
+
+    return std::sin(p[0]);
+  }
+};
+
 template<int dim>
 class LaplaceProblem {
 public:
@@ -164,7 +205,7 @@ void LaplaceProblem<dim>::setup_system() {
   constraints.clear();
   constraints.reinit(locally_owned_dofs, locally_relevant_dofs);
   DoFTools::make_hanging_node_constraints(dof_handler, constraints);
-  VectorTools::interpolate_boundary_values(dof_handler, 0, Functions::ZeroFunction<dim>(), constraints);
+  VectorTools::interpolate_boundary_values(dof_handler, 0, AnalyticalSolution<dim>(), constraints);
   constraints.close();
 
   DynamicSparsityPattern dsp(locally_relevant_dofs);
@@ -193,6 +234,8 @@ void LaplaceProblem<dim>::assemble_system() {
 
   std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
+  RightHandSide<dim> right_hand_side_evaluator;
+
   for (const auto& cell: dof_handler.active_cell_iterators())
     if (cell->is_locally_owned()) {
       fe_values.reinit(cell);
@@ -201,10 +244,8 @@ void LaplaceProblem<dim>::assemble_system() {
       cell_rhs = 0.;
 
       for (unsigned int q_point = 0; q_point < n_q_points; ++q_point) {
-        const double rhs_value = (fe_values.quadrature_point(q_point)[1] >
-                                      0.5 + 0.25 * std::sin(4.0 * numbers::PI * fe_values.quadrature_point(q_point)[0])
-                                    ? 1.
-                                    : -1.);
+
+        const double rhs_value = right_hand_side_evaluator.value(fe_values.quadrature_point(q_point));
 
         for (unsigned int i = 0; i < dofs_per_cell; ++i) {
           for (unsigned int j = 0; j < dofs_per_cell; ++j)
@@ -278,6 +319,22 @@ void LaplaceProblem<dim>::output_results(const unsigned int cycle) {
   data_out.build_patches();
 
   data_out.write_vtu_with_pvtu_record("./", "solution", cycle, mpi_communicator, 2, 8);
+
+  // Compute norm.
+  const QGauss<dim> quadrature_formula(fe.degree + 2);
+  AnalyticalSolution<dim> analytical_solution;
+  dealii::Vector<double> error_norm_per_cell(dof_handler.get_triangulation().n_active_cells());
+  VectorTools::integrate_difference(dof_handler,
+                                    locally_relevant_solution,
+                                    analytical_solution,
+                                    error_norm_per_cell,
+                                    quadrature_formula,
+                                    VectorTools::NormType::L2_norm);
+
+  double error_norm =
+    std::sqrt(dealii::Utilities::MPI::sum(error_norm_per_cell.norm_sqr(), mpi_communicator));
+
+  pcout << "L2-Norm of the error is: " << error_norm << "\n";
 }
 
 template<int dim>
