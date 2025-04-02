@@ -20,8 +20,7 @@
 #include <deal.II/base/config.h>
 #include <deal.II/lac/la_parallel_vector.h>
 #include <deal.II/lac/linear_operator.h>
-#include <deal.II/lac/read_vector.h>
-#include <deal.II/lac/sparse_matrix.h>
+#include <ginkgo/core/distributed/vector.hpp>
 #include <ginkgo/core/matrix/csr.hpp>
 #include <ginkgo/core/matrix/dense.hpp>
 #include <ginkgo/extensions/kokkos.hpp>
@@ -46,13 +45,6 @@ std::unique_ptr<gko::matrix::Dense<ValueType>> create_vector(ArrayView<ValueType
   return create_vector(std::move(exec), array);
 }
 
-template<typename ValueType, typename MemorySpace, typename = std::enable_if_t<!std::is_const_v<ValueType>>>
-std::unique_ptr<gko::matrix::Dense<ValueType>> create_vector(ArrayView<ValueType, MemorySpace>&& array) {
-  std::shared_ptr<const gko::Executor> exec =
-    gko::ext::kokkos::create_executor(typename MemorySpace::kokkos_space::execution_space{});
-  return create_vector(std::move(exec), array);
-}
-
 template<typename ValueType, typename MemorySpace>
 std::unique_ptr<const gko::matrix::Dense<std::decay_t<ValueType>>>
 create_vector(std::shared_ptr<const gko::Executor> exec, const ArrayView<ValueType, MemorySpace>& array) {
@@ -62,14 +54,6 @@ create_vector(std::shared_ptr<const gko::Executor> exec, const ArrayView<ValueTy
   gko::dim<2> size = {static_cast<gko::size_type>(array.size()), 1};
   return gko::matrix::Dense<std::decay_t<ValueType>>::create_const(
     exec, size, gko::make_const_array_view(array_exec, size[0], array.data()), 1);
-}
-
-template<typename ValueType, typename MemorySpace>
-std::unique_ptr<const gko::matrix::Dense<std::decay_t<ValueType>>>
-create_vector(const ArrayView<ValueType, MemorySpace>& array) {
-  std::shared_ptr<const gko::Executor> exec =
-    gko::ext::kokkos::create_executor(typename MemorySpace::kokkos_space::execution_space{});
-  return create_vector(std::move(exec), array);
 }
 
 namespace detail {
@@ -161,6 +145,29 @@ create_array_view(const LinearAlgebra::distributed::Vector<ValueType, MemorySpac
   return {v.begin(), v.locally_owned_size()};
 }
 
+namespace mpi {
+
+template<typename ValueType, typename MemorySpace>
+std::unique_ptr<gko::experimental::distributed::Vector<ValueType>>
+create_vector(std::shared_ptr<const gko::Executor> exec,
+              LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
+  Assert(!v.has_ghost_elements(), ExcMessage(" Vectors with ghost elements are not supported "));
+  return gko::experimental::distributed::Vector<ValueType>::create(
+    exec, v.get_mpi_communicator(), gko::dim<2>{v.size(), 1},
+    GinkgoInterface::create_vector(exec, ArrayView<ValueType, MemorySpace>{v.begin(), v.locally_owned_size()}));
+}
+
+template<typename ValueType, typename MemorySpace>
+std::unique_ptr<const gko::experimental::distributed::Vector<ValueType>>
+create_vector(std::shared_ptr<const gko::Executor> exec,
+              const LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
+  Assert(!v.has_ghost_elements(), ExcMessage(" Vectors with ghost elements are not supported "));
+  return gko::experimental::distributed::Vector<ValueType>::create_const(
+    exec, v.get_mpi_communicator(), gko::dim<2>{v.size(), 1},
+    GinkgoInterface::create_vector(exec, ArrayView<const ValueType, MemorySpace>{v.begin(), v.locally_owned_size()}));
+}
+
+} // namespace mpi
 } // namespace detail
 
 template<typename DomainValueType = double,
@@ -189,26 +196,26 @@ linear_operator(const std::shared_ptr<gko::LinOp>& gko_op) {
   return_op.reinit_range_vector = [gko_op](Range& v, bool omit_zeroing_entries) {
     v.reinit(static_cast<size_type>(gko_op->get_size()[0]), omit_zeroing_entries);
   };
-  return_op.vmult = [gko_op](Range& v, const Domain& u) {
-    auto gko_u = create_vector(detail::create_array_view(u));
-    auto gko_v = create_vector(detail::create_array_view(v));
+  return_op.vmult = [exec, gko_op](Range& v, const Domain& u) {
+    auto gko_u = detail::mpi::create_vector(exec, u);
+    auto gko_v = detail::mpi::create_vector(exec, v);
     gko_op->apply(gko_u, gko_v);
   };
-  return_op.vmult_add = [gko_op, one](Range& v, const Domain& u) {
-    auto gko_u = create_vector(detail::create_array_view(u));
-    auto gko_v = create_vector(detail::create_array_view(v));
+  return_op.vmult_add = [exec, gko_op, one](Range& v, const Domain& u) {
+    auto gko_u = detail::mpi::create_vector(exec, u);
+    auto gko_v = detail::mpi::create_vector(exec, v);
     gko_op->apply(one, gko_u, one, gko_v);
   };
-  return_op.Tvmult = [gko_op](Range& v, const Domain& u) {
-    auto gko_u = create_vector(detail::create_array_view(u));
-    auto gko_v = create_vector(detail::create_array_view(v));
+  return_op.Tvmult = [exec, gko_op](Range& v, const Domain& u) {
+    auto gko_u = detail::mpi::create_vector(exec, u);
+    auto gko_v = detail::mpi::create_vector(exec, v);
 
     // @todo: this creates a temporary transposed matrix
     gko::as<gko::Transposable>(gko_op)->transpose()->apply(gko_u, gko_v);
   };
-  return_op.Tvmult_add = [gko_op, one](Range& v, const Domain& u) {
-    auto gko_u = create_vector(detail::create_array_view(u));
-    auto gko_v = create_vector(detail::create_array_view(v));
+  return_op.Tvmult_add = [exec, gko_op, one](Range& v, const Domain& u) {
+    auto gko_u = detail::mpi::create_vector(exec, u);
+    auto gko_v = detail::mpi::create_vector(exec, v);
 
     // @todo: this creates a temporary transposed matrix
     gko::as<gko::Transposable>(gko_op)->transpose()->apply(one, gko_u, one, gko_v);
