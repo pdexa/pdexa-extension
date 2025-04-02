@@ -224,7 +224,27 @@ template<int dim>
 void LaplaceProblem<dim>::solve() {
   TimerOutput::Scope t(computing_timer, "solve");
 
+  Vector completely_distributed_system_rhs(locally_owned_dofs, mpi_communicator);
   Vector completely_distributed_solution(locally_owned_dofs, mpi_communicator);
+
+  constraints.distribute(system_rhs);
+  completely_distributed_system_rhs = system_rhs;
+
+  auto logger = gko::share(gko::log::Convergence<double>::create());
+
+  auto exec = gko::ReferenceExecutor::create();
+  auto gko_mtx = create_dist_matrix<double>(pcout, exec, system_matrix);
+  auto solver = GinkgoInterface::inverse_operator(
+    std::move(gko_mtx),
+    gko::solver::Cg<double>::build()
+      .with_criteria(
+        gko::stop::Iteration::build().with_max_iters(1000lu),
+        gko::stop::ResidualNorm<double>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(1e-6))
+      .on(exec),
+    logger);
+  solver.vmult(completely_distributed_solution, completely_distributed_system_rhs);
+
+  pcout << "   " << logger->get_num_iterations() << " CG iterations needed to obtain convergence." << std::endl;
 
   constraints.distribute(completely_distributed_solution);
 
