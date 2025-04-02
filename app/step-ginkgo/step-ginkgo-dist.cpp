@@ -105,22 +105,13 @@ create_dist_matrix(ConditionalOStream& ostream,
 
 // Implement right-hand side and solution of the Laplace equation.
 template<int dim>
-class AnalyticalSolution : public dealii::Function<dim>
-{
+class AnalyticalSolution : public dealii::Function<dim> {
 public:
-  AnalyticalSolution() : dealii::Function<dim>(1, 0.0)
-  {
-  }
+  AnalyticalSolution() : dealii::Function<dim>(1, 0.0) {}
 
-  double
-  value(dealii::Point<dim> const & p, unsigned int const component = 0) const final
-  {
-    if(component == 0)
-    {
-      return std::sin(p[0]);
-    }
-    else
-    {
+  double value(dealii::Point<dim> const& p, unsigned int const component = 0) const final {
+    if (component == 0) { return std::sin(p[0]); }
+    else {
       AssertThrow(false, dealii::ExcMessage("This equation has only 1 component."));
       return 0.0;
     }
@@ -128,16 +119,11 @@ public:
 };
 
 template<int dim>
-class RightHandSide : public dealii::Function<dim>
-{
+class RightHandSide : public dealii::Function<dim> {
 public:
-  RightHandSide() : dealii::Function<dim>(1, 0.0)
-  {
-  }
+  RightHandSide() : dealii::Function<dim>(1, 0.0) {}
 
-  double
-  value(dealii::Point<dim> const & p, unsigned int const component = 0) const final
-  {
+  double value(dealii::Point<dim> const& p, unsigned int const component = 0) const final {
     AssertThrow(component == 0, dealii::ExcMessage("This equation has only 1 component."));
 
     return std::sin(p[0]);
@@ -147,7 +133,7 @@ public:
 template<int dim>
 class LaplaceProblem {
 public:
-  LaplaceProblem();
+  LaplaceProblem(std::shared_ptr<const gko::Executor> exec);
 
   void run();
 
@@ -176,16 +162,20 @@ private:
 
   ConditionalOStream pcout;
   TimerOutput computing_timer;
+
+  std::shared_ptr<const gko::Executor> solver_exec;
+  std::shared_ptr<const gko::Executor> default_exec;
 };
 
 template<int dim>
-LaplaceProblem<dim>::LaplaceProblem() :
+LaplaceProblem<dim>::LaplaceProblem(std::shared_ptr<const gko::Executor> exec) :
     mpi_communicator(MPI_COMM_WORLD),
     triangulation(mpi_communicator,
                   typename Triangulation<dim>::MeshSmoothing(Triangulation<dim>::smoothing_on_refinement |
                                                              Triangulation<dim>::smoothing_on_coarsening)),
     fe(2), dof_handler(triangulation), pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator) == 0)),
-    computing_timer(mpi_communicator, pcout, TimerOutput::never, TimerOutput::wall_times) {}
+    computing_timer(mpi_communicator, pcout, TimerOutput::never, TimerOutput::wall_times), solver_exec(exec),
+    default_exec(gko::ext::kokkos::create_executor(Vector::memory_space::kokkos_space::execution_space{})) {}
 
 template<int dim>
 void LaplaceProblem<dim>::setup_system() {
@@ -272,15 +262,14 @@ void LaplaceProblem<dim>::solve() {
 
   auto logger = gko::share(gko::log::Convergence<double>::create());
 
-  auto exec = gko::ReferenceExecutor::create();
-  auto gko_mtx = create_dist_matrix<double>(pcout, exec, system_matrix);
+  auto gko_mtx = create_dist_matrix<double>(pcout, solver_exec, system_matrix);
   auto solver = GinkgoInterface::inverse_operator(
-    std::move(gko_mtx),
+    default_exec, default_exec, std::move(gko_mtx),
     gko::solver::Cg<double>::build()
       .with_criteria(
         gko::stop::Iteration::build().with_max_iters(1000lu),
         gko::stop::ResidualNorm<double>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(1e-6))
-      .on(exec),
+      .on(solver_exec),
     logger);
   solver.vmult(completely_distributed_solution, system_rhs);
 
@@ -324,15 +313,10 @@ void LaplaceProblem<dim>::output_results(const unsigned int cycle) {
   const QGauss<dim> quadrature_formula(fe.degree + 2);
   AnalyticalSolution<dim> analytical_solution;
   dealii::Vector<double> error_norm_per_cell(dof_handler.get_triangulation().n_active_cells());
-  VectorTools::integrate_difference(dof_handler,
-                                    locally_relevant_solution,
-                                    analytical_solution,
-                                    error_norm_per_cell,
-                                    quadrature_formula,
-                                    VectorTools::NormType::L2_norm);
+  VectorTools::integrate_difference(dof_handler, locally_relevant_solution, analytical_solution, error_norm_per_cell,
+                                    quadrature_formula, VectorTools::NormType::L2_norm);
 
-  double error_norm =
-    std::sqrt(dealii::Utilities::MPI::sum(error_norm_per_cell.norm_sqr(), mpi_communicator));
+  double error_norm = std::sqrt(dealii::Utilities::MPI::sum(error_norm_per_cell.norm_sqr(), mpi_communicator));
 
   pcout << "L2-Norm of the error is: " << error_norm << "\n";
 }
@@ -378,7 +362,18 @@ int main(int argc, char* argv[]) {
 
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
 
-    LaplaceProblem<2> laplace_problem_2d;
+    const auto executor_string = argc >= 2 ? argv[1] : "reference";
+
+    const std::map<std::string, std::function<std::shared_ptr<gko::Executor>()>> executor_factory{
+      {"reference", []() { return gko::ReferenceExecutor::create(); }},
+      {"omp", []() { return gko::OmpExecutor::create(); }},
+      {"cuda", []() { return gko::CudaExecutor::create(0, gko::ReferenceExecutor::create()); }},
+      {"hip", []() { return gko::HipExecutor::create(0, gko::ReferenceExecutor::create()); }},
+      {"dpcpp", []() { return gko::DpcppExecutor::create(0, gko::ReferenceExecutor::create()); }}};
+
+    auto solver_exec = executor_factory.at(executor_string)();
+
+    LaplaceProblem<2> laplace_problem_2d(solver_exec);
     laplace_problem_2d.run();
   }
   catch (std::exception& exc) {
