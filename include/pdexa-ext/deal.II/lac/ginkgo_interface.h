@@ -29,7 +29,7 @@ namespace dealii {
 namespace GinkgoInterface {
 
 template<typename ValueType, typename MemorySpace>
-std::unique_ptr<gko::matrix::Dense<ValueType>> create_vector(std::shared_ptr<const gko::Executor> exec,
+std::unique_ptr<gko::matrix::Dense<ValueType>> create_vector(const std::shared_ptr<const gko::Executor>& exec,
                                                              ArrayView<ValueType, MemorySpace> array) {
   Assert(gko::ext::kokkos::detail::check_compatibility<typename MemorySpace::kokkos_space>(exec),
          ExcMessage("Incompatible Ginkgo executor"));
@@ -40,7 +40,7 @@ std::unique_ptr<gko::matrix::Dense<ValueType>> create_vector(std::shared_ptr<con
 
 template<typename ValueType, typename MemorySpace>
 std::unique_ptr<const gko::matrix::Dense<std::decay_t<ValueType>>>
-create_vector(std::shared_ptr<const gko::Executor> exec, ArrayView<const ValueType, MemorySpace> array) {
+create_vector(const std::shared_ptr<const gko::Executor>& exec, ArrayView<const ValueType, MemorySpace> array) {
   Assert(gko::ext::kokkos::detail::check_compatibility<typename MemorySpace::kokkos_space>(exec),
          ExcMessage("Incompatible Ginkgo executor"));
 
@@ -51,7 +51,7 @@ create_vector(std::shared_ptr<const gko::Executor> exec, ArrayView<const ValueTy
 
 template<typename ValueType, typename MemorySpace>
 std::unique_ptr<gko::matrix::Dense<ValueType>>
-create_vector(std::shared_ptr<const gko::Executor> exec,
+create_vector(const std::shared_ptr<const gko::Executor>& exec,
               LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
   Assert(v.locally_owned_size() == v.size(),
          ExcMessage(" distributed vectors are only supported in the GinkgoInterface::MPI namespace "));
@@ -60,7 +60,7 @@ create_vector(std::shared_ptr<const gko::Executor> exec,
 
 template<typename ValueType, typename MemorySpace>
 std::unique_ptr<const gko::matrix::Dense<ValueType>>
-create_vector(std::shared_ptr<const gko::Executor> exec,
+create_vector(const std::shared_ptr<const gko::Executor>& exec,
               const LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
   Assert(v.locally_owned_size() == v.size(),
          ExcMessage(" distributed vectors are only supported in the GinkgoInterface::MPI namespace "));
@@ -70,7 +70,7 @@ create_vector(std::shared_ptr<const gko::Executor> exec,
 
 namespace detail {
 template<typename F>
-void run_with_device_exec(std::shared_ptr<const gko::Executor> exec, F&& f) {
+void run_with_device_exec(const std::shared_ptr<const gko::Executor>& exec, F&& f) {
   if (auto p = std::dynamic_pointer_cast<const gko::CudaExecutor>(exec)) { f(std::move(p)); }
   else if (auto p = std::dynamic_pointer_cast<const gko::HipExecutor>(exec)) { f(std::move(p)); }
   else if (auto p = std::dynamic_pointer_cast<const gko::DpcppExecutor>(exec)) { f(std::move(p)); }
@@ -78,7 +78,7 @@ void run_with_device_exec(std::shared_ptr<const gko::Executor> exec, F&& f) {
 }
 
 template<typename Matrix, typename DealValueType, typename... ExtraArgs>
-std::unique_ptr<Matrix> create_matrix(std::shared_ptr<const gko::Executor> exec,
+std::unique_ptr<Matrix> create_matrix(const std::shared_ptr<const gko::Executor>& exec,
                                       const SparseMatrix<DealValueType>& deal_csr,
                                       ExtraArgs&&... args) {
   using value_type = typename Matrix::value_type;
@@ -103,7 +103,7 @@ enum class csr_strategy { exec_based, classical, merge_path, sparselib, load_bal
 
 template<typename ValueType, typename IndexType, typename DealValueType>
 std::unique_ptr<gko::matrix::Csr<ValueType, IndexType>>
-create_csr_matrix(std::shared_ptr<const gko::Executor> exec,
+create_csr_matrix(const std::shared_ptr<const gko::Executor>& exec,
                   const SparseMatrix<DealValueType>& deal_csr,
                   csr_strategy strategy = csr_strategy::exec_based) {
   using CsrType = gko::matrix::Csr<ValueType, IndexType>;
@@ -135,7 +135,7 @@ create_csr_matrix(std::shared_ptr<const gko::Executor> exec,
 
 template<typename IndexType = gko::int32, typename DealValueType>
 std::unique_ptr<gko::matrix::Csr<DealValueType, IndexType>>
-create_csr_matrix(std::shared_ptr<const gko::Executor> exec,
+create_csr_matrix(const std::shared_ptr<const gko::Executor>& exec,
                   const SparseMatrix<DealValueType>& deal_csr,
                   csr_strategy strategy = csr_strategy::exec_based) {
   return create_csr_matrix<DealValueType, IndexType>(std::move(exec), deal_csr, strategy);
@@ -152,7 +152,9 @@ template<typename DomainValueType = double,
 LinearOperator<LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>,
                LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>,
                detail::GinkgoPayload>
-linear_operator(const std::shared_ptr<gko::LinOp>& gko_op) {
+linear_operator(const std::shared_ptr<const gko::Executor>& domain_exec,
+                const std::shared_ptr<const gko::Executor>& range_exec,
+                const std::shared_ptr<gko::LinOp>& gko_op) {
   using Domain = LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>;
   using Range = LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>;
   using domain_value_type = DomainValueType;
@@ -171,26 +173,26 @@ linear_operator(const std::shared_ptr<gko::LinOp>& gko_op) {
   return_op.reinit_range_vector = [gko_op](Range& v, bool omit_zeroing_entries) {
     v.reinit(static_cast<size_type>(gko_op->get_size()[0]), omit_zeroing_entries);
   };
-  return_op.vmult = [exec, gko_op](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, u);
-    auto gko_v = create_vector(exec, v);
+  return_op.vmult = [gko_op, domain_exec, range_exec](Range& v, const Domain& u) {
+    auto gko_u = create_vector(domain_exec, u);
+    auto gko_v = create_vector(range_exec, v);
     gko_op->apply(gko_u, gko_v);
   };
-  return_op.vmult_add = [exec, gko_op, one](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, u);
-    auto gko_v = create_vector(exec, v);
+  return_op.vmult_add = [gko_op, one, domain_exec, range_exec](Range& v, const Domain& u) {
+    auto gko_u = create_vector(domain_exec, u);
+    auto gko_v = create_vector(range_exec, v);
     gko_op->apply(one, gko_u, one, gko_v);
   };
-  return_op.Tvmult = [exec, gko_op](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, u);
-    auto gko_v = create_vector(exec, v);
+  return_op.Tvmult = [gko_op, domain_exec, range_exec](Range& v, const Domain& u) {
+    auto gko_u = create_vector(domain_exec, u);
+    auto gko_v = create_vector(range_exec, v);
 
     // @todo: this creates a temporary transposed matrix
     gko::as<gko::Transposable>(gko_op)->transpose()->apply(gko_u, gko_v);
   };
-  return_op.Tvmult_add = [exec, gko_op, one](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, u);
-    auto gko_v = create_vector(exec, v);
+  return_op.Tvmult_add = [gko_op, one, domain_exec, range_exec](Range& v, const Domain& u) {
+    auto gko_u = create_vector(domain_exec, u);
+    auto gko_v = create_vector(range_exec, v);
 
     // @todo: this creates a temporary transposed matrix
     gko::as<gko::Transposable>(gko_op)->transpose()->apply(one, gko_u, one, gko_v);
@@ -198,11 +200,23 @@ linear_operator(const std::shared_ptr<gko::LinOp>& gko_op) {
   return return_op;
 }
 
+template<typename DomainValueType = double,
+         typename RangeValueType = double,
+         typename DomainMemorySpace = MemorySpace::Host,
+         typename RangeMemorySpace = MemorySpace::Host>
+LinearOperator<LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>,
+               LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>,
+               detail::GinkgoPayload>
+linear_operator(const std::shared_ptr<gko::LinOp>& gko_op) {
+  return linear_operator<DomainValueType, RangeValueType, DomainMemorySpace, RangeMemorySpace>(
+    gko_op->get_executor(), gko_op->get_executor(), gko_op);
+}
+
 namespace MPI {
 
 template<typename ValueType, typename MemorySpace>
 std::unique_ptr<gko::experimental::distributed::Vector<ValueType>>
-create_vector(std::shared_ptr<const gko::Executor> exec,
+create_vector(const std::shared_ptr<const gko::Executor>& exec,
               LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
   Assert(!v.has_ghost_elements(), ExcMessage(" Vectors with ghost elements are not supported "));
   return gko::experimental::distributed::Vector<ValueType>::create(
@@ -212,7 +226,7 @@ create_vector(std::shared_ptr<const gko::Executor> exec,
 
 template<typename ValueType, typename MemorySpace>
 std::unique_ptr<const gko::experimental::distributed::Vector<ValueType>>
-create_vector(std::shared_ptr<const gko::Executor> exec,
+create_vector(const std::shared_ptr<const gko::Executor>& exec,
               const LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
   Assert(!v.has_ghost_elements(), ExcMessage(" Vectors with ghost elements are not supported "));
   return gko::experimental::distributed::Vector<ValueType>::create_const(
@@ -227,7 +241,9 @@ template<typename DomainValueType = double,
 LinearOperator<LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>,
                LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>,
                detail::GinkgoPayload>
-linear_operator(const std::shared_ptr<gko::LinOp>& gko_op) {
+linear_operator(const std::shared_ptr<const gko::Executor>& domain_exec,
+                const std::shared_ptr<const gko::Executor>& range_exec,
+                const std::shared_ptr<gko::LinOp>& gko_op) {
   using Domain = LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>;
   using Range = LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>;
   using domain_value_type = DomainValueType;
@@ -246,31 +262,43 @@ linear_operator(const std::shared_ptr<gko::LinOp>& gko_op) {
   return_op.reinit_range_vector = [gko_op](Range& v, bool omit_zeroing_entries) {
     v.reinit(static_cast<size_type>(gko_op->get_size()[0]), omit_zeroing_entries);
   };
-  return_op.vmult = [exec, gko_op](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, u);
-    auto gko_v = create_vector(exec, v);
+  return_op.vmult = [gko_op, domain_exec, range_exec](Range& v, const Domain& u) {
+    auto gko_u = create_vector(domain_exec, u);
+    auto gko_v = create_vector(range_exec, v);
     gko_op->apply(gko_u, gko_v);
   };
-  return_op.vmult_add = [exec, gko_op, one](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, u);
-    auto gko_v = create_vector(exec, v);
+  return_op.vmult_add = [gko_op, one, domain_exec, range_exec](Range& v, const Domain& u) {
+    auto gko_u = create_vector(domain_exec, u);
+    auto gko_v = create_vector(range_exec, v);
     gko_op->apply(one, gko_u, one, gko_v);
   };
-  return_op.Tvmult = [exec, gko_op](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, u);
-    auto gko_v = create_vector(exec, v);
+  return_op.Tvmult = [gko_op, domain_exec, range_exec](Range& v, const Domain& u) {
+    auto gko_u = create_vector(domain_exec, u);
+    auto gko_v = create_vector(range_exec, v);
 
     // @todo: this creates a temporary transposed matrix
     gko::as<gko::Transposable>(gko_op)->transpose()->apply(gko_u, gko_v);
   };
-  return_op.Tvmult_add = [exec, gko_op, one](Range& v, const Domain& u) {
-    auto gko_u = create_vector(exec, u);
-    auto gko_v = create_vector(exec, v);
+  return_op.Tvmult_add = [gko_op, one, domain_exec, range_exec](Range& v, const Domain& u) {
+    auto gko_u = create_vector(domain_exec, u);
+    auto gko_v = create_vector(range_exec, v);
 
     // @todo: this creates a temporary transposed matrix
     gko::as<gko::Transposable>(gko_op)->transpose()->apply(one, gko_u, one, gko_v);
   };
   return return_op;
+}
+
+template<typename DomainValueType = double,
+         typename RangeValueType = double,
+         typename DomainMemorySpace = MemorySpace::Host,
+         typename RangeMemorySpace = MemorySpace::Host>
+LinearOperator<LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>,
+               LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>,
+               detail::GinkgoPayload>
+linear_operator(const std::shared_ptr<gko::LinOp>& gko_op) {
+  return linear_operator<DomainValueType, RangeValueType, DomainMemorySpace, RangeMemorySpace>(
+    gko_op->get_executor(), gko_op->get_executor(), gko_op);
 }
 
 } // namespace MPI
@@ -282,7 +310,9 @@ template<typename DomainValueType = double,
 LinearOperator<LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>,
                LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>,
                detail::GinkgoPayload>
-inverse_operator(const std::shared_ptr<gko::LinOp>& gko_op,
+inverse_operator(const std::shared_ptr<const gko::Executor>& domain_exec,
+                 const std::shared_ptr<const gko::Executor>& range_exec,
+                 const std::shared_ptr<gko::LinOp>& gko_op,
                  const std::shared_ptr<gko::LinOpFactory>& solver,
                  const std::shared_ptr<gko::log::Logger>& logger = nullptr) {
   auto solver_op = solver->generate(gko_op);
@@ -294,6 +324,18 @@ inverse_operator(const std::shared_ptr<gko::LinOp>& gko_op,
   else {
     return linear_operator<RangeValueType, DomainValueType, RangeMemorySpace, DomainMemorySpace>(std::move(solver_op));
   }
+}
+
+template<typename DomainValueType = double,
+         typename RangeValueType = double,
+         typename DomainMemorySpace = MemorySpace::Host,
+         typename RangeMemorySpace = MemorySpace::Host>
+LinearOperator<LinearAlgebra::distributed::Vector<DomainValueType, DomainMemorySpace>,
+               LinearAlgebra::distributed::Vector<RangeValueType, RangeMemorySpace>,
+               detail::GinkgoPayload>
+inverse_operator(const std::shared_ptr<gko::LinOp>& gko_op, const std::shared_ptr<gko::LinOpFactory>& solver) {
+  return inverse_operator<DomainValueType, RangeValueType, DomainMemorySpace, RangeMemorySpace>(
+    gko_op->get_executor(), gko_op->get_executor(), gko_op, solver);
 }
 
 } // namespace GinkgoInterface
