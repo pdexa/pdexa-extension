@@ -82,8 +82,9 @@ create_dist_matrix(ConditionalOStream& ostream,
 
   const auto& interval = *local_idxs.begin_intervals();
 
-  auto row_partition = gko::share(gko::experimental::distributed::build_partition_from_local_range<IndexType, gko::int64>(
-    exec, comm, {*interval.begin(), interval.last() + 1}));
+  auto row_partition =
+    gko::share(gko::experimental::distributed::build_partition_from_local_range<IndexType, gko::int64>(
+      exec, comm, {*interval.begin(), interval.last() + 1}));
 
   // todo: need to create column partition
 
@@ -93,8 +94,7 @@ create_dist_matrix(ConditionalOStream& ostream,
     md.nonzeros.emplace_back(static_cast<gko::int64>(el_it->row()), static_cast<gko::int64>(el_it->column()),
                              static_cast<ValueType>(el_it->value()));
   }
-  auto gko_mtx =
-    gko::experimental::distributed::Matrix<ValueType, IndexType>::create(exec, comm);
+  auto gko_mtx = gko::experimental::distributed::Matrix<ValueType, IndexType>::create(exec, comm);
   gko_mtx->read_distributed(std::move(md), row_partition);
   return gko_mtx;
 }
