@@ -23,6 +23,8 @@
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <deal.II/fe/fe_raviart_thomas.h>
+
 
 namespace NavierStokes
 {
@@ -649,7 +651,7 @@ namespace NavierStokes
               0.5 * (normal * (eval_u_minus.get_value(q) + eval_u_plus.get_value(q)));
             const auto p_minus       = eval_p_minus.get_value(q);
             const auto p_plus        = eval_p_plus.get_value(q);
-            const auto p_jump_normal = 0.5 * normal * (p_minus - p_plus);
+            const auto p_jump_normal = 0.5 * normal * (p_minus - p_plus); // 
             eval_u_minus.submit_value(p_jump_normal, q);
             eval_u_plus.submit_value(-p_jump_normal, q);
           }
@@ -791,6 +793,20 @@ namespace NavierStokes
     }
 
     void
+    rhs(VectorType &dst, const VectorType &u_rhs_time_derivative_pressure)
+    {
+      matrix_free->loop(&PressureOperator::local_rhs,
+                        &PressureOperator::local_apply_boundary_face,
+                        &PressureOperator::local_apply_boundary_face,
+                        this,
+                        dst,
+                        u_rhs_time_derivative_pressure,
+                        true,
+                        MatrixFree<dim, Number>::DataAccessOnFaces::gradients,
+                        MatrixFree<dim, Number>::DataAccessOnFaces::values);
+    }
+
+    void
     compute_rhs(VectorType &dst, const VectorType &u_rhs_time_derivative_pressure)
     {
       matrix_free->loop(&PressureOperator::local_rhs_domain,
@@ -816,18 +832,7 @@ namespace NavierStokes
                         true,
                         MatrixFree<dim, Number>::DataAccessOnFaces::values,
                         MatrixFree<dim, Number>::DataAccessOnFaces::values);
-      {
-        FEEvaluation<dim, -1, 0, 1, Number> eval_p(*matrix_free, 1, 2);
-        MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, 1, Number> mass_inv(
-          eval_p);
-        for (unsigned int cell = 0; cell < matrix_free->n_cell_batches(); ++cell)
-          {
-            eval_p.reinit(cell);
-            eval_p.read_dof_values(pressure);
-            mass_inv.apply(eval_p.begin_dof_values(), eval_p.begin_dof_values());
-            eval_p.set_dof_values(pressure);
-          }
-      }
+      {}
     }
 
     double time_step;
@@ -841,6 +846,30 @@ namespace NavierStokes
     const MatrixFree<dim, Number>         *matrix_free;
     AlignedVector<VectorizedArray<Number>> penalty_factors;
     Number                                 time;
+
+    void
+    local_rhs(const MatrixFree<dim, Number>               &data,
+                       VectorType                                  &dst,
+                       const VectorType                            &src,
+                       const std::pair<unsigned int, unsigned int> &cell_range) const
+    {
+      FEEvaluation<dim, -1, 0, 1, Number> eval(data, 1, 2);
+
+      for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+        {
+          eval.reinit(cell);
+
+          // compute u^h(x) from src
+         
+
+          // loop over quadrature points and compute the local volume flux
+          for (const unsigned int q : eval.quadrature_point_indices())
+            eval.submit_value(1.0, q);
+
+          // multiply by nabla v^h(x) and sum
+          eval.integrate_scatter(EvaluationFlags::values, dst);
+        }
+    }
 
     void
     local_apply_domain(const MatrixFree<dim, Number>               &data,
@@ -919,51 +948,7 @@ namespace NavierStokes
       VectorType                                  &dst,
       const VectorType                            &src,
       const std::pair<unsigned int, unsigned int> &face_range) const
-    {
-      FEFaceEvaluation<dim, -1, 0, 1, Number> eval_minus(data, true, 1, 2);
-
-      for (unsigned int face = face_range.first; face < face_range.second; face++)
-        {
-          eval_minus.reinit(face);
-          eval_minus.gather_evaluate(src,
-                                     EvaluationFlags::values |
-                                       EvaluationFlags::gradients);
-
-          // Dirichlet boundary
-          if (data.get_boundary_id(face) == 1)
-            for (const unsigned int q : eval_minus.quadrature_point_indices())
-              {
-                const auto u_minus = eval_minus.get_value(q);
-
-                const auto viscous_value_flux = 2.0 * penalty_factors[face] * u_minus -
-                                                eval_minus.get_normal_derivative(q);
-                const auto viscous_gradient_flux = -u_minus;
-
-                eval_minus.submit_normal_derivative(viscous_gradient_flux, q);
-
-                eval_minus.submit_value(viscous_value_flux, q);
-              }
-          else if (data.get_boundary_id(face) == 0)
-            for (const unsigned int q : eval_minus.quadrature_point_indices())
-              {
-                // const auto u_minus = eval_minus.get_value(q);
-
-                eval_minus.submit_normal_derivative({} /*viscous_gradient_flux*/, q);
-
-                eval_minus.submit_value({} /*viscous_value_flux*/, q);
-              }
-          else
-            AssertThrow(false,
-                        ExcNotImplemented(
-                          "Boundary id " +
-                          std::to_string(int(data.get_boundary_id(face))) +
-                          " not known"));
-
-          eval_minus.integrate_scatter(EvaluationFlags::values |
-                                         EvaluationFlags::gradients,
-                                       dst);
-        }
-    }
+    {}
 
     void
     local_rhs_domain(const MatrixFree<dim, Number>               &data,
@@ -979,15 +964,15 @@ namespace NavierStokes
           eval_u.reinit(cell);
           eval_p.reinit(cell);
 
-          eval_u.gather_evaluate(src, EvaluationFlags::values);
+          eval_u.gather_evaluate(src, EvaluationFlags::gradients);
 
           // loop over quadrature points and compute the local volume flux
           for (const unsigned int q : eval_u.quadrature_point_indices())
             {
-              eval_p.submit_gradient(eval_u.get_value(q), q);
+              eval_p.submit_value(-eval_u.get_divergence(q), q);
             }
 
-          eval_p.integrate_scatter(EvaluationFlags::gradients, dst);
+          eval_p.integrate_scatter(EvaluationFlags::values, dst);
         }
     }
 
@@ -996,98 +981,14 @@ namespace NavierStokes
                          VectorType                                  &dst,
                          const VectorType                            &src,
                          const std::pair<unsigned int, unsigned int> &face_range) const
-    {
-      FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_minus(data, true, 0, 1);
-      FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_plus(data, false, 0, 1);
-      FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_minus(data, true, 1, 1);
-      FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_plus(data, false, 1, 1);
-
-      for (unsigned int face = face_range.first; face < face_range.second; face++)
-        {
-          eval_p_minus.reinit(face);
-          eval_p_plus.reinit(face);
-          eval_u_minus.reinit(face);
-          eval_u_plus.reinit(face);
-          eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
-          eval_u_plus.gather_evaluate(src, EvaluationFlags::values);
-
-          for (const unsigned int q : eval_u_minus.quadrature_point_indices())
-            {
-              const auto u_minus = eval_u_minus.get_value(q);
-              const auto u_plus  = eval_u_plus.get_value(q);
-              const auto normal  = eval_u_minus.normal_vector(q);
-              /*
-              const auto func_value =
-                2.0 * (time_factor + 4. * dim * numbers::PI * numbers::PI * viscosity) *
-                (evaluate_function(exact_velocity_n1, eval_u_minus.quadrature_point(q)) -
-                 evaluate_function(exact_velocity_n, eval_u_minus.quadrature_point(q)));
-              */
-
-              const auto flux = 0.5 * normal * (u_minus + u_plus);
-
-              eval_p_minus.submit_value(-flux, q);
-              eval_p_plus.submit_value(flux, q);
-            }
-
-          eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
-          eval_p_plus.integrate_scatter(EvaluationFlags::values, dst);
-        }
-    }
+    {}
 
     void
     local_rhs_boundary_face(const MatrixFree<dim, Number> &data,
                             VectorType &dst,
                             const VectorType &src,
                             const std::pair<unsigned int, unsigned int> &face_range) const
-    {
-      FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_minus(data, true, 0, 1);
-      FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_minus(data, true, 1, 1);
-
-      for (unsigned int face = face_range.first; face < face_range.second; face++)
-        {
-          eval_p_minus.reinit(face);
-          eval_u_minus.reinit(face);
-          eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
-
-          if (true)
-          for (const unsigned int q : eval_u_minus.quadrature_point_indices())
-            {
-              const auto u_minus = eval_u_minus.get_value(q);
-              const auto u_plus  = u_minus;
-              const auto normal  = eval_u_minus.normal_vector(q);
-
-              const auto flux = 0.5 * normal * (u_minus + u_plus);
-
-              eval_p_minus.submit_value(-flux, q);
-            }
-
-            AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
-            exact_velocity.set_time(time - time_step);
-            AnalyticalSolutionVelocity<dim> exact_velocity_m(u_x_max, viscosity);
-            exact_velocity_m.set_time(time - 2.0 * time_step);
-            AnalyticalSolutionVelocity<dim> exact_velocity_m2(u_x_max, viscosity);
-            exact_velocity_m2.set_time(time -3.0 *  time_step);
-
-            if (false)
-            for (const unsigned int q : eval_u_minus.quadrature_point_indices())
-            {
-              const auto g =
-                evaluate_function(exact_velocity, eval_u_minus.quadrature_point(q));
-              const auto g_m =
-                evaluate_function(exact_velocity_m, eval_u_minus.quadrature_point(q));
-                const auto g_m2 =
-                evaluate_function(exact_velocity_m2, eval_u_minus.quadrature_point(q));
-              
-              const auto velocity_extrapolated = 1.0 / (2.0 * time_step) * (7.0 * g - 5.0 * g_m + g_m2);
-              const auto normal  = eval_u_minus.normal_vector(q);
-              const auto flux    = normal * velocity_extrapolated;
-  
-              eval_p_minus.submit_value(-flux, q);
-            }
-
-          eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
-        }
-    }
+    {}
 
     void
     local_update_domain(const MatrixFree<dim, Number>               &data,
@@ -1103,15 +1004,15 @@ namespace NavierStokes
           eval_u.reinit(cell);
           eval_p.reinit(cell);
 
-          eval_u.gather_evaluate(src, EvaluationFlags::values);
+          eval_u.gather_evaluate(src, EvaluationFlags::gradients);
 
           // loop over quadrature points and compute the local volume flux
           for (const unsigned int q : eval_u.quadrature_point_indices())
             {
-              eval_p.submit_gradient(eval_u.get_value(q), q);
+              eval_p.submit_value(eval_u.get_divergence(q), q);
             }
 
-          eval_p.integrate_scatter(EvaluationFlags::gradients, dst);
+          eval_p.integrate_scatter(EvaluationFlags::values, dst);
         }
     }
 
@@ -1120,36 +1021,7 @@ namespace NavierStokes
                             VectorType                                  &dst,
                             const VectorType                            &src,
                             const std::pair<unsigned int, unsigned int> &face_range) const
-    {
-      FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_minus(data, true, 0, 1);
-      FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_plus(data, false, 0, 1);
-      FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_minus(data, true, 1, 1);
-      FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_plus(data, false, 1, 1);
-
-      for (unsigned int face = face_range.first; face < face_range.second; face++)
-        {
-          eval_p_minus.reinit(face);
-          eval_p_plus.reinit(face);
-          eval_u_minus.reinit(face);
-          eval_u_plus.reinit(face);
-          eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
-          eval_u_plus.gather_evaluate(src, EvaluationFlags::values);
-
-          for (const unsigned int q : eval_u_minus.quadrature_point_indices())
-            {
-              const auto u_minus = eval_u_minus.get_value(q);
-              const auto u_plus  = eval_u_plus.get_value(q);
-              const auto normal  = eval_u_minus.normal_vector(q);
-              const auto flux    = 0.5 * (normal * (u_minus + u_plus));
-
-              eval_p_minus.submit_value(-flux, q);
-              eval_p_plus.submit_value(flux, q);
-            }
-
-          eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
-          eval_p_plus.integrate_scatter(EvaluationFlags::values, dst);
-        }
-    }
+    {}
 
     void
     local_update_boundary_face(
@@ -1157,42 +1029,7 @@ namespace NavierStokes
       VectorType                                  &dst,
       const VectorType                            &src,
       const std::pair<unsigned int, unsigned int> &face_range) const
-    {
-      FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_minus(data, true, 0, 1);
-      FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_minus(data, true, 1, 1);
-
-      for (unsigned int face = face_range.first; face < face_range.second; face++)
-        {
-          eval_p_minus.reinit(face);
-          eval_u_minus.reinit(face);
-          eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
-
-          AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
-          exact_velocity.set_time(time - time_step);
-          
-          if (true)
-          for (const unsigned int q : eval_u_minus.quadrature_point_indices())
-            {
-              const auto u_minus = eval_u_minus.get_value(q);
-              const auto normal  = eval_u_minus.normal_vector(q);
-              const auto flux    = normal * u_minus;
-
-              eval_p_minus.submit_value(-flux, q);
-            }
-          if (false)
-          for (const unsigned int q : eval_u_minus.quadrature_point_indices())
-          {
-            const auto g =
-              evaluate_function(exact_velocity, eval_u_minus.quadrature_point(q));
-            const auto normal  = eval_u_minus.normal_vector(q);
-            const auto flux    = normal * g;
-
-            eval_p_minus.submit_value(-flux, q);
-          }
-
-          eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
-        }
-    }
+    {}
   };
 
 
@@ -1200,11 +1037,12 @@ namespace NavierStokes
   void
   test(const unsigned int degree)
   {
-    FESystem<dim> fe_u(FE_DGQ<dim>(degree), dim);
+    //FESystem<dim> fe_u(FE_DGQ<dim>(degree), dim);
+    FE_RaviartThomasNodal<dim> fe_u(degree - 1);
     FE_DGQ<dim>   fe_p(degree - 1);
 
     Triangulation<dim> tria;
-    GridGenerator::hyper_cube(tria, -0.5, 0.5);
+    GridGenerator::hyper_cube(tria, 0.0, 1.0);
     tria.refine_global(5);
 
     DoFHandler<dim> dof_handler_u(tria);
@@ -1225,7 +1063,7 @@ namespace NavierStokes
     momentum_op.set_time_factor(1.5 / time_step);
 
     LinearAlgebra::distributed::Vector<double> vec_u, vec_u_m, vec_u_m2,
-      vec_u_extrapolated, vec_u_old, vec_u_rhs, vec_p, vec_p_update, vec_p_rhs, vec_p_tmp;
+      vec_u_extrapolated, vec_u_old, vec_u_rhs, vec_p, vec_p_update, vec_p_rhs, vec_p_tmp, vec_p_analytical, vec_p_difference;
     momentum_op.get_matrix_free().initialize_dof_vector(vec_u, 0);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_u_m, 0);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_u_m2, 0);
@@ -1236,6 +1074,8 @@ namespace NavierStokes
     momentum_op.get_matrix_free().initialize_dof_vector(vec_p_update, 1);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_p_rhs, 1);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_p_tmp, 1);
+    momentum_op.get_matrix_free().initialize_dof_vector(vec_p_analytical, 1);
+    momentum_op.get_matrix_free().initialize_dof_vector(vec_p_difference, 1);
 
     PressureOperator<dim, double> pressure_op;
     pressure_op.reinit(momentum_op.get_matrix_free());
@@ -1248,7 +1088,7 @@ namespace NavierStokes
     VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
 
     double                          time     = time_step;
-    const double                    end_time = 100. * time_step;
+    const double                    end_time = 50. * time_step;
 
     pressure_op.set_time_step(time_step);
 
@@ -1267,9 +1107,12 @@ namespace NavierStokes
 
             pressure_op.compute_rhs(vec_p_rhs, vec_u_old);
             VectorTools::subtract_mean_value(vec_p_rhs);
+
             SolverControl control(1000, 1e-8 * vec_p_rhs.l2_norm());
             SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
             vec_p_update = 0;
+            
+
             solver.solve(pressure_op, vec_p_update, vec_p_rhs, PreconditionIdentity());
             VectorTools::subtract_mean_value(vec_p_update);
             std::cout << "Pressure solver: " << control.last_step() << " iterations"
@@ -1277,7 +1120,7 @@ namespace NavierStokes
 
             pressure_op.update_pressure(vec_p_tmp, vec_u);
             vec_p += vec_p_update;
-            vec_p += vec_p_tmp;
+            vec_p -= vec_p_tmp;
           }
         else
           {
@@ -1286,19 +1129,14 @@ namespace NavierStokes
             VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
           }
 
-        AnalyticalSolutionPressure<dim> exact_pressure(u_x_max, viscosity);
-        Vector<double> error_per_cell_pressure;
-        exact_pressure.set_time(time);
-        VectorTools::integrate_difference(mapping,
-                                          dof_handler_p,
-                                          vec_p,
-                                          exact_pressure,
-                                          error_per_cell_pressure,
-                                          QGauss<dim>(fe_u.degree + 1),
-                                          VectorTools::L2_norm);
-        std::cout << "L2 errors pressure: " <<  VectorTools::compute_global_error(tria,
-          error_per_cell_pressure,
-          VectorTools::L2_norm) << std::endl;
+        AnalyticalSolutionPressure<dim> exact_pressure_analytical(u_x_max, viscosity);
+        exact_pressure_analytical.set_time(time);
+        VectorTools::interpolate(mapping, dof_handler_p, exact_pressure_analytical, vec_p_analytical);
+
+        vec_p_difference = 0.0;
+        vec_p_difference.sadd(1.0, -1.0, vec_p);
+        vec_p_difference.sadd(1.0, 1.0, vec_p_analytical);
+        std::cout << "L2 errors pressure: " <<  vec_p_difference.l2_norm() / vec_p_analytical.l2_norm() << std::endl;
 
         std::swap(vec_u_m2, vec_u_m);
         std::swap(vec_u_m, vec_u);
@@ -1322,8 +1160,8 @@ namespace NavierStokes
         vec_u = 0;
         solver.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
 
-        //exact_velocity.set_time(time);
-        //VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
+        exact_velocity.set_time(time);
+        VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
 
         std::cout << "Momentum solver: " << control.last_step() << " iterations"
                   << std::endl;
@@ -1335,7 +1173,7 @@ namespace NavierStokes
                                           vec_u,
                                           exact_velocity,
                                           error_per_cell,
-                                          QGauss<dim>(fe_u.degree + 2),
+                                          QGaussLobatto<dim>(fe_u.degree + 1),
                                           VectorTools::L2_norm);
         std::cout << "L2 errors: "
                   << VectorTools::compute_global_error(tria,
@@ -1356,13 +1194,17 @@ namespace NavierStokes
                                  vec_u_extrapolated);
         data_out.add_data_vector(dof_handler_u, vec_u_extrapolated, "analytical");
         data_out.add_data_vector(dof_handler_p, vec_p, "pressure");
+        
+        data_out.add_data_vector(dof_handler_p, vec_p_analytical, "pressure_analytical");
+        data_out.add_data_vector(dof_handler_p, vec_p_difference, "pressure_difference");
+
         Vector<double> mpi_owner(tria.n_active_cells());
         mpi_owner = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
         data_out.add_data_vector(mpi_owner, "owner");
         data_out.build_patches(mapping, fe_u.degree, DataOut<dim>::curved_inner_cells);
 
         const std::string filename =
-          "solution-L2" + std::to_string(time_step_number) + ".vtu";
+          "solution-" + std::to_string(time_step_number) + ".vtu";
         data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
       }
   }
