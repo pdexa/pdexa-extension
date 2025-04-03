@@ -64,6 +64,10 @@ using namespace dealii::LinearAlgebraTrilinos;
 #include <fstream>
 #include <iostream>
 
+#include <cxxopts.hpp>
+
+cxxopts::ParseResult args;
+
 namespace Step40 {
 using namespace dealii;
 
@@ -362,7 +366,10 @@ int main(int argc, char* argv[]) {
 
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
 
-    const auto executor_string = argc >= 2 ? argv[1] : "reference";
+    cxxopts::Options options("step-ginkgo-dist");
+    options.add_options()("exec", "The solver executor", cxxopts::value<std::string>()->default_value("reference"));
+
+    args = options.parse(argc, argv);
 
     const std::map<std::string, std::function<std::shared_ptr<gko::Executor>()>> executor_factory{
       {"reference", []() { return gko::ReferenceExecutor::create(); }},
@@ -371,7 +378,7 @@ int main(int argc, char* argv[]) {
       {"hip", []() { return gko::HipExecutor::create(0, gko::ReferenceExecutor::create()); }},
       {"dpcpp", []() { return gko::DpcppExecutor::create(0, gko::ReferenceExecutor::create()); }}};
 
-    auto solver_exec = executor_factory.at(executor_string)();
+    auto solver_exec = executor_factory.at(args["exec"].as<std::string>())();
 
     LaplaceProblem<2> laplace_problem_2d(solver_exec);
     laplace_problem_2d.run();

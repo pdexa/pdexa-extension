@@ -1,11 +1,3 @@
-include(FetchContent)
-FetchContent_Declare(
-        cxxopts
-        GIT_REPOSITORY https://github.com/jarro2783/cxxopts.git
-        GIT_TAG        v3.2.0
-)
-FetchContent_MakeAvailable(cxxopts)
-
 # This is taken from the kokkos extension test CMake
 function(_ginkgo_check_build_config _build)
     string(TOUPPER ${_build} _build)
