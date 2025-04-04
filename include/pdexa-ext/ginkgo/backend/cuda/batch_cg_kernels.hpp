@@ -12,16 +12,11 @@
 
 #include <ginkgo/core/log/batch_logger.hpp>
 
-#include "../../batch_criteria.hpp"
-#include "../../batch_identity.hpp"
-#include "../../batch_logger.hpp"
+
 #include "../cuda_hip/batch_cg_kernels.hpp"
-#include "../cuda_hip/batch_csr_kernels.hpp"
-#include "../cuda_hip/batch_multi_vector_kernels.hpp"
-#include "common/cuda_hip/components/cooperative_groups.hpp"
-#include "common/cuda_hip/components/thread_ids.hpp"
-#include "common/cuda_hip/components/uninitialized_array.hpp"
-#include "cuda/base/config.hpp"
+#include "pdexa-ext/ginkgo/core/log/batch_simple_logger.hpp"
+#include "pdexa-ext/ginkgo/core/preconditioner/batch_identity.hpp"
+#include "pdexa-ext/ginkgo/core/stop/batch_criteria.hpp"
 
 
 namespace gko {
