@@ -78,20 +78,22 @@ private:
   FE_Q<dim> fe;
   DoFHandler<dim> dof_handler;
 
-  std::shared_ptr<const gko::Executor> exec;
-
   SparsityPattern sparsity_pattern;
   mtx system_matrix;
   std::string mtx_type;
 
   vec solution;
   vec system_rhs;
+
+  std::shared_ptr<const gko::Executor> solver_exec;
+  std::shared_ptr<const gko::Executor> default_exec;
 };
 
 template<int dim>
 StepGinkgo<dim>::StepGinkgo(std::shared_ptr<const gko::Executor> exec,
                             const std::string& mtx_type) :
-  fe(1), dof_handler(triangulation), exec(exec), mtx_type(mtx_type) {}
+    fe(1), dof_handler(triangulation), solver_exec(exec), default_exec(gko::ReferenceExecutor::create()),
+    mtx_type(mtx_type) {}
 
 template<int dim>
 void StepGinkgo<dim>::make_grid() {
@@ -165,14 +167,14 @@ void StepGinkgo<dim>::solve() {
 
   auto logger = gko::share(gko::log::Convergence<double>::create());
 
-  std::shared_ptr<gko::LinOp> gko_mtx = GinkgoInterface::create_csr_matrix(exec->get_master(), system_matrix);
+  std::shared_ptr<gko::LinOp> gko_mtx = GinkgoInterface::create_csr_matrix(solver_exec, system_matrix);
   auto solver = GinkgoInterface::inverse_operator(
-    gko_mtx,
+    default_exec, default_exec, gko_mtx,
     gko::solver::Cg<double>::build()
     .with_criteria(gko::stop::Iteration::build().with_max_iters(1000lu),
                    gko::stop::ResidualNorm<double>::build().with_baseline(gko::stop::mode::rhs_norm).
                                                             with_reduction_factor(1e-6))
-    .on(exec),
+      .on(solver_exec),
     logger);
   solver.vmult(solution, system_rhs);
 
