@@ -8,3 +8,4 @@ fetchcontent_makeavailable(cxxopts)
 
 add_subdirectory(batched-solver)
 add_subdirectory(step-ginkgo)
+add_subdirectory(poisson-multigrid)
