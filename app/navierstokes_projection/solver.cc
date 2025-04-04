@@ -27,8 +27,8 @@
 
 namespace NavierStokes
 {
-  const double viscosity = 0.01;
-  const double u_x_max   = 1.;
+  const double viscosity         = 0.01;
+  const double u_x_max           = 1.;
   const double factor_convective = 1.;
 
 
@@ -55,18 +55,16 @@ namespace NavierStokes
       const double a = 2.883356;
       const double lambda = viscosity * (1 + a * a);
       if (component == 0)
-        result = std::sin(p[0]) * (a * std::sin(a * p[1]) - std::cos(a) * std::sinh(p[1])) *
-          std::exp(-lambda * t);
-      else if (component == 1)
-        result = std::cos(p[0]) * (std::cos(a * p[1]) + std::cos(a) * std::cosh(p[1])) *
-          std::exp(-lambda * t);
+        result = std::sin(p[0]) * (a * std::sin(a * p[1]) - std::cos(a) * std::sinh(p[1]))
+      * std::exp(-lambda * t); else if (component == 1) result = std::cos(p[0]) *
+      (std::cos(a * p[1]) + std::cos(a) * std::cosh(p[1])) * std::exp(-lambda * t);
       */
       if (component == 0)
-        result = -u_x_max * std::sin(2.0 * pi * p[1]) *
-                 std::exp(-4.0 * pi * pi * viscosity * t);
+        result =
+          -u_x_max * std::sin(2.0 * pi * p[1]) * std::exp(-4.0 * pi * pi * viscosity * t);
       else if (component == 1)
-        result = u_x_max * std::sin(2.0 * pi * p[0]) *
-                 std::exp(-4.0 * pi * pi * viscosity * t);
+        result =
+          u_x_max * std::sin(2.0 * pi * p[0]) * std::exp(-4.0 * pi * pi * viscosity * t);
       /*
       if (component == 0)
         result = u_x_max * 4 * (0.5 - p[1]) * (0.5 + p[1]);
@@ -99,7 +97,8 @@ namespace NavierStokes
       /*
       const double a = 2.883356;
       const double lambda = viscosity * (1 + a * a);
-      const double result = lambda * std::cos(a) * std::cos(p[0]) * std::sinh(p[1]) * std::exp(-lambda * t);
+      const double result = lambda * std::cos(a) * std::cos(p[0]) * std::sinh(p[1]) *
+      std::exp(-lambda * t);
       */
       const double result = -u_x_max * std::cos(2 * pi * p[0]) * std::cos(2 * pi * p[1]) *
                             std::exp(-8.0 * pi * pi * viscosity * t);
@@ -408,10 +407,10 @@ namespace NavierStokes
                 (Number)(std::max(fe_degree, 1u) * (fe_degree + 1.0));
             }
           else
-            penalty_factors[face] =
-              2.0 * std::abs((eval_face.normal_vector(0) *
-                              eval_face.inverse_jacobian(0))[dim - 1]) *
-                (Number)(std::max(fe_degree, 1u) * (fe_degree + 1.0));
+            penalty_factors[face] = 2.0 *
+                                    std::abs((eval_face.normal_vector(0) *
+                                              eval_face.inverse_jacobian(0))[dim - 1]) *
+                                    (Number)(std::max(fe_degree, 1u) * (fe_degree + 1.0));
         }
     }
 
@@ -700,7 +699,8 @@ namespace NavierStokes
           {
             const auto normal = eval_u_minus.get_normal_vector(q);
             speeds_faces(face, q) =
-              0.5 * factor_convective * (normal * (eval_u_minus.get_value(q) + eval_u_plus.get_value(q)));
+              0.5 * factor_convective *
+              (normal * (eval_u_minus.get_value(q) + eval_u_plus.get_value(q)));
             const auto p_minus       = eval_p_minus.get_value(q);
             const auto p_plus        = eval_p_plus.get_value(q);
             const auto p_jump_normal = 0.5 * normal * (p_minus - p_plus);
@@ -726,16 +726,16 @@ namespace NavierStokes
     FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_minus(data, true, 0);
     FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_minus(data, true, 1);
 
-    //double time_step = (1.0 / this->time_factor) * (3.0 / 2.0);
+    // double time_step = (1.0 / this->time_factor) * (3.0 / 2.0);
 
     AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
     exact_velocity.set_time(time);
 
-    //AnalyticalSolutionVelocity<dim> exact_velocity_m(u_x_max, viscosity);
-    //exact_velocity_m.set_time(time - time_step);
+    // AnalyticalSolutionVelocity<dim> exact_velocity_m(u_x_max, viscosity);
+    // exact_velocity_m.set_time(time - time_step);
 
-    //AnalyticalSolutionVelocity<dim> exact_velocity_m2(u_x_max, viscosity);
-    //exact_velocity_m2.set_time(time - 2.0 * time_step);
+    // AnalyticalSolutionVelocity<dim> exact_velocity_m2(u_x_max, viscosity);
+    // exact_velocity_m2.set_time(time - 2.0 * time_step);
 
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
@@ -752,15 +752,15 @@ namespace NavierStokes
             const auto normal = eval_u_minus.get_normal_vector(q);
             const auto u_plus =
               evaluate_function(exact_velocity, eval_u_minus.quadrature_point(q));
-            //const auto u_plus_m =
-            //  evaluate_function(exact_velocity_m, eval_u_minus.quadrature_point(q));
-            //const auto u_plus_m2 =
-            //  evaluate_function(exact_velocity_m2, eval_u_minus.quadrature_point(q));
+            // const auto u_plus_m =
+            //   evaluate_function(exact_velocity_m, eval_u_minus.quadrature_point(q));
+            // const auto u_plus_m2 =
+            //   evaluate_function(exact_velocity_m2, eval_u_minus.quadrature_point(q));
 
-            //auto extrapolated_velocity = 2.0 * u_plus_m - u_plus_m2;
-            //extrapolated_velocity      = u_plus;
+            // auto extrapolated_velocity = 2.0 * u_plus_m - u_plus_m2;
+            // extrapolated_velocity      = u_plus;
             const auto speed_normal =
-              0.5 * factor_convective *  (normal * (eval_u_minus.get_value(q) + u_plus));
+              0.5 * factor_convective * (normal * (eval_u_minus.get_value(q) + u_plus));
             speeds_faces(face, q) = speed_normal;
             const auto convective_flux =
               0.5 * (-speed_normal + std::abs(speed_normal)) * u_plus;
@@ -930,10 +930,10 @@ namespace NavierStokes
                 (Number)(std::max(fe_degree, 1u) * (fe_degree + 1.0));
             }
           else
-            penalty_factors[face] =
-              2.0 * std::abs((eval_face.normal_vector(0) *
-                              eval_face.inverse_jacobian(0))[dim - 1]) *
-                (Number)(std::max(fe_degree, 1u) * (fe_degree + 1.0));
+            penalty_factors[face] = 2.0 *
+                                    std::abs((eval_face.normal_vector(0) *
+                                              eval_face.inverse_jacobian(0))[dim - 1]) *
+                                    (Number)(std::max(fe_degree, 1u) * (fe_degree + 1.0));
         }
     }
 
