@@ -309,10 +309,11 @@ inverse_operator(const std::shared_ptr<const gko::Executor>& domain_exec,
   if (logger) { solver_op->add_logger(logger); }
   if (std::dynamic_pointer_cast<gko::experimental::distributed::DistributedBase>(gko_op)) {
     return MPI::linear_operator<RangeValueType, DomainValueType, RangeMemorySpace, DomainMemorySpace>(
-      std::move(solver_op));
+      domain_exec, range_exec, std::move(solver_op));
   }
   else {
-    return linear_operator<RangeValueType, DomainValueType, RangeMemorySpace, DomainMemorySpace>(std::move(solver_op));
+    return linear_operator<RangeValueType, DomainValueType, RangeMemorySpace, DomainMemorySpace>(
+      domain_exec, range_exec, std::move(solver_op));
   }
 }
 
