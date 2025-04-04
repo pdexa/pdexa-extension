@@ -11,7 +11,8 @@
 #include <cuda.h>
 #include <cooperative_groups.h>
 
-#include "common/cuda_hip/base/config.hpp"
+
+#include "pdexa-ext/ginkgo/backend/cuda_hip/base/config.hpp"
 
 
 namespace gko {
