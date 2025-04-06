@@ -656,12 +656,7 @@ namespace NavierStokes
             speeds_cells(cell, q) = factor_convective * eval_u_extrap.get_value(q);
             const auto u          = eval_u.get_value(q);
             const auto gradp      = eval_p.get_gradient(q);
-            eval_u.submit_value(
-              u - gradp /*+
-                (time_factor + 4. * dim * numbers::PI * numbers::PI * viscosity) *
-                evaluate_function(exact_velocity, eval_u.quadrature_point(q))*/
-              ,
-              q);
+            eval_u.submit_value(u - gradp, q);
           }
 
         eval_u.integrate_scatter(EvaluationFlags::values, dst);
@@ -705,7 +700,7 @@ namespace NavierStokes
             const auto p_plus        = eval_p_plus.get_value(q);
             const auto p_jump_normal = 0.5 * normal * (p_minus - p_plus);
             eval_u_minus.submit_value(p_jump_normal, q);
-            eval_u_plus.submit_value(-p_jump_normal, q);
+            eval_u_plus.submit_value(p_jump_normal, q);
           }
 
         eval_u_minus.integrate_scatter(EvaluationFlags::values, dst);
@@ -726,17 +721,8 @@ namespace NavierStokes
     FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_minus(data, true, 0);
     FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_minus(data, true, 1);
 
-    // double time_step = (1.0 / this->time_factor) * (3.0 / 2.0);
-
     AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
     exact_velocity.set_time(time);
-
-    // AnalyticalSolutionVelocity<dim> exact_velocity_m(u_x_max, viscosity);
-    // exact_velocity_m.set_time(time - time_step);
-
-    // AnalyticalSolutionVelocity<dim> exact_velocity_m2(u_x_max, viscosity);
-    // exact_velocity_m2.set_time(time - 2.0 * time_step);
-
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
@@ -752,13 +738,7 @@ namespace NavierStokes
             const auto normal = eval_u_minus.get_normal_vector(q);
             const auto u_plus =
               evaluate_function(exact_velocity, eval_u_minus.quadrature_point(q));
-            // const auto u_plus_m =
-            //   evaluate_function(exact_velocity_m, eval_u_minus.quadrature_point(q));
-            // const auto u_plus_m2 =
-            //   evaluate_function(exact_velocity_m2, eval_u_minus.quadrature_point(q));
 
-            // auto extrapolated_velocity = 2.0 * u_plus_m - u_plus_m2;
-            // extrapolated_velocity      = u_plus;
             const auto speed_normal =
               0.5 * factor_convective * (normal * (eval_u_minus.get_value(q) + u_plus));
             speeds_faces(face, q) = speed_normal;
@@ -864,13 +844,12 @@ namespace NavierStokes
   template <int dim, typename Number>
   void
   MomentumOperator<dim, Number>::local_divergence_boundary_face(
-    const MatrixFree<dim, Number>               &data,
-    VectorType                                  &dst,
-    const VectorType                            &src,
+    const MatrixFree<dim, Number> &data,
+    VectorType                    &dst,
+    const VectorType &,
     const std::pair<unsigned int, unsigned int> &face_range) const
   {
-    FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_minus(data, true, 0, 1);
-    FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_minus(data, true, 1, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, Number> eval_p_minus(data, true, 1, 1);
 
     AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
     exact_velocity.set_time(time);
@@ -878,17 +857,14 @@ namespace NavierStokes
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
         eval_p_minus.reinit(face);
-        eval_u_minus.reinit(face);
-        eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
 
-        for (const unsigned int q : eval_u_minus.quadrature_point_indices())
+        for (const unsigned int q : eval_p_minus.quadrature_point_indices())
           {
-            const auto u_minus = eval_u_minus.get_value(q);
             const auto u_plus =
-              evaluate_function(exact_velocity, eval_u_minus.quadrature_point(q));
-            const auto normal = eval_u_minus.normal_vector(q);
+              evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
+            const auto normal = eval_p_minus.normal_vector(q);
 
-            const auto flux = 0.5 * normal * (u_minus + u_plus);
+            const auto flux = normal * u_plus;
 
             eval_p_minus.submit_value(-flux, q);
           }
@@ -1314,7 +1290,7 @@ namespace NavierStokes
 
     Triangulation<dim> tria;
     GridGenerator::hyper_cube(tria, -0.5, 0.5);
-    tria.refine_global(5);
+    tria.refine_global(3);
 
     DoFHandler<dim> dof_handler_u(tria);
     dof_handler_u.distribute_dofs(fe_u);
@@ -1355,6 +1331,13 @@ namespace NavierStokes
 
     MappingQ1<dim>                  mapping;
     AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
+    AnalyticalSolutionPressure<dim> exact_pressure(u_x_max, viscosity);
+
+    exact_pressure.set_time(0.);
+    VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p_tmp);
+    exact_pressure.set_time(time_step);
+    VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
+
     exact_velocity.set_time(0.);
     VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u_m);
     momentum_op.set_time(0.);
@@ -1400,26 +1383,8 @@ namespace NavierStokes
           }
         else
           {
-            AnalyticalSolutionPressure<dim> exact_pressure(u_x_max, viscosity);
-            exact_pressure.set_time(time);
-            VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
+            vec_p.sadd(2.0, -1.0, vec_p_tmp);
           }
-
-        AnalyticalSolutionPressure<dim> exact_pressure(u_x_max, viscosity);
-        Vector<double>                  error_per_cell_pressure;
-        exact_pressure.set_time(time);
-        VectorTools::integrate_difference(mapping,
-                                          dof_handler_p,
-                                          vec_p,
-                                          exact_pressure,
-                                          error_per_cell_pressure,
-                                          QGauss<dim>(fe_u.degree + 1),
-                                          VectorTools::L2_norm);
-        std::cout << "L2 errors pressure: "
-                  << VectorTools::compute_global_error(tria,
-                                                       error_per_cell_pressure,
-                                                       VectorTools::L2_norm)
-                  << std::endl;
 
         std::swap(vec_u_m2, vec_u_m);
         std::swap(vec_u_m, vec_u);
@@ -1449,6 +1414,18 @@ namespace NavierStokes
                   << std::endl;
 
         Vector<double> error_per_cell;
+
+        exact_pressure.set_time(time);
+        VectorTools::integrate_difference(mapping,
+                                          dof_handler_p,
+                                          vec_p,
+                                          exact_pressure,
+                                          error_per_cell,
+                                          QGauss<dim>(fe_u.degree + 1),
+                                          VectorTools::L2_norm);
+        const double pressure_error =
+          VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
+
         exact_velocity.set_time(time);
         VectorTools::integrate_difference(mapping,
                                           dof_handler_u,
@@ -1457,11 +1434,11 @@ namespace NavierStokes
                                           error_per_cell,
                                           QGauss<dim>(fe_u.degree + 2),
                                           VectorTools::L2_norm);
-        std::cout << "L2 errors velocity: "
-                  << VectorTools::compute_global_error(tria,
-                                                       error_per_cell,
-                                                       VectorTools::L2_norm)
-                  << std::endl;
+        const double velocity_error =
+          VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
+
+        std::cout << "L2 errors velocity / pressure: " << velocity_error << " / "
+                  << pressure_error << std::endl;
 
         DataOut<dim> data_out;
 
@@ -1499,6 +1476,6 @@ main(int argc, char **argv)
 {
   dealii::Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-  NavierStokes::test<2>(3);
+  NavierStokes::test<2>(5);
   // NavierStokes::test<2>(3);
 }
