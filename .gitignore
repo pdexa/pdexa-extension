@@ -1,0 +1,9 @@
+*.vtu
+solver
+*~
+CMakeCache.txt
+CMakeFiles/
+Makefile
+builds/
+cmake_install.cmake
+compile_commands.json
