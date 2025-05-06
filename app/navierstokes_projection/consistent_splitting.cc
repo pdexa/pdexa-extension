@@ -1156,7 +1156,8 @@ class BDFTimeIntegratorConstants
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
             { 
               const auto normal = eval_p_minus.normal_vector(q);
-
+              
+              exact_velocity.set_time(time);
               auto g = evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
               auto u_plus =  make_vectorized_array(integration_constants.get_gamma0() / time_step) * g;
                   
@@ -1169,10 +1170,11 @@ class BDFTimeIntegratorConstants
               }
               
               
-              const auto flux = (-u_plus) * normal;              
+              const auto flux = (-u_plus) * normal; 
 
               Tensor<1, dim, VectorizedArray<Number>> curl_omega = CurlCompute<dim, FEFaceEvaluation<dim, -1, 0, dim, Number>>::compute(eval_vorticity, q);
-              /*
+              
+              if(false)
               for (unsigned int i = 0; i < 4; ++i)
               {
                 const auto p = eval_p_minus.quadrature_point(q);
@@ -1190,7 +1192,7 @@ class BDFTimeIntegratorConstants
                 curl_omega[1][i] = curl_2;
 
               }
-              */
+              
               const auto curl_flux = (-viscosity) * normal * curl_omega;
 
               const auto u =  eval_u_minus.get_value(q);
@@ -1217,7 +1219,7 @@ class BDFTimeIntegratorConstants
     FE_DGQ<dim> fe_p(degree - 1);
 
     Triangulation<dim> tria;
-    GridGenerator::hyper_cube(tria, -1., 1.);
+    GridGenerator::hyper_cube(tria, -0.5, 0.5);
     const bool periodic_boundary = false;
     if (periodic_boundary)
     {
@@ -1336,6 +1338,7 @@ class BDFTimeIntegratorConstants
 
         //exact_velocity.set_time(time);
         //VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
+        
         // Pressure step
         momentum_op.evaluate_vorticity(vec_vorticity, vec_u);
         pressure_op.compute_rhs(vec_p_rhs, vec_u, vec_vorticity);
@@ -1350,7 +1353,11 @@ class BDFTimeIntegratorConstants
                   << std::endl;
 
         //exact_pressure.set_time(time);
-        //VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
+        //VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p_rhs);
+        //auto diff = vec_p_rhs[0] - vec_p[0];
+        //std::cout << diff << std::endl;
+        //vec_p_rhs = 1.;
+        //vec_p.add(diff, vec_p_rhs);
 
         for (unsigned int i = vec_u_old.size() - 1; i != 0; --i)
           std::swap(vec_u_old[i], vec_u_old[i - 1]);
