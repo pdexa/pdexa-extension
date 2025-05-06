@@ -46,17 +46,19 @@ namespace NavierStokes
     double
     value(const dealii::Point<dim> &p, const unsigned int component = 0) const final
     {
-        const double t  = this->get_time();
-        const double pi = dealii::numbers::PI;
-  
-        double result = 0.0;
-        if (component == 0)
-          result = pi * std::sin(2 * pi * p[1]) * std::sin(pi * p[0]) * std::sin(pi * p[0]) * std::sin(t);
-        else if (component == 1)
-          result = -pi * std::sin(2 * pi * p[0]) * std::sin(pi * p[1]) * std::sin(pi * p[1]) * std::sin(t);
-        
-        return result;
-      }
+      const double t  = this->get_time();
+      const double pi = dealii::numbers::PI;
+
+      double result = 0.0;
+      if (component == 0)
+        result = pi * std::sin(2 * pi * p[1]) * std::sin(pi * p[0]) *
+                 std::sin(pi * p[0]) * std::sin(t);
+      else if (component == 1)
+        result = -pi * std::sin(2 * pi * p[0]) * std::sin(pi * p[1]) *
+                 std::sin(pi * p[1]) * std::sin(t);
+
+      return result;
+    }
 
   private:
     const double u_x_max, viscosity;
@@ -77,12 +79,12 @@ namespace NavierStokes
     double
     value(const dealii::Point<dim> &p, const unsigned int /*component*/) const final
     {
-        const double t  = this->get_time();
-        const double pi = dealii::numbers::PI;
-  
-        const double result = std::cos(pi * p[0]) * std::sin(pi * p[1]) * std::sin(t);
-        return result;
-      }
+      const double t  = this->get_time();
+      const double pi = dealii::numbers::PI;
+
+      const double result = std::cos(pi * p[0]) * std::sin(pi * p[1]) * std::sin(t);
+      return result;
+    }
 
   private:
     const double u_x_max, viscosity;
@@ -109,10 +111,27 @@ namespace NavierStokes
 
       double result = 0.0;
       if (component == 0)
-        result = pi*(4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::cos(pi*x) + 16.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::cos(pi*y) - 1.0*std::sin(t)*std::sin(pi*x) - 4.0*pi*pi*std::sin(t)*std::cos(pi*y) + 2.0*std::sin(pi*x)*std::sin(pi*x)*std::cos(t)*std::cos(pi*y))*std::sin(pi*y);
+        result =
+          pi *
+          (4.0 * pi * pi * std::sin(t) * std::sin(t) * std::sin(pi * x) *
+             std::sin(pi * x) * std::sin(pi * x) * std::sin(pi * y) * std::cos(pi * x) +
+           16.0 * pi * pi * std::sin(t) * std::sin(pi * x) * std::sin(pi * x) *
+             std::cos(pi * y) -
+           1.0 * std::sin(t) * std::sin(pi * x) -
+           4.0 * pi * pi * std::sin(t) * std::cos(pi * y) +
+           2.0 * std::sin(pi * x) * std::sin(pi * x) * std::cos(t) * std::cos(pi * y)) *
+          std::sin(pi * y);
 
       else if (component == 1)
-        result = pi*(4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*y) - 16.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*x) + 4.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::cos(pi*x) + 1.0*std::sin(t)*std::cos(pi*x)*std::cos(pi*y) - 2.0*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(t)*std::cos(pi*x));
+        result = pi * (4.0 * pi * pi * std::sin(t) * std::sin(t) * std::sin(pi * x) *
+                         std::sin(pi * x) * std::sin(pi * y) * std::sin(pi * y) *
+                         std::sin(pi * y) * std::cos(pi * y) -
+                       16.0 * pi * pi * std::sin(t) * std::sin(pi * x) *
+                         std::sin(pi * y) * std::sin(pi * y) * std::cos(pi * x) +
+                       4.0 * pi * pi * std::sin(t) * std::sin(pi * x) * std::cos(pi * x) +
+                       1.0 * std::sin(t) * std::cos(pi * x) * std::cos(pi * y) -
+                       2.0 * std::sin(pi * x) * std::sin(pi * y) * std::sin(pi * y) *
+                         std::cos(t) * std::cos(pi * x));
 
       return result;
     }
@@ -259,7 +278,7 @@ namespace NavierStokes
     MatrixFree<dim, Number> data;
     Number                  time;
     Number                  time_factor;
-    Number time_step;
+    Number                  time_step;
 
     Table<2, Tensor<1, dim, VectorizedArray<Number>>> speeds_cells;
     Table<2, VectorizedArray<Number>>                 speeds_faces;
@@ -554,8 +573,9 @@ namespace NavierStokes
                 0.5 * std::abs(speed_normal) * u_minus
                 /*- 0.5 * speed_normal * u_minus */;
 
-              //const auto convective_flux =
-              //  std::abs(speed_normal) * (u_minus) - (0.5 * speed_normal) * u_minus; //TODO: choose flux
+              // const auto convective_flux =
+              //   std::abs(speed_normal) * (u_minus) - (0.5 * speed_normal) * u_minus;
+              //   //TODO: choose flux
 
               const auto viscous_value_flux =
                 make_vectorized_array<Number>(viscosity) *
@@ -627,10 +647,9 @@ namespace NavierStokes
         for (const unsigned int q : eval_u.quadrature_point_indices())
           {
             speeds_cells(cell, q) = factor_convective * eval_u_extrap.get_value(q);
-            const auto f =
-              evaluate_function(forcing_term, eval_u.quadrature_point(q));
-            const auto u          = eval_u.get_value(q);
-            const auto gradp      = eval_p.get_gradient(q);
+            const auto f = evaluate_function(forcing_term, eval_u.quadrature_point(q));
+            const auto u = eval_u.get_value(q);
+            const auto gradp = eval_p.get_gradient(q);
             eval_u.submit_value(u - gradp + f, q);
           }
 
@@ -716,10 +735,10 @@ namespace NavierStokes
 
             const auto speed_normal =
               0.5 * factor_convective * (normal * (eval_u_minus.get_value(q) + u_plus));
-            speeds_faces(face, q) = speed_normal;
-            const auto convective_flux =
-              0.5 * (-speed_normal + std::abs(speed_normal)) * u_plus; //TODO: choose flux
-              //(-speed_normal + std::abs(speed_normal)) * u_plus;
+            speeds_faces(face, q)      = speed_normal;
+            const auto convective_flux = 0.5 * (-speed_normal + std::abs(speed_normal)) *
+                                         u_plus; // TODO: choose flux
+            //(-speed_normal + std::abs(speed_normal)) * u_plus;
             const auto viscous_value_flux =
               -2.0 * viscosity * penalty_factors[face] * u_plus;
             const auto viscous_gradient_flux =
@@ -937,7 +956,7 @@ namespace NavierStokes
         }
     }
 
-    
+
 
     void
     set_time_step(const double t)
@@ -1075,78 +1094,74 @@ namespace NavierStokes
     }
 
     void
-    local_rhs_domain(const MatrixFree<dim, Number> & data,
-                     VectorType & dst,
-                     const VectorType & src,
-                     const std::pair<unsigned int, unsigned int> & cell_range) const
+    local_rhs_domain(const MatrixFree<dim, Number>               &data,
+                     VectorType                                  &dst,
+                     const VectorType                            &src,
+                     const std::pair<unsigned int, unsigned int> &cell_range) const
     {
-        (void) src;
+      (void)src;
 
-        FEEvaluation<dim, -1, 0, 1, Number>   eval_p(data, 1, 1);
+      FEEvaluation<dim, -1, 0, 1, Number> eval_p(data, 1, 1);
 
-        AnalyticalRHS<dim> rhs(u_x_max, viscosity);
-        rhs.set_time(time);
-        AnalyticalRHS<dim> rhs_m(u_x_max, viscosity);
-        rhs_m.set_time(time - time_step);
+      AnalyticalRHS<dim> rhs(u_x_max, viscosity);
+      rhs.set_time(time);
+      AnalyticalRHS<dim> rhs_m(u_x_max, viscosity);
+      rhs_m.set_time(time - time_step);
 
-        for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
         {
-            eval_p.reinit(cell);
+          eval_p.reinit(cell);
 
-            // loop over quadrature points and compute the local volume flux
-            for (const unsigned int q : eval_p.quadrature_point_indices())
+          // loop over quadrature points and compute the local volume flux
+          for (const unsigned int q : eval_p.quadrature_point_indices())
             {
-                const auto f =
-                    evaluate_function(rhs, eval_p.quadrature_point(q));
-                const auto f_m = 
-                    evaluate_function(rhs_m, eval_p.quadrature_point(q));
+              const auto f   = evaluate_function(rhs, eval_p.quadrature_point(q));
+              const auto f_m = evaluate_function(rhs_m, eval_p.quadrature_point(q));
 
-                
-                eval_p.submit_gradient(f - f_m, q);
+
+              eval_p.submit_gradient(f - f_m, q);
             }
 
-            // multiply by nabla v^h(x) and sum
-            eval_p.integrate_scatter(EvaluationFlags::gradients, dst);
+          // multiply by nabla v^h(x) and sum
+          eval_p.integrate_scatter(EvaluationFlags::gradients, dst);
         }
     }
 
     void
-    local_rhs_inner_face(const MatrixFree<dim, Number> &data,
-                         VectorType &dst,
-                         const VectorType &src,
+    local_rhs_inner_face(const MatrixFree<dim, Number>               &data,
+                         VectorType                                  &dst,
+                         const VectorType                            &src,
                          const std::pair<unsigned int, unsigned int> &face_range) const
     {
-        (void) src;
-        FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_minus(data, true, 1, 1);
-        FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_plus(data, false, 1, 1);
+      (void)src;
+      FEFaceEvaluation<dim, -1, 0, 1, Number> eval_p_minus(data, true, 1, 1);
+      FEFaceEvaluation<dim, -1, 0, 1, Number> eval_p_plus(data, false, 1, 1);
 
-        AnalyticalRHS<dim> rhs(u_x_max, viscosity);
-        rhs.set_time(time);
-        AnalyticalRHS<dim> rhs_m(u_x_max, viscosity);
-        rhs_m.set_time(time - time_step);
+      AnalyticalRHS<dim> rhs(u_x_max, viscosity);
+      rhs.set_time(time);
+      AnalyticalRHS<dim> rhs_m(u_x_max, viscosity);
+      rhs_m.set_time(time - time_step);
 
-        for (unsigned int face = face_range.first; face < face_range.second; face++)
+      for (unsigned int face = face_range.first; face < face_range.second; face++)
         {
-            eval_p_minus.reinit(face);
-            eval_p_plus.reinit(face);
+          eval_p_minus.reinit(face);
+          eval_p_plus.reinit(face);
 
-            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+          for (const unsigned int q : eval_p_minus.quadrature_point_indices())
             {
-                const auto f =
-                    evaluate_function(rhs, eval_p_minus.quadrature_point(q));
-                const auto f_m = 
-                    evaluate_function(rhs_m, eval_p_minus.quadrature_point(q));
+              const auto f   = evaluate_function(rhs, eval_p_minus.quadrature_point(q));
+              const auto f_m = evaluate_function(rhs_m, eval_p_minus.quadrature_point(q));
 
-                const auto normal  = eval_p_minus.normal_vector(q);
+              const auto normal = eval_p_minus.normal_vector(q);
 
-                const auto flux = (f - f_m) * normal; //TODO: check this
+              const auto flux = (f - f_m) * normal; // TODO: check this
 
-                eval_p_minus.submit_value(-flux, q);
-                eval_p_plus.submit_value(flux, q);
-                }
+              eval_p_minus.submit_value(-flux, q);
+              eval_p_plus.submit_value(flux, q);
+            }
 
-            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
-            eval_p_plus.integrate_scatter(EvaluationFlags::values, dst);
+          eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+          eval_p_plus.integrate_scatter(EvaluationFlags::values, dst);
         }
     }
 
@@ -1156,33 +1171,31 @@ namespace NavierStokes
                             const VectorType                            &src,
                             const std::pair<unsigned int, unsigned int> &face_range) const
     {
-        (void) src;
-        FEFaceEvaluation<dim, -1, 0, 1, Number> eval_p_minus(data, true, 1, 1);
-    
-        AnalyticalRHS<dim> rhs(u_x_max, viscosity);
-        rhs.set_time(time);
-        AnalyticalRHS<dim> rhs_m(u_x_max, viscosity);
-        rhs_m.set_time(time - time_step);
-    
-        for (unsigned int face = face_range.first; face < face_range.second; face++)
+      (void)src;
+      FEFaceEvaluation<dim, -1, 0, 1, Number> eval_p_minus(data, true, 1, 1);
+
+      AnalyticalRHS<dim> rhs(u_x_max, viscosity);
+      rhs.set_time(time);
+      AnalyticalRHS<dim> rhs_m(u_x_max, viscosity);
+      rhs_m.set_time(time - time_step);
+
+      for (unsigned int face = face_range.first; face < face_range.second; face++)
         {
-            eval_p_minus.reinit(face);
-    
-            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+          eval_p_minus.reinit(face);
+
+          for (const unsigned int q : eval_p_minus.quadrature_point_indices())
             {
-                const auto f =
-                    evaluate_function(rhs, eval_p_minus.quadrature_point(q));
-                const auto f_m = 
-                    evaluate_function(rhs_m, eval_p_minus.quadrature_point(q));
-    
-                const auto normal = eval_p_minus.normal_vector(q);
-    
-                const auto flux = (f - f_m) * normal; //TODO: check this
-    
-                eval_p_minus.submit_value(-flux, q);
+              const auto f   = evaluate_function(rhs, eval_p_minus.quadrature_point(q));
+              const auto f_m = evaluate_function(rhs_m, eval_p_minus.quadrature_point(q));
+
+              const auto normal = eval_p_minus.normal_vector(q);
+
+              const auto flux = (f - f_m) * normal; // TODO: check this
+
+              eval_p_minus.submit_value(-flux, q);
             }
-    
-            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+
+          eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
         }
     }
   };
@@ -1278,7 +1291,7 @@ namespace NavierStokes
             vec_p_rhs.sadd(0.5 / time_step, -2.5 / time_step, old_divergences[1]);
             vec_p_rhs.add(3.5 / time_step, old_divergences[0]);
             pressure_op.compute_rhs(vec_p_update, vec_p_rhs);
-            vec_p_rhs += vec_p_update; 
+            vec_p_rhs += vec_p_update;
 
             VectorTools::subtract_mean_value(vec_p_rhs);
             SolverControl control(2000, 1e-10 * vec_p_rhs.l2_norm());
