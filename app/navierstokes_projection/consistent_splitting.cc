@@ -10,6 +10,7 @@
 
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/tria.h>
+#include <deal.II/grid/grid_tools.h>
 
 #include <deal.II/lac/la_parallel_vector.h>
 #include <deal.II/lac/lapack_full_matrix.h>
@@ -27,7 +28,7 @@
 
 namespace NavierStokes
 {
-  const double viscosity         = 1.;
+  const double viscosity         = 1.0;
   const double u_x_max           = 1.;
   const double factor_convective = 1.;
 
@@ -109,10 +110,12 @@ namespace NavierStokes
 
       double result = 0.0;
       if (component == 0)
-        result = pi*(4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::cos(pi*x) + 16.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::cos(pi*y) - 1.0*std::sin(t)*std::sin(pi*x) - 4.0*pi*pi*std::sin(t)*std::cos(pi*y) + 2.0*std::sin(pi*x)*std::sin(pi*x)*std::cos(t)*std::cos(pi*y))*std::sin(pi*y);
+        result = pi*(16.0*pi*pi*viscosity*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::cos(pi*y) - 4.0*pi*pi*viscosity*std::sin(t)*std::cos(pi*y) + 4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::cos(pi*x) - 1.0*std::sin(t)*std::sin(pi*x) + 2.0*std::sin(pi*x)*std::sin(pi*x)*std::cos(t)*std::cos(pi*y))*std::sin(pi*y);
+        //pi*(4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::cos(pi*x) + 16.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::cos(pi*y) - 1.0*std::sin(t)*std::sin(pi*x) - 4.0*pi*pi*std::sin(t)*std::cos(pi*y) + 2.0*std::sin(pi*x)*std::sin(pi*x)*std::cos(t)*std::cos(pi*y))*std::sin(pi*y);
 
       else if (component == 1)
-        result = pi*(4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*y) - 16.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*x) + 4.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::cos(pi*x) + 1.0*std::sin(t)*std::cos(pi*x)*std::cos(pi*y) - 2.0*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(t)*std::cos(pi*x));
+        result = pi*(-16.0*pi*pi*viscosity*std::sin(t)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*x) + 4.0*pi*pi*viscosity*std::sin(t)*std::sin(pi*x)*std::cos(pi*x) + 4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*y) + 1.0*std::sin(t)*std::cos(pi*x)*std::cos(pi*y) - 2.0*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(t)*std::cos(pi*x));
+        //pi*(4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*y) - 16.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*x) + 4.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::cos(pi*x) + 1.0*std::sin(t)*std::cos(pi*x)*std::cos(pi*y) - 2.0*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(t)*std::cos(pi*x));
 
       return result;
     }
@@ -343,15 +346,12 @@ class BDFTimeIntegratorConstants
     void
     evaluate_vorticity(VectorType &dst, const VectorType &src) const
     {
-      data.loop(&MomentumOperator::local_vorticity_domain,
-                &MomentumOperator::local_vorticity_inner_face,
-                &MomentumOperator::local_vorticity_boundary_face,
+      data.cell_loop(
+                &MomentumOperator::local_vorticity_domain,
                 this,
                 dst,
                 src,
-                true,
-                MatrixFree<dim, Number>::DataAccessOnFaces::gradients,
-                MatrixFree<dim, Number>::DataAccessOnFaces::values);
+                true);
 
       FEEvaluation<dim, -1, 0, dim, Number> eval_u(data, 0, 1);
       MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, Number> mass_inv(eval_u);
@@ -363,12 +363,6 @@ class BDFTimeIntegratorConstants
           eval_u.set_dof_values(dst);
         }
     }
-
-    void
-    precondition_block_jacobi(VectorType &dst, const VectorType &src) const;
-
-    void
-    project_initial(VectorType &dst) const;
 
   private:
     MatrixFree<dim, Number> data;
@@ -419,20 +413,6 @@ class BDFTimeIntegratorConstants
 
     void
     local_vorticity_domain(
-      const MatrixFree<dim, Number>               &data,
-      VectorType                                  &dst,
-      const VectorType                            &src,
-      const std::pair<unsigned int, unsigned int> &cell_range) const;
-
-    void
-    local_vorticity_inner_face(
-      const MatrixFree<dim, Number>               &data,
-      VectorType                                  &dst,
-      const VectorType                            &src,
-      const std::pair<unsigned int, unsigned int> &cell_range) const;
-
-    void
-    local_vorticity_boundary_face(
       const MatrixFree<dim, Number>               &data,
       VectorType                                  &dst,
       const VectorType                            &src,
@@ -502,48 +482,6 @@ class BDFTimeIntegratorConstants
                                     (Number)(std::max(fe_degree, 1u) * (fe_degree + 1.0));
         }
     }
-
-    /*
-    QGauss<1>               gauss_quad(dof_handler_u.get_fe().degree + 1);
-    FE_DGQArbitraryNodes<1> fe_1d(gauss_quad);
-    constexpr unsigned int  n = fe_degree + 1;
-    for (unsigned int c = 0; c < 2; ++c)
-      {
-        LAPACKFullMatrix<double> deriv_matrix(n, n);
-        for (unsigned int q = 0; q < n; ++q)
-          {
-            for (unsigned int i = 0; i < n; ++i)
-              for (unsigned int j = 0; j < n; ++j)
-                deriv_matrix(i, j) -= fe_1d.shape_grad(i, gauss_quad.point(q))[0] *
-                                      fe_1d.shape_value(j, gauss_quad.point(q)) *
-                                      gauss_quad.weight(q);
-          }
-        const double sign_advection = (c == 0) ? 1.0 : -1.0;
-        for (unsigned int i = 0; i < n; ++i)
-          for (unsigned int j = 0; j < n; ++j)
-            deriv_matrix(i, j) +=
-              -fe_1d.shape_value(i, Point<1>()) * fe_1d.shape_value(j, Point<1>()) *
-                (0.5 - 0.5 * sign_advection) +
-              fe_1d.shape_value(i, Point<1>(1.0)) * fe_1d.shape_value(j, Point<1>(1.0)) *
-                (0.5 + 0.5 * sign_advection);
-
-        for (unsigned int i = 0; i < n; ++i)
-          for (unsigned int j = 0; j < n; ++j)
-            deriv_matrix(i, j) *= (1. / gauss_quad.weight(i));
-        deriv_matrix.compute_eigenvalues(true, false);
-
-        eigenvalues[c].resize(n);
-        for (unsigned int i = 0; i < n; ++i)
-          eigenvalues[c][i] = deriv_matrix.eigenvalue(i);
-
-        eigenvectors[c]         = deriv_matrix.get_right_eigenvectors();
-        inverse_eigenvectors[c] = eigenvectors[c];
-        inverse_eigenvectors[c].gauss_jordan();
-        for (unsigned int i = 0; i < n; ++i)
-          for (unsigned int j = 0; j < n; ++j)
-            inverse_eigenvectors[c](i, j) *= (1. / gauss_quad.weight(j));
-      }
-    */
   }
 
 
@@ -676,7 +614,7 @@ class BDFTimeIntegratorConstants
                 /*- 0.5 * speed_normal * u_minus */;
 
               const auto convective_flux =
-                std::abs(speed_normal) * (u_minus) - speed_normal* u_minus; //TODO: choose flux
+                std::abs(speed_normal) * (u_minus) - speed_normal * u_minus; //TODO: choose flux
 
               const auto viscous_value_flux =
                 make_vectorized_array<Number>(viscosity) *
@@ -796,7 +734,7 @@ class BDFTimeIntegratorConstants
             const auto p_plus        = eval_p_plus.get_value(q);
             const auto p_jump_normal = 0.5 * normal * (p_minus - p_plus);
             eval_u_minus.submit_value(p_jump_normal, q);
-            eval_u_plus.submit_value(p_jump_normal, q);
+            eval_u_plus.submit_value(p_jump_normal, q); //TODO: why no -???
           }
 
         eval_u_minus.integrate_scatter(EvaluationFlags::values, dst);
@@ -895,37 +833,6 @@ class BDFTimeIntegratorConstants
       }
     }
 
-
-
-  template <int dim, typename Number>
-  void
-  MomentumOperator<dim, Number>::local_vorticity_inner_face(
-    const MatrixFree<dim, Number>               &data,
-    VectorType                                  &dst,
-    const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
-  {
-    (void) data;
-    (void) dst;
-    (void) src;
-    (void) face_range;
-  }
-
-
-
-  template <int dim, typename Number>
-  void
-  MomentumOperator<dim, Number>::local_vorticity_boundary_face(
-    const MatrixFree<dim, Number> &data,
-    VectorType                    &dst,
-    const VectorType &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
-  {
-    (void) data;
-    (void) dst;
-    (void) src;
-    (void) face_range;
-  }
 
 
 
@@ -1097,45 +1004,43 @@ class BDFTimeIntegratorConstants
 
       for (unsigned int face = face_range.first; face < face_range.second; face++)
         {
-          eval_minus.reinit(face);
-          eval_minus.gather_evaluate(src,
-                                     EvaluationFlags::values |
-                                       EvaluationFlags::gradients);
-
-          // Dirichlet boundary
-          if (data.get_boundary_id(face) == 1)
-            for (const unsigned int q : eval_minus.quadrature_point_indices())
-              {
-                const auto u_minus = eval_minus.get_value(q);
-
-                const auto viscous_value_flux = 2.0 * penalty_factors[face] * u_minus -
-                                                eval_minus.get_normal_derivative(q);
-                const auto viscous_gradient_flux = -u_minus;
-
-                eval_minus.submit_normal_derivative(viscous_gradient_flux, q);
-
-                eval_minus.submit_value(viscous_value_flux, q);
-              }
-          else if (data.get_boundary_id(face) == 0)
-            for (const unsigned int q : eval_minus.quadrature_point_indices())
-              {
-                // Do nothing
-                // const auto u_minus = eval_minus.get_value(q);
-
-                //eval_minus.submit_normal_derivative({} /*viscous_gradient_flux*/, q);
-
-                //eval_minus.submit_value({} /*viscous_value_flux*/, q); //TODO: this must go because now we multiply by 0 changing the values but we should do nothig here
-              }
+          if (data.get_boundary_id(face) == 0)
+          {
+            // Do nothing
+          }  
           else
-            AssertThrow(false,
-                        ExcNotImplemented(
-                          "Boundary id " +
-                          std::to_string(int(data.get_boundary_id(face))) +
-                          " not known"));
+          {
+            eval_minus.reinit(face);
+            eval_minus.gather_evaluate(src,
+                                        EvaluationFlags::values |
+                                        EvaluationFlags::gradients);
 
-          eval_minus.integrate_scatter(EvaluationFlags::values |
-                                         EvaluationFlags::gradients,
-                                       dst);
+            // Dirichlet boundary
+            if (data.get_boundary_id(face) == 1)
+                for (const unsigned int q : eval_minus.quadrature_point_indices())
+                {
+                    DEAL_II_NOT_IMPLEMENTED();
+                    const auto u_minus = eval_minus.get_value(q);
+
+                    const auto viscous_value_flux = 2.0 * penalty_factors[face] * u_minus -
+                                                    eval_minus.get_normal_derivative(q);
+                    const auto viscous_gradient_flux = -u_minus;
+
+                    eval_minus.submit_normal_derivative(viscous_gradient_flux, q);
+
+                    eval_minus.submit_value(viscous_value_flux, q);
+                }
+            else
+                AssertThrow(false,
+                            ExcNotImplemented(
+                            "Boundary id " +
+                            std::to_string(int(data.get_boundary_id(face))) +
+                            " not known"));
+
+            eval_minus.integrate_scatter(EvaluationFlags::values |
+                                            EvaluationFlags::gradients,
+                                        dst);
+            }
         }
     }
 
@@ -1208,14 +1113,12 @@ class BDFTimeIntegratorConstants
 
                 const auto flux = f * normal;
 
-                const auto u = Number(0.5) * (eval_u_minus.get_value(q) + eval_u_plus.get_value(q)); //TODO: adjust this flux
-                const auto u_grad = Number(0.5) * (eval_u_minus.get_gradient(q) + eval_u_plus.get_gradient(q));
-                const auto convective_flux = (u_grad * u) * normal;
-                //const auto gradu_u_minus = eval_u_minus.get_gradient(q) * eval_u_minus.get_value(q);
-                //const auto gradu_u_plus = eval_u_plus.get_gradient(q) * eval_u_plus.get_value(q);
-                //const auto convective_flux = Number(0.5)*(gradu_u_minus + gradu_u_plus) * normal;
-
-                
+                //const auto u = Number(0.5) * (eval_u_minus.get_value(q) + eval_u_plus.get_value(q)); //TODO: adjust this flux
+                //const auto u_grad = Number(0.5) * (eval_u_minus.get_gradient(q) + eval_u_plus.get_gradient(q));
+                //const auto convective_flux = (u_grad * u) * normal;
+                const auto gradu_u_minus = eval_u_minus.get_gradient(q) * eval_u_minus.get_value(q);
+                const auto gradu_u_plus = eval_u_plus.get_gradient(q) * eval_u_plus.get_value(q);
+                const auto convective_flux = Number(0.5)*(gradu_u_minus + gradu_u_plus) * normal;
 
                 eval_p_minus.submit_value(convective_flux - flux, q);
                 eval_p_plus.submit_value(flux - convective_flux, q);
@@ -1264,34 +1167,41 @@ class BDFTimeIntegratorConstants
                 u_plus -= make_vectorized_array(integration_constants.get_alpha(i) / time_step) *
                   evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
               }
-
-              
-              //u_plus = 0.;
-              //exact_velocity.set_time(time + 0.1 * time_step);
-              //const auto g_plus = evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
-              //exact_velocity.set_time(time - 0.1 * time_step);
-              //const auto g_minus = evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
-              //u_plus  = (g_plus - g_minus) / (0.2 * time_step);
-
               
               
-              const auto flux = (- u_plus) * normal;
+              const auto flux = (-u_plus) * normal;              
 
               Tensor<1, dim, VectorizedArray<Number>> curl_omega = CurlCompute<dim, FEFaceEvaluation<dim, -1, 0, dim, Number>>::compute(eval_vorticity, q);
+              /*
+              for (unsigned int i = 0; i < 4; ++i)
+              {
+                const auto p = eval_p_minus.quadrature_point(q);
+                Number x = p[0][i];
+                Number y = p[1][i];
+                double pi = numbers::PI;
+                Number curl_1 = -2.*pi*pi*pi*(-1.+2.*std::cos(2*pi*x))*std::sin(2*pi*y)*std::sin(time);
+                Number curl_2 = 2.*pi*pi*pi*(-1.+2.*std::cos(2*pi*y))*std::sin(2*pi*x)*std::sin(time);
+                //if (std::abs(curl_omega[0][i]- curl_1) > 1e-2)
+                  //std::cout << std::abs(curl_omega[0][i]- curl_1) << std::endl;
+                //if (std::abs(curl_omega[1][i]- curl_2) > 1e-2)
+                  //std::cout << std::abs(curl_omega[1][i]- curl_2) << std::endl;
+                
+                curl_omega[0][i] = curl_1;
+                curl_omega[1][i] = curl_2;
+
+              }
+              */
               const auto curl_flux = (-viscosity) * normal * curl_omega;
 
-              const auto u = eval_u_minus.get_value(q);
+              const auto u =  eval_u_minus.get_value(q);
               const auto grad_u = eval_u_minus.get_gradient(q);
 
-              const auto convective_value_flux = (grad_u * (u - g)) * normal; //
-              //const auto convective_gradient_flux = (u - g) * (g * normal); //
-              
-              
-              eval_p_minus.submit_value(flux + curl_flux - convective_value_flux, q); //
-              //eval_p_minus.submit_gradient(convective_gradient_flux, q); //
+              const auto convective_value_flux = (grad_u * (g - u)) * normal;
+
+              eval_p_minus.submit_value(flux + curl_flux + convective_value_flux, q);
             }
     
-            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst); //| EvaluationFlags::gradients
+            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
         }
     }
   };
@@ -1307,7 +1217,21 @@ class BDFTimeIntegratorConstants
     FE_DGQ<dim> fe_p(degree - 1);
 
     Triangulation<dim> tria;
-    GridGenerator::hyper_cube(tria, 0., 1.);
+    GridGenerator::hyper_cube(tria, -1., 1.);
+    const bool periodic_boundary = false;
+    if (periodic_boundary)
+    {
+        for (unsigned int face = 0; face < GeometryInfo<dim>::faces_per_cell;
+            ++face)
+                tria.begin()->face(face)->set_all_boundary_ids(face);
+  
+      std::vector<GridTools::PeriodicFacePair<typename Triangulation<dim>::cell_iterator>>
+        periodic_faces;
+      for (unsigned int d = 0; d < dim; ++d)
+        GridTools::collect_periodic_faces(
+          tria, 2 * d, 2 * d + 1, d, periodic_faces);
+      tria.add_periodicity(periodic_faces);
+    }
     tria.refine_global(5);
 
     const unsigned int bdf_order = 2;
@@ -1415,8 +1339,6 @@ class BDFTimeIntegratorConstants
         // Pressure step
         momentum_op.evaluate_vorticity(vec_vorticity, vec_u);
         pressure_op.compute_rhs(vec_p_rhs, vec_u, vec_vorticity);
-
-        std::cout << "L2 norms: " << vec_p_rhs.l2_norm() << std::endl;
  
         VectorTools::subtract_mean_value(vec_p_rhs);
         SolverControl control(2000, 1e-8 * vec_p_rhs.l2_norm());
@@ -1426,6 +1348,9 @@ class BDFTimeIntegratorConstants
         VectorTools::subtract_mean_value(vec_p);
         std::cout << "Pressure solver: " << control.last_step() << " iterations"
                   << std::endl;
+
+        //exact_pressure.set_time(time);
+        //VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
 
         for (unsigned int i = vec_u_old.size() - 1; i != 0; --i)
           std::swap(vec_u_old[i], vec_u_old[i - 1]);
