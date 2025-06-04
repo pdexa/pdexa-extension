@@ -1,4 +1,4 @@
-
+//Version with all terms
 #include <deal.II/base/function.h>
 #include <deal.II/base/numbers.h>
 
@@ -24,10 +24,12 @@
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include<fstream>
+
 
 namespace NavierStokes
 {
-  const double viscosity = 1.0;
+  const double viscosity = 1;
   const double u_x_max   = 1.;
 
   using namespace dealii;
@@ -52,6 +54,36 @@ namespace NavierStokes
         result = pi * std::sin(2 * pi * p[1]) * std::sin(pi * p[0]) * std::sin(pi * p[0]) * std::sin(t);
       else if (component == 1)
         result = -pi * std::sin(2 * pi * p[0]) * std::sin(pi * p[1]) * std::sin(pi * p[1]) * std::sin(t);
+      
+      return result;
+    }
+
+  private:
+    const double u_x_max, viscosity;
+  };
+
+  template <int dim>
+  class AnalyticalCurl : public dealii::Function<dim>
+  {
+  public:
+    AnalyticalCurl(const double u_x_max, const double viscosity)
+      : dealii::Function<dim>(dim, 0.0)
+      , u_x_max(u_x_max)
+      , viscosity(viscosity)
+    {}
+
+    double
+    value(const dealii::Point<dim> &p, const unsigned int component = 0) const final
+    {
+      const double t  = this->get_time();
+      const double pi = dealii::numbers::PI;
+
+      double result = 0.0;
+      if (component == 0)
+        result = - 2 * pi * pi * (std::cos(2 * pi * p[0]) * std::sin(pi * p[1]) * std::sin(pi * p[1]) + 
+        std::cos(2 * pi * p[1]) * std::sin(pi * p[0]) * std::sin(pi * p[0])) * std::sin(t);
+      else if (component == 1)
+        result = 0;
       
       return result;
     }
@@ -108,10 +140,14 @@ namespace NavierStokes
       double result = 0.0;
       if (component == 0)
         result = pi*(4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::cos(pi*x) + 16.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::cos(pi*y) - 1.0*std::sin(t)*std::sin(pi*x) - 4.0*pi*pi*std::sin(t)*std::cos(pi*y) + 2.0*std::sin(pi*x)*std::sin(pi*x)*std::cos(t)*std::cos(pi*y))*std::sin(pi*y);
-
+        /*result = pi * std::sin(pi * x) * std::sin(pi * x) * (2 * pi * pi * std::sin(t) * std::sin(t) * std::sin(2 * pi * x) * std::sin(pi * y) * std::sin(pi * y)
+        + std::cos(t) * std::sin(2 * pi * y)) - pi * std::sin(t) * std::sin(pi * x) * std::sin(pi * y)
+        - 2 * viscosity * pi * pi * pi * (2 * std::cos(2 * pi * x) - 1) * std::sin(2 * pi * y) * sin (t);*/
       else if (component == 1)
         result = pi*(4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*y) - 16.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*x) + 4.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::cos(pi*x) + 1.0*std::sin(t)*std::cos(pi*x)*std::cos(pi*y) - 2.0*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(t)*std::cos(pi*x));
-      
+        /*result = pi * std::sin(pi * y) * std::sin(pi * y) * (2 * pi * pi * std::sin(t) * std::sin(t) * std::sin(2 * pi * y) * std::sin(pi * x) * std::sin(pi * x)
+        - std::cos(t) * std::sin(2 * pi * x)) + pi * std::sin(t) * std::cos(pi * x) * std::cos(pi * y)
+        + 2 * viscosity * pi * pi * pi * (2 * std::cos(2 * pi * y) - 1) * std::sin(2 * pi * x) * sin (t);*/
      //This RHS is true for Stokes problem
       /*if (component == 0)
         result = -viscosity * 2 * pi * pi * pi * std::sin(2 * pi * y) * (2 * cos(2 * pi * x) - 1) - pi * std::sin(pi * x) * std::sin(pi * y);
@@ -193,6 +229,109 @@ namespace NavierStokes
     return result;
   }
 
+  class BDFTimeIntegratorConstants
+  {
+    public:
+      BDFTimeIntegratorConstants(unsigned int const current_order)
+      {
+          order = current_order;
+          alpha.resize(current_order);
+          beta.resize(current_order);
+          switch(current_order)
+          {
+              case 1:
+              {
+              gamma0   = 1.0;
+              alpha[0] = 1.0;
+              beta[0] = 1.0;
+              break;
+              }
+              case 2:
+              {
+              gamma0   = 3.0 / 2.0;
+              alpha[0] = 2.0;
+              alpha[1] = -0.5;
+              beta[0] = 2.0;
+              beta[1] = -1.0;
+              break;
+              }
+              case 3:
+              {
+              gamma0   = 11. / 6.;
+              alpha[0] = 3.;
+              alpha[1] = -1.5;
+              alpha[2] = 1. / 3.;
+              beta[0] = 3.0;
+              beta[1] = -3.0;
+              beta[2] = 1.0;
+              break;
+              }
+              case 4:
+              {
+              gamma0   = 25. / 12.;
+              alpha[0] = 4.;
+              alpha[1] = -3.;
+              alpha[2] = 4. / 3.;
+              alpha[3] = -1. / 4.;
+              beta[0] = 4.;
+              beta[1] = -6.;
+              beta[2] = 4.;
+              beta[3] = -1.;
+              break;
+              }
+              default:
+              {
+                  AssertThrow(false, dealii::ExcMessage("Specified order of BDF scheme not implemented."));
+              }
+          }            
+      }
+
+      double get_gamma0()
+      {
+          return gamma0;
+      }
+      double get_alpha(const unsigned int i)
+      {
+          return alpha[i];
+      }
+      double get_beta(const unsigned int i)
+      {
+          return beta[i];
+      }
+      unsigned int get_order()
+      {
+        return order;
+      }
+
+    std::vector<double> alpha;
+    std::vector<double> beta;
+    double gamma0;
+    unsigned int order;
+  };
+
+  template<int dim, typename FEEval>
+  struct CurlCompute
+  {
+    static typename FEEval::value_type
+    compute(FEEval const & fe_eval, unsigned int const q_point)
+    {
+      return fe_eval.get_curl(q_point);
+    }
+  };
+
+  template<typename FEEval>
+  struct CurlCompute<2, FEEval>
+  {
+    static typename FEEval::value_type
+    compute(FEEval const & fe_eval, unsigned int const q_point)
+    {
+      typename FEEval::gradient_type temp = fe_eval.get_gradient(q_point);
+      typename FEEval::value_type curl;
+      curl[0] = temp[0][1];  //   d(phi)/dx2
+      curl[1] = -temp[0][0]; // - d(phi)/dx1
+      return curl;
+    }
+  };
 
 
   template <int dim, typename Number>
@@ -264,6 +403,27 @@ namespace NavierStokes
     }
 
     void
+    project_curlVelocity(const VectorType &velocity, VectorType &dst)
+    {
+      data.cell_loop(
+        &MomentumOperator::local_vorticity_domain,
+        this,
+        dst,
+        velocity,
+        true);
+      FEEvaluation<dim, -1, 0, dim, Number> eval_u(data, 0, 1);
+      MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, Number> mass_inv(eval_u);
+        
+      for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
+      {
+        eval_u.reinit(cell);
+        eval_u.read_dof_values(dst);
+        mass_inv.apply(eval_u.begin_dof_values(), eval_u.begin_dof_values());
+        eval_u.set_dof_values(dst);
+      }
+    }
+
+    void
     precondition_block_jacobi(VectorType &dst, const VectorType &src) const;
 
     void
@@ -313,6 +473,12 @@ namespace NavierStokes
                             VectorType                                  &dst,
                             const std::vector<const VectorType *>       &src,
                             const std::pair<unsigned int, unsigned int> &cell_range);
+                            void
+    local_vorticity_domain(
+                              const MatrixFree<dim, Number>               &data,
+                              VectorType                                  &dst,
+                              const VectorType                            &src,
+                              const std::pair<unsigned int, unsigned int> &cell_range) const;
   };
 
 
@@ -529,7 +695,48 @@ namespace NavierStokes
     const VectorType                            &src,
     const std::pair<unsigned int, unsigned int> &face_range) const
   {
-    
+    FEFaceEvaluation<dim, -1, 0, dim, Number> eval_minus(data, true);
+    AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
+    exact_velocity.set_time(time);
+
+    for (unsigned int face = face_range.first; face < face_range.second; face++)
+      {
+        eval_minus.reinit(face);
+        eval_minus.gather_evaluate(src,
+                                   EvaluationFlags::values | EvaluationFlags::gradients);
+
+        // Dirichlet boundary
+        if (data.get_boundary_id(face) == 0)
+          for (const unsigned int q : eval_minus.quadrature_point_indices())
+            {
+              const auto speed_normal = speeds_faces(face, q);
+              const auto u_minus      = eval_minus.get_value(q);
+              const auto u_plus = evaluate_function(exact_velocity, eval_minus.quadrature_point(q));
+
+              const auto convective_flux =
+                std::abs(speed_normal) * u_minus - speed_normal * u_minus;
+
+              const auto viscous_value_flux =
+                make_vectorized_array<Number>(viscosity) *
+                eval_minus.get_normal_derivative(q) -
+                2.0 * make_vectorized_array<Number>(viscosity) * 
+                penalty_factors[face] * u_minus;
+              const auto viscous_gradient_flux =
+                make_vectorized_array<Number>(-viscosity) * (u_minus);
+
+              eval_minus.submit_normal_derivative(viscous_gradient_flux, q);
+
+              eval_minus.submit_value(convective_flux - viscous_value_flux, q);
+            }
+        else
+          AssertThrow(false,
+                      ExcNotImplemented("Boundary id " +
+                                        std::to_string(int(data.get_boundary_id(face))) +
+                                        " not known"));
+
+        eval_minus.integrate_scatter(EvaluationFlags::values | EvaluationFlags::gradients,
+                                     dst);
+      }
   }
 
 
@@ -634,8 +841,110 @@ namespace NavierStokes
     const std::vector<const VectorType *>       &src,
     const std::pair<unsigned int, unsigned int> &face_range)
   {
-    
+    FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_minus(data, true, 0);
+    FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_minus(data, true, 1);
+
+    double time_step = (1.0 / this->time_factor) * (3.0 / 2.0); 
+
+    AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
+    exact_velocity.set_time(time);
+
+    AnalyticalSolutionVelocity<dim> exact_velocity_m(u_x_max, viscosity);
+    exact_velocity_m.set_time(time - time_step);
+
+    AnalyticalSolutionVelocity<dim> exact_velocity_m2(u_x_max, viscosity);
+    exact_velocity_m2.set_time(time - 2.0 * time_step);
+
+
+    for (unsigned int face = face_range.first; face < face_range.second; face++)
+      {
+        eval_u_minus.reinit(face);
+        eval_p_minus.reinit(face);
+
+        eval_u_minus.gather_evaluate(*src[1], EvaluationFlags::values);
+        eval_p_minus.gather_evaluate(*src[2], EvaluationFlags::values);
+
+        // Dirichlet boundary
+        for (const unsigned int q : eval_u_minus.quadrature_point_indices())
+          {
+            const auto normal = eval_u_minus.get_normal_vector(q);
+            const auto u_plus =
+              evaluate_function(exact_velocity, eval_u_minus.quadrature_point(q));
+            const auto u_plus_m =
+              evaluate_function(exact_velocity_m, eval_u_minus.quadrature_point(q));
+              const auto u_plus_m2 =
+              evaluate_function(exact_velocity_m2, eval_u_minus.quadrature_point(q));
+
+            auto extrapolated_velocity = 2.0 * u_plus_m - u_plus_m2;
+            //extrapolated_velocity = u_plus;
+            const auto speed_normal =
+              0.5 * (normal * (eval_u_minus.get_value(q) + extrapolated_velocity));
+            speeds_faces(face, q) = speed_normal;
+            const auto convective_flux =
+              (-speed_normal + std::abs(speed_normal)) * u_plus;
+            const auto viscous_value_flux =
+              2.0 * make_vectorized_array<Number>(viscosity) *
+              penalty_factors[face] * u_plus;
+            const auto viscous_gradient_flux =
+              make_vectorized_array<Number>(-viscosity) * (u_plus);
+            
+            const auto p_minus       = eval_p_minus.get_value(q);
+            const auto p_jump_normal = normal * (p_minus - p_minus);
+
+            eval_u_minus.submit_normal_derivative(viscous_gradient_flux, q);
+
+            eval_u_minus.submit_value(convective_flux + viscous_value_flux +
+                                        p_jump_normal,
+                                      q);
+          }
+
+        eval_u_minus.integrate_scatter(EvaluationFlags::values |
+                                         EvaluationFlags::gradients,
+                                       dst);
+      }
   }
+
+  template <int dim, typename Number>
+  void
+  MomentumOperator<dim, Number>::local_vorticity_domain(
+    const MatrixFree<dim, Number>               &data,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &cell_range) const
+    {
+      FEEvaluation<dim, -1, 0, dim, Number> eval_u(data, 0);
+      AnalyticalCurl<dim> exact_curl(u_x_max, viscosity);
+      exact_curl.set_time(time);
+    
+      for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        eval_u.reinit(cell);
+        eval_u.gather_evaluate(src, EvaluationFlags::gradients);
+    
+        for(unsigned int q = 0; q < eval_u.n_q_points; ++q)
+        {
+          const auto curl =
+              evaluate_function(exact_curl, eval_u.quadrature_point(q));
+          if constexpr(dim == 2)
+          {
+            const auto omega = eval_u.get_curl(q);
+            dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> omega_vector;
+            for (unsigned int d = 0; d < dim; ++d)
+              omega_vector[d] = 0.;
+            omega_vector[0] = omega[0];
+            eval_u.submit_value(omega_vector, q);   
+            //if(omega_vector[0][0]/omega[0][0] < 31.5 || omega_vector[0][0]/omega[0][0] > 32.1)
+              //std::cout<<omega_vector[0]/omega[0]<<"\n";
+          }
+          else if constexpr(dim == 3)
+          {
+            eval_u.submit_value(eval_u.get_curl(q), q);
+          }
+        }
+    
+        eval_u.integrate_scatter(EvaluationFlags::values, dst);
+      }
+    }
 
 
 
@@ -659,8 +968,8 @@ namespace NavierStokes
       for (unsigned int face = 0; face < penalty_factors.size(); ++face)
         {
           eval_face.reinit(face);
-          /*if (face < matrix_free.n_inner_face_batches())
-            {*/
+          if (face < matrix_free.n_inner_face_batches())
+            {
               eval_face_out.reinit(face);
               penalty_factors[face] =
                 (std::abs((eval_face.normal_vector(0) *
@@ -668,13 +977,13 @@ namespace NavierStokes
                  std::abs((eval_face_out.normal_vector(0) *
                            eval_face_out.inverse_jacobian(0))[dim - 1])) *
                 (Number)(std::max(fe_degree, 1u) * (fe_degree + 1.0));
-            //}
-          /*else
+            }
+          else
             penalty_factors[face] =
             2.0 *
             std::abs((eval_face.normal_vector(0) *
                       eval_face.inverse_jacobian(0))[dim - 1]) *
-            (Number)(std::max(fe_degree, 1u) * (fe_degree + 1.0));*/
+            (Number)(std::max(fe_degree, 1u) * (fe_degree + 1.0));
         }
     }
 
@@ -700,7 +1009,7 @@ namespace NavierStokes
 
     void
     compute_rhs(VectorType &dst, const VectorType &u_rhs,
-      const VectorType &u_extrapolated)
+      const VectorType &u_extrapolated, const VectorType &curl_u)
     {
       matrix_free->loop(&PressureOperator::local_rhs_domain,
                         &PressureOperator::local_rhs_inner_face,
@@ -708,7 +1017,7 @@ namespace NavierStokes
                         this,
                         dst,
                         std::vector<const VectorType *>{&u_rhs,
-                          &u_extrapolated},
+                          &u_extrapolated, &curl_u},
                         true,
                         MatrixFree<dim, Number>::DataAccessOnFaces::gradients,
                         MatrixFree<dim, Number>::DataAccessOnFaces::gradients);
@@ -805,7 +1114,29 @@ namespace NavierStokes
       const VectorType                            &src,
       const std::pair<unsigned int, unsigned int> &face_range) const
     {
-      
+      FEFaceEvaluation<dim, -1, 0, 1, Number> eval_minus(data, true, 1, 2);
+
+      for (unsigned int face = face_range.first; face < face_range.second; face++)
+      {
+        eval_minus.reinit(face);
+        if (data.get_boundary_id(face) == 0)
+            for (const unsigned int q : eval_minus.quadrature_point_indices())
+            {
+              eval_minus.submit_normal_derivative({} , q);
+
+              eval_minus.submit_value({} , q);
+            }
+        else
+          AssertThrow(false,
+                      ExcNotImplemented(
+                        "Boundary id " +
+                        std::to_string(int(data.get_boundary_id(face))) +
+                        " not known"));
+
+        eval_minus.integrate_scatter(EvaluationFlags::values |
+                                         EvaluationFlags::gradients,
+                                       dst);
+      }
     }
 
     void
@@ -929,14 +1260,97 @@ namespace NavierStokes
         }
     }
 
-    //needs to be fixed! It is the same as it was for velocity-correction projection methods
     void
     local_rhs_boundary_face(const MatrixFree<dim, Number> &data,
                             VectorType &dst,
                             const std::vector<const VectorType *> &src,
                             const std::pair<unsigned int, unsigned int> &face_range) const
     {
-     
+      FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_minus(data, true, 0, 1);
+      FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_extrap_minus(data, true, 0, 1);
+      FEFaceEvaluation<dim, -1, 0, dim, Number> eval_curlu_minus(data, true, 0, 1);
+      FEFaceEvaluation<dim, -1, 0, 1, Number>   eval_p_minus(data, true, 1, 1);
+
+      AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
+      exact_velocity.set_time(time);
+      AnalyticalSolutionVelocity<dim> exact_velocity_m(u_x_max, viscosity);
+      exact_velocity_m.set_time(time - time_step);
+      AnalyticalSolutionVelocity<dim> exact_velocity_m2(u_x_max, viscosity);
+      exact_velocity_m2.set_time(time - 2.0 *  time_step);
+
+      BDFTimeIntegratorConstants integration_constants(2);
+
+
+      for (unsigned int face = face_range.first; face < face_range.second; face++)
+        {
+          eval_p_minus.reinit(face);
+          eval_u_minus.reinit(face);
+          eval_u_extrap_minus.reinit(face);
+          eval_curlu_minus.reinit(face);
+
+          eval_u_minus.gather_evaluate(*src[0], EvaluationFlags::values | EvaluationFlags::gradients);
+          eval_u_extrap_minus.gather_evaluate(*src[1], EvaluationFlags::values);
+          eval_curlu_minus.gather_evaluate(*src[2], EvaluationFlags::gradients);
+
+          /*if (false)
+          for (const unsigned int q : eval_u_minus.quadrature_point_indices())
+            {
+              const auto u_minus = eval_u_minus.get_value(q);
+              const auto u_plus  = u_minus;
+              const auto normal  = eval_u_minus.normal_vector(q);
+
+              const auto flux = 0.5 * normal * (u_minus + u_plus);
+
+              eval_p_minus.submit_value(-flux, q);
+            }*/
+
+          
+            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+            {
+
+              exact_velocity.set_time(time);
+              auto g = evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
+              auto g_time_der =  make_vectorized_array(integration_constants.get_gamma0() / time_step) * g;
+                  
+              
+              for (unsigned int i = 0; i < integration_constants.get_order(); ++i)
+              {
+                exact_velocity.set_time(time - (i + 1) * time_step);
+                g_time_der -= make_vectorized_array(integration_constants.get_alpha(i) / time_step) *
+                  evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
+              }
+              /*const auto g =
+                evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));*/
+              const auto g_m =
+                evaluate_function(exact_velocity_m, eval_p_minus.quadrature_point(q));
+                const auto g_m2 =
+                evaluate_function(exact_velocity_m2, eval_p_minus.quadrature_point(q));
+              
+              const auto velocity_extrapolated = (2.0 * g_m - g_m2);
+              const auto normal  = eval_u_minus.normal_vector(q);
+              const auto u_minus = eval_u_minus.get_value(q);
+              const auto u_minus_grad = eval_u_minus.get_gradient(q);
+              const auto u_extrap_minus = eval_u_extrap_minus.get_value(q);
+              //const auto u_extrap_minus = eval_u_minus.get_value(q);
+
+              Tensor<1, dim, VectorizedArray<Number>> u_minus_curlCurl 
+              = CurlCompute<dim, FEFaceEvaluation<dim, -1, 0, dim, Number>>::compute(eval_curlu_minus, q);
+              //const auto flux    = normal * velocity_extrapolated;
+
+              
+
+              const auto grad_flux = (u_minus - g) * (u_extrap_minus * normal);
+              //const auto g_time_der = make_vectorized_array(3./(2*time_step)) * g - make_vectorized_array(2./time_step) * g_m
+              //                        + make_vectorized_array(1./(2*time_step)) * g_m2;
+              const auto value_flux = -g_time_der - u_minus_grad * (u_minus - g) 
+              - viscosity * u_minus_curlCurl;
+              
+              eval_p_minus.submit_value(value_flux * normal, q);
+              eval_p_minus.submit_gradient(grad_flux, q);
+            }
+
+          eval_p_minus.integrate_scatter(EvaluationFlags::values | EvaluationFlags::gradients, dst);
+        }
     }
 
     void
@@ -1047,28 +1461,17 @@ namespace NavierStokes
 
 
   template <int dim>
-  void
-  test(const unsigned int degree)
+  std::vector<double>
+  test(const unsigned int degree, const unsigned int refinement = 5, const double endTime = 1.0, double time_step = -1, std::ofstream *fout = nullptr)
   {
     FESystem<dim> fe_u(FE_DGQ<dim>(degree), dim);
     FE_DGQ<dim>   fe_p(degree - 1);
 
+    std::vector<double> relativeErrorNorms(3);
+
     Triangulation<dim> tria;
-    GridGenerator::hyper_cube(tria, -1, 1.);
-    
-    // set boundary ids on boundaries to the number of the face
-    for (unsigned int face = 0; face < GeometryInfo<dim>::faces_per_cell;
-      ++face)
-    tria.begin()->face(face)->set_all_boundary_ids(face);
-
-    std::vector<GridTools::PeriodicFacePair<typename Triangulation<dim>::cell_iterator>>
-      periodic_faces;
-    for (unsigned int d = 0; d < dim; ++d)
-      GridTools::collect_periodic_faces(
-        tria, 2 * d, 2 * d + 1, d, periodic_faces);
-    tria.add_periodicity(periodic_faces);
-
-    tria.refine_global(5);
+    GridGenerator::hyper_cube(tria, 0 , 1);
+    tria.refine_global(refinement);
 
     DoFHandler<dim> dof_handler_u(tria);
     dof_handler_u.distribute_dofs(fe_u);
@@ -1079,8 +1482,8 @@ namespace NavierStokes
               << " element" << std::endl;
     std::cout << "Number of degrees of freedom: " << dof_handler_u.n_dofs() << " + "
               << dof_handler_p.n_dofs() << std::endl;
-
-    const double time_step = 0.02 * tria.begin_active()->minimum_vertex_distance();
+    if(time_step < 0)
+      time_step = 0.02 * tria.begin_active()->minimum_vertex_distance();
 
     MomentumOperator<dim, double> momentum_op;
     momentum_op.reinit(dof_handler_u, dof_handler_p);
@@ -1088,7 +1491,8 @@ namespace NavierStokes
     momentum_op.set_time_factor(1.5 / time_step);
 
     LinearAlgebra::distributed::Vector<double> vec_u, vec_u_m, vec_u_analytical,
-      vec_u_extrapolated, vec_u_old, vec_u_rhs, vec_u_difference, vec_p,  vec_p_m, vec_p_rhs, vec_p_extrapolated, vec_p_analytical, vec_p_difference;
+      vec_curl_exact, vec_curl_diff,
+      vec_u_extrapolated, vec_u_old, vec_u_rhs, vec_u_difference, vec_u_curl, vec_p,  vec_p_m, vec_p_rhs, vec_p_extrapolated, vec_p_analytical, vec_p_difference;
     momentum_op.get_matrix_free().initialize_dof_vector(vec_u, 0);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_u_m, 0);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_u_rhs, 0);
@@ -1096,6 +1500,7 @@ namespace NavierStokes
     momentum_op.get_matrix_free().initialize_dof_vector(vec_u_extrapolated, 0);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_u_old, 0);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_u_difference, 0);
+    momentum_op.get_matrix_free().initialize_dof_vector(vec_u_curl, 0);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_p, 1);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_p_m, 1);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_p_rhs, 1);
@@ -1103,8 +1508,13 @@ namespace NavierStokes
     momentum_op.get_matrix_free().initialize_dof_vector(vec_p_extrapolated, 1);
     momentum_op.get_matrix_free().initialize_dof_vector(vec_p_difference, 1);
 
+
+    momentum_op.get_matrix_free().initialize_dof_vector(vec_curl_exact, 0);
+    momentum_op.get_matrix_free().initialize_dof_vector(vec_curl_diff, 0);
+
     PressureOperator<dim, double> pressure_op;
     pressure_op.reinit(momentum_op.get_matrix_free());
+    pressure_op.set_time_step(time_step);
 
     MappingQ1<dim>                  mapping;
     AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
@@ -1112,7 +1522,6 @@ namespace NavierStokes
     VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u_m);
     exact_velocity.set_time(time_step);
     VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
-
     
 
     AnalyticalSolutionPressure<dim> exact_pressure(u_x_max, viscosity);
@@ -1120,14 +1529,21 @@ namespace NavierStokes
     VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p_m);
     exact_pressure.set_time(time_step);
     VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
+
+    AnalyticalCurl<dim> exact_curl(u_x_max, viscosity);
+    exact_curl.set_time(0.);
    
 
     double                          time     = time_step;
-    const double                    end_time = 1000. * time_step;
+    //const double                    end_time = 100. * time_step;
 
     unsigned int time_step_number = 1;
-    std::cout<<"Time step: "<<time_step<<"\nEnd time: "<<end_time<<"\n";
-    while (time <= end_time)
+    unsigned int numberTimeSteps = int(endTime/time_step);
+
+    std::cout<<"Time step: "<<time_step<<"\nEnd time: "<<endTime<<"\n";
+    std::cout<<"number of time steps: "<<numberTimeSteps<<"\n";
+
+    while (time <= endTime)
     {
       ++time_step_number;
       time += time_step;
@@ -1149,23 +1565,24 @@ namespace NavierStokes
       //Calculation of RHS for Momentum eq.
       momentum_op.compute_rhs(vec_u_rhs, vec_u_old, vec_u_extrapolated, vec_p_extrapolated);
 
-      SolverControl control(1000, 1e-8 * vec_u_rhs.l2_norm());
+      SolverControl control(5000, 1e-8 * vec_u_rhs.l2_norm());
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver(control);
       vec_u = 0;
       solver.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
       std::cout << "Momentum solver: " << control.last_step() << " iterations"
                   << std::endl;
-
+      
+      momentum_op.project_curlVelocity(vec_u, vec_u_curl);
 
       pressure_op.set_time(time);
-      pressure_op.compute_rhs(vec_p_rhs, vec_u, vec_u_extrapolated);
+      pressure_op.compute_rhs(vec_p_rhs, vec_u, vec_u_extrapolated, vec_u_curl);
 
       VectorTools::subtract_mean_value(vec_p_rhs);
-      SolverControl control_p(1000, 1e-10 * vec_p_rhs.l2_norm());
+      SolverControl control_p(5000, 1e-10 * vec_p_rhs.l2_norm());
       SolverCG<LinearAlgebra::distributed::Vector<double>> solver_p(control_p);
       vec_p = 0;
       solver_p.solve(pressure_op, vec_p, vec_p_rhs, PreconditionIdentity());
-      //VectorTools::subtract_mean_value(vec_p);
+      VectorTools::subtract_mean_value(vec_p);
 
   
       std::cout << "Pressure solver: " << control_p.last_step() << " iterations"
@@ -1212,9 +1629,26 @@ namespace NavierStokes
       std::cout << "L2 errors pressure: " <<  pressure_error<< std::endl;
 
       std::cout<<"pressure relative L2 norm: "<<vec_p_difference.l2_norm() / vec_p_analytical.l2_norm() << std::endl;
-      std::cout<<"pressure velocity L2 norm: "<<vec_u_difference.l2_norm() / vec_u_analytical.l2_norm() << std::endl;
+      std::cout<<"velocity relative L2 norm: "<<vec_u_difference.l2_norm() / vec_u_analytical.l2_norm() << std::endl;
       
-      if(time_step_number % 5 == 0)
+      relativeErrorNorms[0] = tria.begin_active()->minimum_vertex_distance();
+      relativeErrorNorms[1] = vec_p_difference.l2_norm() / vec_p_analytical.l2_norm();
+      relativeErrorNorms[2] = vec_u_difference.l2_norm() / vec_u_analytical.l2_norm();
+
+      exact_curl.set_time(time);
+      VectorTools::interpolate(mapping, dof_handler_u, exact_curl, vec_curl_exact);
+      vec_curl_diff = 0.0;
+      vec_curl_diff.sadd(1.0, -1.0, vec_u_curl);
+      vec_curl_diff.sadd(1.0, 1.0, vec_curl_exact);
+
+      if(fout != nullptr)
+      {
+        std::cout<<"printing in file\n";
+        (*fout)<< time << "\t" << vec_p_difference.l2_norm() / vec_p_analytical.l2_norm() << "\t"
+          << vec_u_difference.l2_norm() / vec_u_analytical.l2_norm() <<"\n";
+      }
+      
+      if(time_step_number % 100 == 0)
       {
         DataOut<dim> data_out;
 
@@ -1231,21 +1665,38 @@ namespace NavierStokes
         data_out.add_data_vector(dof_handler_p, vec_p_analytical, "pressure_analytical");  
         data_out.add_data_vector(dof_handler_p, vec_p_difference, "pressure_difference");  
 
+        data_out.add_data_vector(dof_handler_u, vec_u_curl, "curl");
+        data_out.add_data_vector(dof_handler_u, vec_curl_exact, "curl_analytical");  
+        data_out.add_data_vector(dof_handler_u, vec_curl_diff, "curl_difference");  
+
         Vector<double> mpi_owner(tria.n_active_cells());
         mpi_owner = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
         data_out.add_data_vector(mpi_owner, "owner");
         data_out.build_patches(mapping, fe_u.degree, DataOut<dim>::curved_inner_cells);
 
         const std::string filename =
-          "solution-L2-" + std::to_string(time_step_number) + ".vtu";
+          "solutionJacobian-L2-"+ std::to_string(tria.begin_active()->minimum_vertex_distance())+ "-" + std::to_string(time_step_number) + ".vtu";
         data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
 
       }
 
     }
-        
+    return relativeErrorNorms;
     
   }
+
+  void  convergence_space(std::ofstream & fout)
+  {
+    unsigned int max_refinement =5, min_refinement = 1;
+    std::vector<double> relative_error_norms;
+    fout<<"delta x,Error p,Error u\n";
+    for(unsigned int ref = min_refinement; ref <= max_refinement; ++ref)
+    {
+      relative_error_norms = test<2>(3, ref, 1.5, -1);
+      fout<<relative_error_norms[0]<<","<<relative_error_norms[1]
+        <<","<<relative_error_norms[2]<<"\n";
+    }
+  } 
   
 
 } // namespace NavierStokes
@@ -1256,7 +1707,15 @@ int
 main(int argc, char **argv)
 {
   dealii::Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
+  /*std::ofstream fout_test("relative_errors_over_time.txt");
+  NavierStokes::test<2>(3, 5, 1, -1, &fout_test);
+  fout_test.close();*/
 
-  NavierStokes::test<2>(2);
+  std::ofstream fout;
+  fout.open("convergece_space1-5timeStepCFL.csv");
+  NavierStokes::convergence_space(fout);
+  fout.close();
+  
+  //NavierStokes::test<2>(3);
   //NavierStokes::test<2>(3);
 }
