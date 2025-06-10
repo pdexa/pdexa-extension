@@ -195,6 +195,45 @@ namespace NavierStokes
     const double u_x_max, viscosity;
   };
 
+  template <int dim>
+  class AnalyticalNeumann : public dealii::Function<dim>
+  {
+  public:
+  AnalyticalNeumann(const double u_x_max, const double viscosity)
+      : dealii::Function<dim>(dim, 0.0)
+      , u_x_max(u_x_max)
+      , viscosity(viscosity)
+    {}
+
+    Tensor<1, dim, double>
+    gradient(const dealii::Point<dim> &p, const unsigned int component = 0) const final
+    {
+      const double t  = this->get_time();
+      const double pi = dealii::numbers::PI;
+
+      const double x = p[0];
+      const double y = p[1];
+
+      Tensor<1, dim, double> result;
+      if (component == 0)
+      {
+        result[0] = (viscosity * pi * pi * std::sin(2 * pi * y) * std::sin(2 * pi * x)  
+              - std ::cos(pi * x) * sin (pi * y)) * sin(t);
+        result[1] = viscosity * 2 * pi * pi * std::cos(2 * pi * y) * std::sin(pi * x) * std::sin(pi * x) * sin(t);
+      }
+      else if (component == 1)
+      {
+        result[0] = -viscosity * 2 * pi * pi * std::cos(2 * pi * x) * std::sin(pi * y) * std::sin(pi * y) * sin(t);
+        result[1] = (-viscosity * pi * pi * std::sin(2 * pi * y) * std::sin(2 * pi * x) 
+        - std ::cos(pi * x) * sin (pi * y)) * sin(t);
+      }
+        
+      return result;
+    }
+  private:
+    const double u_x_max, viscosity;
+  };
+
   template <int dim, typename Number, int n_components = dim>
   Tensor<1, n_components, VectorizedArray<Number>>
   evaluate_function(const Function<dim>                       &function,
@@ -228,6 +267,31 @@ namespace NavierStokes
       }
     return result;
   }
+
+  template <int dim, typename Number, int n_components = dim>
+  Tensor<1, n_components, VectorizedArray<Number>>
+  evaluate_neumannBC_function(const Function<dim>             &function,
+                    const Point<dim, VectorizedArray<Number>> &p_vectorized, 
+                    const Tensor<1, dim, VectorizedArray<Number>> &normal_vectorized)
+  {
+    AssertDimension(function.n_components, n_components);
+    Tensor<1, n_components, VectorizedArray<Number>> result;
+    for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
+      {
+        Point<dim> p;
+        Tensor<1, dim, Number> normal;
+        for (unsigned int d = 0; d < dim; ++d)
+        {
+          p[d] = p_vectorized[d][v];
+          normal[d] = normal_vectorized[d][v];
+        }
+          
+        for (unsigned int d = 0; d < n_components; ++d)
+          result[d][v] = function.gradient(p, d) * normal;
+      }
+    return result;
+  }
+
 
   class BDFTimeIntegratorConstants
   {
@@ -728,6 +792,15 @@ namespace NavierStokes
 
               eval_minus.submit_value(convective_flux - viscous_value_flux, q);
             }
+        else if (data.get_boundary_id(face) == 1)
+        {
+          for (const unsigned int q : eval_minus.quadrature_point_indices())
+          {
+            eval_minus.submit_normal_derivative({}, q);
+
+            eval_minus.submit_value({}, q);
+          }
+        }
         else
           AssertThrow(false,
                       ExcNotImplemented("Boundary id " +
@@ -855,6 +928,11 @@ namespace NavierStokes
     AnalyticalSolutionVelocity<dim> exact_velocity_m2(u_x_max, viscosity);
     exact_velocity_m2.set_time(time - 2.0 * time_step);
 
+    AnalyticalNeumann<dim> neumann_BC(u_x_max, viscosity);
+    neumann_BC.set_time(time);
+
+
+
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
@@ -865,7 +943,9 @@ namespace NavierStokes
         eval_p_minus.gather_evaluate(*src[2], EvaluationFlags::values);
 
         // Dirichlet boundary
-        for (const unsigned int q : eval_u_minus.quadrature_point_indices())
+        if(data.get_boundary_id(face) == 0)
+        {
+          for (const unsigned int q : eval_u_minus.quadrature_point_indices())
           {
             const auto normal = eval_u_minus.get_normal_vector(q);
             const auto u_plus =
@@ -897,6 +977,27 @@ namespace NavierStokes
                                         p_jump_normal,
                                       q);
           }
+        }
+
+        //Neumann Boundary
+        else if(data.get_boundary_id(face) == 1)
+        {
+          for (const unsigned int q : eval_u_minus.quadrature_point_indices())
+          {
+            const auto normal = eval_u_minus.get_normal_vector(q);
+            const auto p_minus       = eval_p_minus.get_value(q);
+            const auto h = evaluate_neumannBC_function(neumann_BC, eval_u_minus.quadrature_point(q), normal);
+            eval_u_minus.submit_value(p_minus*normal + h, q);
+            eval_u_minus.submit_normal_derivative({}, q);
+          }
+        }
+        else
+        AssertThrow(false,
+                    ExcNotImplemented(
+                      "Boundary id " +
+                      std::to_string(int(data.get_boundary_id(face))) +
+                      " not known"));
+
 
         eval_u_minus.integrate_scatter(EvaluationFlags::values |
                                          EvaluationFlags::gradients,
@@ -1119,13 +1220,28 @@ namespace NavierStokes
       for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
         eval_minus.reinit(face);
+        //Neumann 
         if (data.get_boundary_id(face) == 0)
-            for (const unsigned int q : eval_minus.quadrature_point_indices())
-            {
-              eval_minus.submit_normal_derivative({} , q);
+          for (const unsigned int q : eval_minus.quadrature_point_indices())
+          {
+            eval_minus.submit_normal_derivative({} , q);
 
-              eval_minus.submit_value({} , q);
-            }
+            eval_minus.submit_value({} , q);
+          }
+        else if (data.get_boundary_id(face) == 1)
+        {
+          eval_minus.gather_evaluate(src, 
+            EvaluationFlags::values |  EvaluationFlags::gradients);
+          for (const unsigned int q : eval_minus.quadrature_point_indices())
+          {
+            const auto p_minus = eval_minus.get_value(q);
+            const auto value_flux = eval_minus.get_normal_derivative(q) - 
+              make_vectorized_array<Number>(2.) * penalty_factors[face] * p_minus;
+            eval_minus.submit_normal_derivative(-p_minus , q);
+
+            eval_minus.submit_value(- value_flux , q);
+          }
+        }
         else
           AssertThrow(false,
                       ExcNotImplemented(
@@ -1278,6 +1394,9 @@ namespace NavierStokes
       AnalyticalSolutionVelocity<dim> exact_velocity_m2(u_x_max, viscosity);
       exact_velocity_m2.set_time(time - 2.0 *  time_step);
 
+      AnalyticalNeumann<dim> Neumann_BC(u_x_max, viscosity);
+      Neumann_BC.set_time(time);
+
       BDFTimeIntegratorConstants integration_constants(2);
 
 
@@ -1291,20 +1410,10 @@ namespace NavierStokes
           eval_u_minus.gather_evaluate(*src[0], EvaluationFlags::values | EvaluationFlags::gradients);
           eval_u_extrap_minus.gather_evaluate(*src[1], EvaluationFlags::values);
           eval_curlu_minus.gather_evaluate(*src[2], EvaluationFlags::gradients);
-
-          /*if (false)
-          for (const unsigned int q : eval_u_minus.quadrature_point_indices())
-            {
-              const auto u_minus = eval_u_minus.get_value(q);
-              const auto u_plus  = u_minus;
-              const auto normal  = eval_u_minus.normal_vector(q);
-
-              const auto flux = 0.5 * normal * (u_minus + u_plus);
-
-              eval_p_minus.submit_value(-flux, q);
-            }*/
-
           
+          //Neumann BC for pressure
+          if(data.get_boundary_id(face) == 0)
+          {
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
             {
 
@@ -1340,15 +1449,36 @@ namespace NavierStokes
               
 
               const auto grad_flux = (u_minus - g) * (u_extrap_minus * normal);
-              //const auto g_time_der = make_vectorized_array(3./(2*time_step)) * g - make_vectorized_array(2./time_step) * g_m
-              //                        + make_vectorized_array(1./(2*time_step)) * g_m2;
               const auto value_flux = -g_time_der - u_minus_grad * (u_minus - g) 
               - viscosity * u_minus_curlCurl;
               
               eval_p_minus.submit_value(value_flux * normal, q);
               eval_p_minus.submit_gradient(grad_flux, q);
             }
-
+          }
+          else if(data.get_boundary_id(face) == 1)
+          {
+            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+            {
+              const auto normal  = eval_u_minus.normal_vector(q);
+              const auto u_minus = eval_u_minus.get_value(q);
+              const auto u_minus_grad = eval_u_minus.get_gradient(q);
+              const auto u_extrap_minus = eval_u_extrap_minus.get_value(q);
+              const auto Phi = viscosity * scalar_product(u_minus_grad, outer_product(normal, normal))
+              - viscosity * eval_u_minus.get_divergence(q) 
+              - evaluate_neumannBC_function(Neumann_BC, eval_p_minus.quadrature_point(q), normal) * normal;
+              const auto value_flux = (u_minus_grad * u_extrap_minus) * normal + 2. * penalty_factors[face] * Phi;
+              const auto grad_flux = -Phi*normal;
+              eval_p_minus.submit_value(value_flux, q);
+              eval_p_minus.submit_gradient(grad_flux, q);
+            }
+          }
+          else
+          AssertThrow(false,
+                      ExcNotImplemented(
+                        "Boundary id " +
+                        std::to_string(int(data.get_boundary_id(face))) +
+                        " not known"));
           eval_p_minus.integrate_scatter(EvaluationFlags::values | EvaluationFlags::gradients, dst);
         }
     }
@@ -1471,6 +1601,10 @@ namespace NavierStokes
 
     Triangulation<dim> tria;
     GridGenerator::hyper_cube(tria, 0 , 1);
+    //Neumann BC everywhere
+    for (unsigned int face = 0; face < GeometryInfo<dim>::faces_per_cell;
+      ++face)
+      tria.begin()->face(face)->set_all_boundary_ids(1);
     tria.refine_global(refinement);
 
     DoFHandler<dim> dof_handler_u(tria);
@@ -1565,10 +1699,13 @@ namespace NavierStokes
       //Calculation of RHS for Momentum eq.
       momentum_op.compute_rhs(vec_u_rhs, vec_u_old, vec_u_extrapolated, vec_p_extrapolated);
 
-      SolverControl control(5000, 1e-8 * vec_u_rhs.l2_norm());
+      //substracting mean values because of Neumann BC on  velocity
+      VectorTools::subtract_mean_value(vec_u_rhs);
+      SolverControl control(1000, 1e-8 * vec_u_rhs.l2_norm());
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver(control);
       vec_u = 0;
       solver.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
+      VectorTools::subtract_mean_value(vec_u);
       std::cout << "Momentum solver: " << control.last_step() << " iterations"
                   << std::endl;
       
@@ -1577,12 +1714,12 @@ namespace NavierStokes
       pressure_op.set_time(time);
       pressure_op.compute_rhs(vec_p_rhs, vec_u, vec_u_extrapolated, vec_u_curl);
 
-      VectorTools::subtract_mean_value(vec_p_rhs);
-      SolverControl control_p(5000, 1e-10 * vec_p_rhs.l2_norm());
+      //VectorTools::subtract_mean_value(vec_p_rhs);
+      SolverControl control_p(1000, 1e-10 * vec_p_rhs.l2_norm());
       SolverCG<LinearAlgebra::distributed::Vector<double>> solver_p(control_p);
       vec_p = 0;
       solver_p.solve(pressure_op, vec_p, vec_p_rhs, PreconditionIdentity());
-      VectorTools::subtract_mean_value(vec_p);
+      //VectorTools::subtract_mean_value(vec_p);
 
   
       std::cout << "Pressure solver: " << control_p.last_step() << " iterations"
@@ -1648,7 +1785,7 @@ namespace NavierStokes
           << vec_u_difference.l2_norm() / vec_u_analytical.l2_norm() <<"\n";
       }
       
-      if(time_step_number % 100 == 0)
+      if(time_step_number % 1 == 0)
       {
         DataOut<dim> data_out;
 
@@ -1675,7 +1812,7 @@ namespace NavierStokes
         data_out.build_patches(mapping, fe_u.degree, DataOut<dim>::curved_inner_cells);
 
         const std::string filename =
-          "solutionJacobian-L2-"+ std::to_string(tria.begin_active()->minimum_vertex_distance())+ "-" + std::to_string(time_step_number) + ".vtu";
+          "solution-Neumann-" + std::to_string(time_step_number) + ".vtu";
         data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
 
       }
@@ -1687,12 +1824,12 @@ namespace NavierStokes
 
   void  convergence_space(std::ofstream & fout)
   {
-    unsigned int max_refinement =5, min_refinement = 1;
+    unsigned int max_refinement = 5, min_refinement = 3;
     std::vector<double> relative_error_norms;
     fout<<"delta x,Error p,Error u\n";
     for(unsigned int ref = min_refinement; ref <= max_refinement; ++ref)
     {
-      relative_error_norms = test<2>(3, ref, 1.5, -1);
+      relative_error_norms = test<2>(3, ref, 1.5, 0.001);
       fout<<relative_error_norms[0]<<","<<relative_error_norms[1]
         <<","<<relative_error_norms[2]<<"\n";
     }
@@ -1711,11 +1848,11 @@ main(int argc, char **argv)
   NavierStokes::test<2>(3, 5, 1, -1, &fout_test);
   fout_test.close();*/
 
-  std::ofstream fout;
-  fout.open("convergece_space1-5timeStepCFL.csv");
+  /*std::ofstream fout;
+  fout.open("convergece_space6_7.csv");
   NavierStokes::convergence_space(fout);
-  fout.close();
+  fout.close();*/
   
-  //NavierStokes::test<2>(3);
+  NavierStokes::test<2>(3);
   //NavierStokes::test<2>(3);
 }
