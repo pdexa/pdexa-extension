@@ -1397,6 +1397,9 @@ namespace NavierStokes
       AnalyticalNeumann<dim> Neumann_BC(u_x_max, viscosity);
       Neumann_BC.set_time(time);
 
+      AnalyticalRHS<dim> forcing_term(u_x_max, viscosity);
+      forcing_term.set_time(time);
+
       BDFTimeIntegratorConstants integration_constants(2);
 
 
@@ -1464,13 +1467,14 @@ namespace NavierStokes
               const auto u_minus = eval_u_minus.get_value(q);
               const auto u_minus_grad = eval_u_minus.get_gradient(q);
               const auto u_extrap_minus = eval_u_extrap_minus.get_value(q);
+              const auto f =
+              evaluate_function(forcing_term, eval_u_minus.quadrature_point(q));
               const auto Phi = viscosity * scalar_product(u_minus_grad, outer_product(normal, normal))
               - viscosity * eval_u_minus.get_divergence(q) 
               - evaluate_neumannBC_function(Neumann_BC, eval_p_minus.quadrature_point(q), normal) * normal;
-              const auto value_flux = (u_minus_grad * u_extrap_minus) * normal + 2. * penalty_factors[face] * Phi;
-              const auto grad_flux = -Phi*normal;
+              const auto value_flux = - f * normal + (u_minus_grad * u_extrap_minus) * normal + 2. * penalty_factors[face] * Phi;
               eval_p_minus.submit_value(value_flux, q);
-              eval_p_minus.submit_gradient(grad_flux, q);
+              eval_p_minus.submit_normal_derivative(-Phi, q);
             }
           }
           else
