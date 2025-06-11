@@ -843,7 +843,7 @@ private:
 
             const auto g = evaluate_function(exact_velocity, integrator_inner.quadrature_point(q));
 
-            Tensor<1, dim, VecorizedArray<number>> speed_normal;
+            Tensor<1, dim, VectorizedArray<number>> speed_normal;
 
             if(use_extrapolated_velocity)
             {
@@ -1242,8 +1242,8 @@ private:
       FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
       FEFaceEvaluation<dim, -1, 0, dim, number>   eval_u_minus(data, true, 0, 1);
       FEFaceEvaluation<dim, -1, 0, dim, number>   eval_u_plus(data, false, 0, 1);
-      FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_extrap_minus(data, true, 0, 1);
-      FEFaceEvaluation<dim, -1, 0, dim, Number> eval_u_extrap_plus(data, false, 0, 1);
+      FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_extrap_minus(data, true, 0, 1);
+      FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_extrap_plus(data, false, 0, 1);
 
       AnalyticalRHS<dim> rhs(u_x_max, viscosity);
       rhs.set_time(time);
@@ -1560,7 +1560,7 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
         // Pressure step
         vec_vorticity = 0.;
         momentum_op.evaluate_vorticity(vec_vorticity, vec_u);
-        pressure_op.compute_rhs(vec_p_rhs, vec_u, vec_vorticity);
+        pressure_op.compute_rhs(vec_p_rhs, vec_u, vec_vorticity, vec_u);
 
         //VectorTools::subtract_mean_value(vec_p_rhs);
         SolverControl control(10000, 1e-12 * vec_p_rhs.l2_norm());
