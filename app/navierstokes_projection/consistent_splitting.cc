@@ -36,6 +36,7 @@
 
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
+#include <deal.II/numerics/data_out.h>
 
 #include <fstream>
 
@@ -43,7 +44,7 @@ using namespace dealii;
 
 
 const bool use_extrapolated_velocity           = false;
-const bool use_pressure_convective_upwind_flux = false;
+const bool use_pressure_convective_upwind_flux = true;
 
 const double viscosity = 0.025;
 const double u_x_max   = 1.;
@@ -1522,7 +1523,7 @@ private:
 
 template <int dim, typename Number>
 void
-do_test(const unsigned int fe_degree, const unsigned int n_refinements)
+do_test(const unsigned int fe_degree, const unsigned int n_refinements, const unsigned int data_output_frequency = 1)
 {
   ConditionalOStream pcout(std::cout,
                            Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
@@ -1531,6 +1532,7 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
   FE_DGQ<dim>    fe_p(fe_degree - 1);
   MappingQ1<dim> mapping;
 
+  //Triangulation<dim> tria;
   parallel::distributed::Triangulation<dim> tria(MPI_COMM_WORLD);
 
   double L = 1.;
@@ -1595,6 +1597,7 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
   pressure_op.set_time_step(time_step);
 
   Number current_time = 0;
+  unsigned int current_time_step_number = 0;
 
   AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
   AnalyticalSolutionPressure<dim> exact_pressure(u_x_max, viscosity);
@@ -1617,10 +1620,10 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
     }
 
   current_time -= time_step;
-  const Number end_time         = 1.0;
-  unsigned int time_step_number = bdf.get_order() - 1;
+  const Number end_time = 1.0;
+  current_time_step_number = bdf_order;
 
-  const bool write_output = false;
+  const bool write_output = true;
   while (current_time <= end_time)
     {
       current_time += time_step;
@@ -1640,17 +1643,26 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
           speed_extrapolated.add(bdf.get_beta(i), vec_u_old[i]);
           vec_p_extrapolated.add(bdf.get_beta(i), vec_p_old[i]);
         }
-
+      
+      //need to remove after testing
+      /*exact_pressure.set_time(current_time);
+      VectorTools::interpolate(mapping,
+        dof_handler_p,
+        exact_pressure,
+        vec_p_extrapolated);*/
       vec_u_rhs = 0.;
       momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, vec_p_extrapolated);
 
-      SolverControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
+      SolverControl control_mom(100000, 1e-12 * vec_u_rhs.l2_norm());
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
       vec_u.swap(speed_extrapolated); // = 0.;
       solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
       if (write_output)
+      {
+        pcout<< "Time step #"<<current_time_step_number<<"\n";
         pcout << "Momentum solver: " << control_mom.last_step() << " iterations"
               << std::endl;
+      }
 
       // exact_velocity.set_time(current_time);
       // VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
@@ -1661,7 +1673,7 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
       pressure_op.compute_rhs(vec_p_rhs, vec_u, vec_vorticity);
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
-      SolverControl control(10000, 1e-12 * vec_p_rhs.l2_norm());
+      SolverControl control(100000, 1e-12 * vec_p_rhs.l2_norm());
       SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
       vec_p.swap(vec_p_extrapolated); // = 0.;
       solver.solve(pressure_op, vec_p, vec_p_rhs, PreconditionIdentity());
@@ -1735,38 +1747,42 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
           pcout << "L2 error velocity/pressure: " << velocity_error / velocity_norm << " "
                 << pressure_error / pressure_norm << std::endl;
           pcout << std::endl;
-
+        }
+        
+        if(current_time_step_number % data_output_frequency == 0)
+        {
+          exact_velocity.set_time(current_time);
+          exact_pressure.set_time(current_time);
+          VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, speed_extrapolated);
+          VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p_extrapolated);
           DataOut<dim> data_out;
-
+  
           DataOutBase::VtkFlags flags;
           flags.write_higher_order_cells = true;
           data_out.set_flags(flags);
-
-          data_out.add_data_vector(dof_handler_u, vec_u_old[0], "solution");
-          VectorTools::interpolate(mapping,
-                                   dof_handler_u,
-                                   exact_velocity,
-                                   speed_extrapolated);
-          data_out.add_data_vector(dof_handler_u, speed_extrapolated, "analytical");
+  
+          data_out.add_data_vector(dof_handler_u, vec_u_old[0], "velocity");
+          data_out.add_data_vector(dof_handler_u, speed_extrapolated, "velocity_analytical");  
+          vec_u_analytical.sadd(1.0, -1.0, vec_u_old[0]);
+          data_out.add_data_vector(dof_handler_u, speed_extrapolated, "velocity_difference"); 
+  
+          
           data_out.add_data_vector(dof_handler_p, vec_p_old[0], "pressure");
-          VectorTools::interpolate(mapping,
-                                   dof_handler_p,
-                                   exact_pressure,
-                                   vec_p_extrapolated);
-          data_out.add_data_vector(dof_handler_p,
-                                   vec_p_extrapolated,
-                                   "pressure_analytical");
+          data_out.add_data_vector(dof_handler_p, vec_p_extrapolated, "pressure_analytical");  
+          vec_p_analytical.sadd(1.0, -1.0, vec_p_old[0]);
+          data_out.add_data_vector(dof_handler_p, vec_p_extrapolated, "pressure_difference");  
+  
           Vector<double> mpi_owner(tria.n_active_cells());
           mpi_owner = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
           data_out.add_data_vector(mpi_owner, "owner");
           data_out.build_patches(mapping, fe_u.degree, DataOut<dim>::curved_inner_cells);
-
+  
           const std::string filename =
-            "solution-L2-" + std::to_string(time_step_number) + ".vtu";
-          // "solution-L2-" + std::to_string(n_refinements) + "_p_" +
-          // std::to_string(degree) + ".vtu";
+            "solution-L2-" + std::to_string(current_time_step_number) + ".vtu";
           data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
+  
         }
+      current_time_step_number++;
     }
 
   Vector<double> error_per_cell;
@@ -1831,9 +1847,9 @@ main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-  for (unsigned int i = 2; i < 7; ++i)
-    do_test<2, double>(3, i);
+  for (unsigned int i = 1; i < 7; ++i)
+    do_test<2, double>(3, i, 100);
 
   for (unsigned int i = 1; i < 7; ++i)
-    do_test<2, double>(5, i);
+    do_test<2, double>(5, i, 100);
 }
