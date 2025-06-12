@@ -1617,11 +1617,13 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
 
   current_time -= time_step;
   const Number end_time = 1.0;
+  unsigned int time_step_number = bdf.get_order() - 1;
 
   const bool write_output = false;
   while (current_time <= end_time)
     {
       current_time += time_step;
+      ++time_step_number;
 
       pressure_op.set_time(current_time);
       momentum_op.set_time(current_time);
@@ -1732,6 +1734,31 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
           pcout << "L2 error velocity/pressure: " << velocity_error / velocity_norm << " "
                 << pressure_error / pressure_norm << std::endl;
           pcout << std::endl;
+
+          DataOut<dim> data_out;
+
+          DataOutBase::VtkFlags flags;
+          flags.write_higher_order_cells = true;
+          data_out.set_flags(flags);
+
+          data_out.add_data_vector(dof_handler_u, vec_u_old[0], "solution");
+          VectorTools::interpolate(mapping,
+                                  dof_handler_u,
+                                  exact_velocity,
+                                  speed_extrapolated);
+          data_out.add_data_vector(dof_handler_u, speed_extrapolated, "analytical");
+          data_out.add_data_vector(dof_handler_p, vec_p_old[0], "pressure");
+          VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p_extrapolated);
+          data_out.add_data_vector(dof_handler_p, vec_p_extrapolated, "pressure_analytical");
+          Vector<double> mpi_owner(tria.n_active_cells());
+          mpi_owner = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
+          data_out.add_data_vector(mpi_owner, "owner");
+          data_out.build_patches(mapping, fe_u.degree, DataOut<dim>::curved_inner_cells);
+
+          const std::string filename =
+            "solution-L2-" + std::to_string(time_step_number) + ".vtu";
+           // "solution-L2-" + std::to_string(n_refinements) + "_p_" + std::to_string(degree) + ".vtu"; 
+          data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
         }
     }
 
