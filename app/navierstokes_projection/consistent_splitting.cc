@@ -2020,10 +2020,10 @@ int
 main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
-  do_test<2, double>(3, 5);
-  /*for (unsigned int i = 2; i < 7; ++i)
+
+  for (unsigned int i = 2; i < 7; ++i)
     do_test<2, double>(3, i);
 
   for (unsigned int i = 1; i < 7; ++i)
-    do_test<2, double>(5, i);*/
+    do_test<2, double>(5, i);
 }
