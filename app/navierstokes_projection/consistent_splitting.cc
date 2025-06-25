@@ -1845,7 +1845,7 @@ do_test(const unsigned int fe_degree,
             pressure_op.set_time(current_time - (i + 1) * time_step);
             vec_div_u = 0.;
             pressure_op.compute_divergence(vec_div_u, vec_u_old[i]);
-            vec_p_rhs.add(-leray_factor * bdf.get_alpha(i) / time_step, vec_div_u);
+            vec_p_rhs.add(-bdf.get_alpha(i) / time_step, vec_div_u);
           }
       pressure_op.set_time(current_time);
 
