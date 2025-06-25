@@ -246,7 +246,6 @@ class BDFTimeIntegratorConstants
 public:
   BDFTimeIntegratorConstants(const unsigned int current_order)
   {
-    order = current_order;
     alpha.resize(current_order);
     beta.resize(current_order);
     switch (current_order)
@@ -308,23 +307,24 @@ public:
   double
   get_alpha(const unsigned int i)
   {
+    AssertIndexRange(i, alpha.size());
     return alpha[i];
   }
   double
   get_beta(const unsigned int i)
   {
+    AssertIndexRange(i, beta.size());
     return beta[i];
   }
   unsigned int
   get_order()
   {
-    return order;
+    return alpha.size();
   }
 
   std::vector<double> alpha;
   std::vector<double> beta;
   double              gamma0;
-  unsigned int        order;
 };
 
 
@@ -1768,7 +1768,6 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements, const un
   double h_min = std::numeric_limits<double>::max();
   for (const auto &cell : dof_handler_u.active_cell_iterators())
     h_min = std::min(h_min, cell->minimum_vertex_distance());
-  const double local_time_step = 0.1 / std::pow(fe_degree, 1.5) * h_min / u_x_max;
   double time_step_size = 0.5;
   for (unsigned int i = 1; i < n_refinements_time; ++i)
     time_step_size *= 0.5;
