@@ -1387,9 +1387,9 @@ private:
 
             const auto convective_flux = eval_u.get_gradient(q) * eval_u.get_value(q);
 
-           
-                eval_p.submit_value({}, q);
-              
+
+            eval_p.submit_value({}, q);
+
 
             eval_p.submit_gradient(f - convective_flux, q);
           }
@@ -1461,8 +1461,8 @@ private:
                 const auto convective_flux =
                   number(0.5) * (gradu_u_minus + gradu_u_plus) * normal;
 
-                eval_p_minus.submit_value(convective_flux - flux , q);
-                eval_p_plus.submit_value(flux - convective_flux , q);
+                eval_p_minus.submit_value(convective_flux - flux, q);
+                eval_p_plus.submit_value(flux - convective_flux, q);
                 eval_p_minus.submit_gradient({}, q);
                 eval_p_plus.submit_gradient({}, q);
               }
@@ -1561,8 +1561,7 @@ private:
 
                     const auto convective_value_flux = (grad_u * (g - u)) * normal;
 
-                    eval_p_minus.submit_value(flux + curl_flux + convective_value_flux 
-                                                ,
+                    eval_p_minus.submit_value(flux + curl_flux + convective_value_flux,
                                               q);
                     eval_p_minus.submit_gradient({}, q);
                   }
@@ -1616,9 +1615,9 @@ private:
 
   void
   local_divergence_domain(const MatrixFree<dim, number>               &data,
-                   VectorType                                  &dst,
-                   const VectorType       &src,
-                   const std::pair<unsigned int, unsigned int> &cell_range) const
+                          VectorType                                  &dst,
+                          const VectorType                            &src,
+                          const std::pair<unsigned int, unsigned int> &cell_range) const
   {
     FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, 1, 1);
     FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 1);
@@ -1643,10 +1642,11 @@ private:
   }
 
   void
-  local_divergence_inner_face(const MatrixFree<dim, number>               &data,
-                       VectorType                                  &dst,
-                       const VectorType       &src,
-                       const std::pair<unsigned int, unsigned int> &face_range) const
+  local_divergence_inner_face(
+    const MatrixFree<dim, number>               &data,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &face_range) const
   {
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
@@ -1661,21 +1661,16 @@ private:
         eval_u_plus.reinit(face);
 
         eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
-        eval_u_plus.gather_evaluate(src,  EvaluationFlags::values);
+        eval_u_plus.gather_evaluate(src, EvaluationFlags::values);
 
         for (const unsigned int q : eval_p_minus.quadrature_point_indices())
           {
-          
-
             const auto normal = eval_p_minus.normal_vector(q);
-            const auto div_factor = - 0.5 *
-                                 (eval_u_minus.get_value(q) - eval_u_plus.get_value(q)) *
-                                 normal;
+            const auto div_factor =
+              -0.5 * (eval_u_minus.get_value(q) - eval_u_plus.get_value(q)) * normal;
 
             eval_p_minus.submit_value(div_factor, q);
             eval_p_plus.submit_value(div_factor, q);
-               
-              
           }
 
         eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
@@ -1684,10 +1679,11 @@ private:
   }
 
   void
-  local_divergence_boundary_face(const MatrixFree<dim, number>               &data,
-                          VectorType                                  &dst,
-                          const VectorType       &src,
-                          const std::pair<unsigned int, unsigned int> &face_range) const
+  local_divergence_boundary_face(
+    const MatrixFree<dim, number>               &data,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &face_range) const
   {
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
@@ -1701,7 +1697,7 @@ private:
           {
             eval_p_minus.reinit(face);
             eval_u_minus.reinit(face);
-            
+
             eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
@@ -1711,9 +1707,9 @@ private:
                 exact_velocity.set_time(time);
                 const auto g =
                   evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
-                const auto u   = eval_u_minus.get_value(q);
-                const auto div_u = - (u - g) * normal;
-                 
+                const auto u     = eval_u_minus.get_value(q);
+                const auto div_u = -(u - g) * normal;
+
                 eval_p_minus.submit_value(div_u, q);
               }
 
@@ -1737,7 +1733,9 @@ private:
 
 template <int dim, typename Number>
 void
-do_test(const unsigned int fe_degree, const unsigned int n_refinements, const unsigned int n_refinements_time)
+do_test(const unsigned int fe_degree,
+        const unsigned int n_refinements,
+        const unsigned int n_refinements_time)
 {
   ConditionalOStream pcout(std::cout,
                            Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
@@ -1773,11 +1771,14 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements, const un
     time_step_size *= 0.5;
 
   const Number time_step = time_step_size;
-    //std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD));
+  // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
 
-  unsigned int               bdf_order = 1;
+  unsigned int bdf_order   = 2;
+  unsigned int bdf_order_p = 1;
+
   BDFTimeIntegratorConstants bdf(bdf_order);
+  BDFTimeIntegratorConstants bdf_p(bdf_order_p);
 
   MomentumOperator<dim, dim, Number> momentum_op;
   // set up operator
@@ -1786,7 +1787,9 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements, const un
   momentum_op.set_viscosity(viscosity);
   momentum_op.set_time(0.0);
 
-  LinearAlgebra::distributed::Vector<Number> vec_u, vec_u_deriv, vec_u_rhs, vec_p, vec_u_norm, speed_extrapolated, vec_vorticity, vec_p_rhs, vec_p_rhs_n, vec_p_norm, vec_div_u;
+  LinearAlgebra::distributed::Vector<Number> vec_u, vec_u_deriv, vec_u_rhs, vec_p,
+    vec_u_norm, speed_extrapolated, vec_vorticity, vec_p_rhs, vec_p_rhs_n, vec_p_norm,
+    vec_div_u;
   momentum_op.initialize_dof_vector(vec_u, dof_no_v);
   momentum_op.initialize_dof_vector(vec_u_deriv, dof_no_v);
   momentum_op.initialize_dof_vector(vec_u_rhs, dof_no_v);
@@ -1836,29 +1839,32 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements, const un
 
       // Pressure step
       vec_p_rhs = 0.;
-      for (unsigned int i = 0; i < bdf.get_order(); ++i)
-      {
-        vec_p_rhs_n = 0.;
-        vec_vorticity = 0.;
-        momentum_op.evaluate_vorticity(vec_vorticity, vec_u_old[i]);
-        pressure_op.set_time(current_time - (i + 1) * time_step);
-        pressure_op.compute_rhs(vec_p_rhs_n, vec_u_old[i], vec_vorticity);
-        vec_p_rhs.add(bdf.get_beta(i), vec_p_rhs_n);
+      if (use_leray_projection)
+        for (unsigned int i = 0; i < bdf.get_order(); ++i)
+          {
+            pressure_op.set_time(current_time - (i + 1) * time_step);
+            vec_div_u = 0.;
+            pressure_op.compute_divergence(vec_div_u, vec_u_old[i]);
+            vec_p_rhs.add(-leray_factor * bdf.get_alpha(i) / time_step, vec_div_u);
+          }
+      pressure_op.set_time(current_time);
 
-        if (use_leray_projection)
+      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
         {
-          vec_div_u = 0.;
-          pressure_op.compute_divergence(vec_div_u, vec_u_old[i]);
-          vec_p_rhs.add(-bdf.get_alpha(i)/time_step, vec_div_u);
+          pressure_op.set_time(current_time - (i + 1) * time_step);
+          vec_p_rhs_n   = 0.;
+          vec_vorticity = 0.;
+          momentum_op.evaluate_vorticity(vec_vorticity, vec_u_old[i]);
+          pressure_op.compute_rhs(vec_p_rhs_n, vec_u_old[i], vec_vorticity);
+          vec_p_rhs.add(bdf_p.get_beta(i), vec_p_rhs_n);
         }
-      }
       pressure_op.set_time(current_time);
 
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
       SolverControl control(10000, 1e-12 * vec_p_rhs.l2_norm());
       SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
-      //vec_p = 0.;
+      // vec_p = 0.;
       solver.solve(pressure_op, vec_p, vec_p_rhs, PreconditionIdentity());
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p);
@@ -1876,6 +1882,10 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements, const un
         {
           vec_u_deriv.add(bdf.get_alpha(i) / time_step, vec_u_old[i]);
           speed_extrapolated.add(bdf.get_beta(i), vec_u_old[i]);
+        }
+      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
+        {
+          // speed_extrapolated.add(bdf_p.get_beta(i), vec_u_old[i]);
         }
 
       vec_u_rhs = 0.;
@@ -1968,13 +1978,8 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements, const un
                                    speed_extrapolated);
           data_out.add_data_vector(dof_handler_u, speed_extrapolated, "analytical");
           data_out.add_data_vector(dof_handler_p, vec_p, "pressure");
-          VectorTools::interpolate(mapping,
-                                   dof_handler_p,
-                                   exact_pressure,
-                                   vec_p_rhs);
-          data_out.add_data_vector(dof_handler_p,
-                                   vec_p_rhs,
-                                   "pressure_analytical");
+          VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p_rhs);
+          data_out.add_data_vector(dof_handler_p, vec_p_rhs, "pressure_analytical");
           Vector<double> mpi_owner(tria.n_active_cells());
           mpi_owner = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
           data_out.add_data_vector(mpi_owner, "owner");
@@ -2050,11 +2055,11 @@ main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-  //for (unsigned int i = 2; i < 7; ++i)
-  //  do_test<2, double>(3, i);
+  // for (unsigned int i = 2; i < 7; ++i)
+  //   do_test<2, double>(3, i);
 
-  //for (unsigned int i = 1; i < 7; ++i)
-    //do_test<2, double>(5, i);
+  // for (unsigned int i = 1; i < 7; ++i)
+  // do_test<2, double>(5, i);
   for (unsigned int i = 1; i < 15; ++i)
-      do_test<2, double>(5, 4, i);
+    do_test<2, double>(5, 4, i);
 }
