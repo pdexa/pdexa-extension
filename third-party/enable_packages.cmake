@@ -1,5 +1,3 @@
-include(FetchContent)
-
 # This has to be on top, because other packages seem to mess with cmake policies
 include(${CMAKE_SOURCE_DIR}/third-party/ginkgo.cmake)
 

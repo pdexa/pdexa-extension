@@ -1,0 +1,15 @@
+# This is a Spack Environment file.
+#
+# It describes a set of packages to be installed, along with
+# configuration settings.
+spack:
+  # add package specs to the `specs` list
+  specs:
+    - mpi
+    - ginkgo@main+mpi
+    - dealii@9.6.2~adol-c~arborx~assimp~cgal~examples~examples_compile~ginkgo+kokkos+mpi~muparser~opencascade+p4est+petsc~symengine~taskflow~trilinos
+    - cxxopts
+    - googletest
+  view: true
+  concretizer:
+    unify: true
