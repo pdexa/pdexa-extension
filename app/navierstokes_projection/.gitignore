@@ -1,0 +1,11 @@
+*.vtu
+*.vtk
+consistent_splitting
+CMakeFiles
+Makefile
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+solver
+build/
+
