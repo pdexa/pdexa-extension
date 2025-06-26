@@ -1321,7 +1321,7 @@ private:
                      const VectorType                            &src,
                      const std::pair<unsigned int, unsigned int> &cell_range) const
   {
-    FEEvaluation<dim, -1, 0, 1, number> eval(data, 1, 2);
+    FEEvaluation<dim, -1, 0, 1, number> eval(data, dof_no_p, 2);
 
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
@@ -1345,8 +1345,8 @@ private:
                          const VectorType                            &src,
                          const std::pair<unsigned int, unsigned int> &face_range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number> eval_minus(data, true, 1, 2);
-    FEFaceEvaluation<dim, -1, 0, 1, number> eval_plus(data, false, 1, 2);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_minus(data, true, dof_no_p, 2);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_plus(data, false, dof_no_p, 2);
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
@@ -1393,7 +1393,7 @@ private:
                             const VectorType                            &src,
                             const std::pair<unsigned int, unsigned int> &face_range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number> eval_minus(data, true, 1, 2);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_minus(data, true, dof_no_p, 2);
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
@@ -1444,7 +1444,7 @@ private:
                    const VectorType &,
                    const std::pair<unsigned int, unsigned int> &cell_range) const
   {
-    FEEvaluation<dim, -1, 0, 1, number> eval_p(data, 1, 1);
+    FEEvaluation<dim, -1, 0, 1, number> eval_p(data, dof_no_p, 1);
 
     AnalyticalRHS<dim> rhs(u_x_max, viscosity);
     rhs.set_time(time);
@@ -1641,10 +1641,10 @@ private:
     const VectorType                            &src,
     const std::pair<unsigned int, unsigned int> &face_range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(data, true, dof_no_p, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(data, false, dof_no_p, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, dof_no_v, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, dof_no_v, 1);
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
@@ -1712,8 +1712,8 @@ private:
     const VectorType                            &src,
     const std::pair<unsigned int, unsigned int> &face_range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, dof_no_p, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, dof_no_v, 1);
 
     AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
     exact_velocity.set_time(time);
@@ -1799,8 +1799,8 @@ private:
                           const VectorType                            &src,
                           const std::pair<unsigned int, unsigned int> &cell_range) const
   {
-    FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, 1, 1);
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 1);
+    FEEvaluation<dim, -1, 0, 1, number> eval_p(data, dof_no_p, 1);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, dof_no_v, 1);
 
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
@@ -1828,10 +1828,10 @@ private:
     const VectorType                            &src,
     const std::pair<unsigned int, unsigned int> &face_range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(data, true, dof_no_p, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(data, false, dof_no_p, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, dof_no_v, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, dof_no_v, 1);
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
@@ -1865,8 +1865,8 @@ private:
     const VectorType                            &src,
     const std::pair<unsigned int, unsigned int> &face_range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(data, true, dof_no_p, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, dof_no_v, 1);
 
     AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
     exact_velocity.set_time(time);
