@@ -7,4 +7,5 @@ fetchcontent_declare(
 fetchcontent_makeavailable(cxxopts)
 
 add_subdirectory(batched-solver)
+add_subdirectory(navierstokes_projection)
 add_subdirectory(step-ginkgo)
