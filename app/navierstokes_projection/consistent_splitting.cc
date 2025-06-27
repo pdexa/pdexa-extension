@@ -49,6 +49,10 @@ const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = true;
 const bool use_leray_projection                      = true;
 
+const double penalty_divergence = 1.0;
+const double penalty_continuity = 1.0;
+
+
 const double viscosity = 0.025;
 const double u_x_max   = 1.;
 
@@ -357,7 +361,7 @@ public:
     bdf_order = bdf_order_in;
     time_step = time_step_in;
 
-    const unsigned int fe_degree_u     = dof_handler_u.get_fe().degree;
+    fe_degree_u                        = dof_handler_u.get_fe().degree;
     const unsigned int fe_degree_p     = dof_handler_p.get_fe().degree;
     Quadrature<1>      quadrature      = QGauss<1>(fe_degree_u + 2);
     Quadrature<1>      quadrature_mass = QGauss<1>(fe_degree_u + 1);
@@ -399,6 +403,9 @@ public:
       unsigned int n_cells =
         matrix_free.n_cell_batches() + matrix_free.n_ghost_cell_batches();
       array_penalty_parameter.resize(n_cells);
+      penalty_factor_divergence.resize(n_cells);
+      penalty_factor_continuity.resize(n_cells);
+
 
       const dealii::FiniteElement<dim> &fe = dof_handler_u.get_fe();
       const auto reference_cells           = dof_handler_u.get_fe().reference_cell();
@@ -566,14 +573,23 @@ private:
             const auto grad_u = integrator.get_gradient(q);
             const auto speed  = speeds_cells(cell, q);
 
+            const auto divergence_penalty =
+              penalty_factor_divergence[cell] * integrator.get_divergence(q);
+            Tensor<2, dim, VectorizedArray<number>> div_penalty;
+            for (unsigned int d = 0; d < dim; ++d)
+              for (unsigned int e = 0; e < dim; ++e)
+                div_penalty[d][e] = 0.;
+
+            for (unsigned int d = 0; d < dim; ++d)
+              div_penalty[d][d] = divergence_penalty;
+
             if (!use_skew_symmetric_convective_formulation)
               {
                 const auto convective_flux = grad_u * speed;
 
                 integrator.submit_value(time_deriv + convective_flux, q);
-                integrator.submit_gradient(make_vectorized_array<number>(viscosity) *
-                                             grad_u,
-                                           q);
+                integrator.submit_gradient(
+                  div_penalty + make_vectorized_array<number>(viscosity) * grad_u, q);
               }
             else
               {
@@ -581,7 +597,8 @@ private:
                 const auto convective_gradient_flux = -0.5 * outer_product(speed, u);
 
                 integrator.submit_value(time_deriv + convective_value_flux, q);
-                integrator.submit_gradient(make_vectorized_array<number>(viscosity) *
+                integrator.submit_gradient(div_penalty +
+                                             make_vectorized_array<number>(viscosity) *
                                                grad_u +
                                              convective_gradient_flux,
                                            q);
@@ -625,6 +642,9 @@ private:
                    integrator_outer.read_cell_data(array_penalty_parameter)) *
           get_penalty_factor();
 
+        const VectorizedArray<number> cont_pen =
+          0.5 * (integrator_inner.read_cell_data(penalty_factor_continuity) +
+                 integrator_outer.read_cell_data(penalty_factor_continuity));
 
         for (unsigned int q = 0; q < integrator_inner.n_q_points; ++q)
           {
@@ -659,10 +679,17 @@ private:
             const auto convective_flux_outer =
               -convective_flux + speed_normal * integrator_outer.get_value(q);
 
+            const auto continuity_penalty_value =
+              cont_pen * (solution_jump * normal) * normal;
+
             if (!use_skew_symmetric_convective_formulation)
               {
-                integrator_inner.submit_value(test_by_value + convective_flux_inner, q);
-                integrator_outer.submit_value(-test_by_value + convective_flux_outer, q);
+                integrator_inner.submit_value(continuity_penalty_value + test_by_value +
+                                                convective_flux_inner,
+                                              q);
+                integrator_outer.submit_value(-continuity_penalty_value - test_by_value +
+                                                convective_flux_outer,
+                                              q);
               }
             else
               {
@@ -670,11 +697,11 @@ private:
                   speed * (solution_average * normal) +
                   0.5 * (std::abs(speed_normal) * solution_jump);
 
-                integrator_inner.submit_value(test_by_value +
+                integrator_inner.submit_value(continuity_penalty_value + test_by_value +
                                                 0.5 * convective_flux_inner +
                                                 0.5 * convective_value_flux,
                                               q);
-                integrator_outer.submit_value(-test_by_value +
+                integrator_outer.submit_value(-continuity_penalty_value - test_by_value +
                                                 0.5 * convective_flux_outer -
                                                 0.5 * convective_value_flux,
                                               q);
@@ -706,6 +733,8 @@ private:
                                                                         true,
                                                                         dof_no_v,
                                                                         quad_no_v);
+    AnalyticalSolutionVelocity<dim>                    exact_velocity(u_x_max, viscosity);
+    exact_velocity.set_time(time);
 
     for (unsigned int face = range.first; face < range.second; ++face)
       {
@@ -716,6 +745,9 @@ private:
 
         const VectorizedArray<number> sigma =
           integrator_inner.read_cell_data(array_penalty_parameter) * get_penalty_factor();
+
+        const VectorizedArray<number> cont_pen =
+          integrator_inner.read_cell_data(penalty_factor_continuity);
 
         // Dirichlet boundary
         if (matrix_free.get_boundary_id(face) == 0)
@@ -740,15 +772,25 @@ private:
                 const auto convective_flux =
                   (std::abs(speed_normal) - speed_normal) * integrator_inner.get_value(q);
 
+
+                const auto g =
+                  evaluate_function(exact_velocity, integrator_inner.quadrature_point(q));
+                const auto continuity_penalty_value =
+                  2. * cont_pen * ((integrator_inner.get_value(q) - g) * normal) * normal;
+
                 if (!use_skew_symmetric_convective_formulation)
                   {
-                    integrator_inner.submit_value(test_by_value + convective_flux, q);
+                    integrator_inner.submit_value(continuity_penalty_value +
+                                                    test_by_value + convective_flux,
+                                                  q);
                   }
                 else
                   {
                     const auto convective_value_flux =
                       (std::abs(speed_normal)) * integrator_inner.get_value(q);
-                    integrator_inner.submit_value(test_by_value + 0.5 * convective_flux +
+                    integrator_inner.submit_value(continuity_penalty_value +
+                                                    test_by_value +
+                                                    0.5 * convective_flux +
                                                     0.5 * convective_value_flux,
                                                   q);
                   }
@@ -818,6 +860,21 @@ private:
         integrator_speed.gather_evaluate(*src[1], EvaluationFlags::values);
         // integrator_p.gather_evaluate(*src[2], EvaluationFlags::values);
         integrator_p.gather_evaluate(*src[2], EvaluationFlags::gradients);
+
+        VectorizedArray<number> avg_veclocity(0.);
+        VectorizedArray<number> volume(0.);
+        for (unsigned int q = 0; q < integrator_speed.n_q_points; ++q)
+          {
+            volume += integrator_speed.JxW(q);
+            avg_veclocity +=
+              integrator_speed.JxW(q) * integrator_speed.get_value(q).norm();
+          }
+        avg_veclocity /= volume;
+        penalty_factor_divergence[cell] = penalty_divergence * avg_veclocity *
+                                          std::exp(std::log(volume) / (number)dim) /
+                                          ((number)fe_degree_u + 1);
+        penalty_factor_continuity[cell] = penalty_continuity * avg_veclocity;
+
 
         for (unsigned int q = 0; q < integrator.n_q_points; ++q)
           {
@@ -1100,6 +1157,13 @@ private:
   dealii::AlignedVector<dealii::VectorizedArray<Number>>    array_penalty_parameter;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_cells;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_faces;
+
+  mutable dealii::AlignedVector<dealii::VectorizedArray<Number>>
+    penalty_factor_divergence;
+  mutable dealii::AlignedVector<dealii::VectorizedArray<Number>>
+    penalty_factor_continuity;
+
+  unsigned int fe_degree_u;
 };
 
 template <int dim, typename number>
@@ -1775,7 +1839,7 @@ do_test(const unsigned int fe_degree,
   pcout << "Time step size: " << time_step << std::endl;
 
   unsigned int bdf_order   = 2;
-  unsigned int bdf_order_p = 1;
+  unsigned int bdf_order_p = 2;
 
   BDFTimeIntegratorConstants bdf(bdf_order);
   BDFTimeIntegratorConstants bdf_p(bdf_order_p);
@@ -2055,11 +2119,12 @@ main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-  // for (unsigned int i = 2; i < 7; ++i)
-  //   do_test<2, double>(3, i);
+  for (unsigned int i = 1; i < 7; ++i)
+    do_test<2, double>(3, i, 14);
 
-  // for (unsigned int i = 1; i < 7; ++i)
-  // do_test<2, double>(5, i);
-  for (unsigned int i = 1; i < 15; ++i)
-    do_test<2, double>(5, 4, i);
+  for (unsigned int i = 1; i < 7; ++i)
+    do_test<2, double>(5, i, 14);
+
+  // for (unsigned int i = 1; i < 15; ++i)
+  // do_test<2, double>(5, 4, i);
 }
