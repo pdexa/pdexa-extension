@@ -44,7 +44,7 @@ using namespace dealii;
 
 const bool use_extrapolated_velocity                 = false;
 const bool use_pressure_convective_upwind_flux       = false;
-const bool use_neumann_boundary                      = false;
+const bool use_neumann_boundary                      = true;
 const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = true;
 const bool use_leray_projection                      = true;
@@ -1261,14 +1261,28 @@ public:
   }
 
   void
-  compute_rhs(VectorType &dst, const VectorType &velocity, const VectorType &vorticity)
+  compute_rhs(VectorType &dst, const VectorType &vorticity)
   {
     matrix_free->loop(&PressureOperator::local_rhs_domain,
                       &PressureOperator::local_rhs_inner_face,
                       &PressureOperator::local_rhs_boundary_face,
                       this,
                       dst,
-                      std::vector<const VectorType *>{&velocity, &vorticity},
+                      vorticity,
+                      true,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+  }
+
+  void
+  compute_convective_rhs(VectorType &dst, const VectorType &velocity)
+  {
+    matrix_free->loop(&PressureOperator::local_convective_domain,
+                      &PressureOperator::local_convective_inner_face,
+                      &PressureOperator::local_convective_boundary_face,
+                      this,
+                      dst,
+                      velocity,
                       true,
                       MatrixFree<dim, number>::DataAccessOnFaces::gradients,
                       MatrixFree<dim, number>::DataAccessOnFaces::gradients);
@@ -1427,11 +1441,10 @@ private:
   void
   local_rhs_domain(const MatrixFree<dim, number>               &data,
                    VectorType                                  &dst,
-                   const std::vector<const VectorType *>       &src,
+                   const VectorType                            &,
                    const std::pair<unsigned int, unsigned int> &cell_range) const
   {
     FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, 1, 1);
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 1);
 
     AnalyticalRHS<dim> rhs(u_x_max, viscosity);
     rhs.set_time(time);
@@ -1439,23 +1452,13 @@ private:
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
         eval_p.reinit(cell);
-        eval_u.reinit(cell);
-
-        eval_u.gather_evaluate(*src[0],
-                               EvaluationFlags::values | EvaluationFlags::gradients);
 
         // loop over quadrature points and compute the local volume flux
         for (const unsigned int q : eval_p.quadrature_point_indices())
           {
             const auto f = evaluate_function(rhs, eval_p.quadrature_point(q));
-
-            const auto convective_flux = eval_u.get_gradient(q) * eval_u.get_value(q);
-
-
             eval_p.submit_value({}, q);
-
-
-            eval_p.submit_gradient(f - convective_flux, q);
+            eval_p.submit_gradient(f, q);
           }
 
         // multiply by nabla v^h(x) and sum
@@ -1467,13 +1470,11 @@ private:
   void
   local_rhs_inner_face(const MatrixFree<dim, number>               &data,
                        VectorType                                  &dst,
-                       const std::vector<const VectorType *>       &src,
+                       const VectorType                            &,
                        const std::pair<unsigned int, unsigned int> &face_range) const
   {
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, 0, 1);
 
     AnalyticalRHS<dim> rhs(u_x_max, viscosity);
     rhs.set_time(time);
@@ -1482,54 +1483,17 @@ private:
       {
         eval_p_minus.reinit(face);
         eval_p_plus.reinit(face);
-        eval_u_minus.reinit(face);
-        eval_u_plus.reinit(face);
-
-        eval_u_minus.gather_evaluate(*src[0],
-                                     EvaluationFlags::values |
-                                       EvaluationFlags::gradients);
-        eval_u_plus.gather_evaluate(*src[0],
-                                    EvaluationFlags::values | EvaluationFlags::gradients);
 
         for (const unsigned int q : eval_p_minus.quadrature_point_indices())
           {
             const auto f = evaluate_function(rhs, eval_p_minus.quadrature_point(q));
-
             const auto normal = eval_p_minus.normal_vector(q);
-
             const auto flux = f * normal;
 
-            if (use_pressure_convective_upwind_flux)
-              {
-                const auto u_minus      = eval_u_minus.get_value(q);
-                const auto u_plus       = eval_u_plus.get_value(q);
-                const auto u_minus_grad = eval_u_minus.get_gradient(q);
-                const auto u_plus_grad  = eval_u_plus.get_gradient(q);
-                const auto value_flux =
-                  0.5 * (u_minus_grad + u_plus_grad) * 0.5 * (u_minus + u_plus);
-
-                eval_p_minus.submit_value(value_flux * normal - f * normal, q);
-                eval_p_plus.submit_value(-value_flux * normal + f * normal, q);
-
-
-                const auto grad_flux = 0.5 * (u_minus - u_plus);
-                eval_p_minus.submit_gradient(grad_flux * (u_minus * normal), q);
-                eval_p_plus.submit_gradient(grad_flux * (u_plus * normal), q);
-              }
-            else
-              {
-                const auto gradu_u_minus =
-                  eval_u_minus.get_gradient(q) * eval_u_minus.get_value(q);
-                const auto gradu_u_plus =
-                  eval_u_plus.get_gradient(q) * eval_u_plus.get_value(q);
-                const auto convective_flux =
-                  number(0.5) * (gradu_u_minus + gradu_u_plus) * normal;
-
-                eval_p_minus.submit_value(convective_flux - flux, q);
-                eval_p_plus.submit_value(flux - convective_flux, q);
-                eval_p_minus.submit_gradient({}, q);
-                eval_p_plus.submit_gradient({}, q);
-              }
+            eval_p_minus.submit_value(- flux, q);
+            eval_p_plus.submit_value(flux, q);
+            eval_p_minus.submit_gradient({}, q);
+            eval_p_plus.submit_gradient({}, q);
           }
 
         eval_p_minus.integrate_scatter(EvaluationFlags::values |
@@ -1544,12 +1508,11 @@ private:
   void
   local_rhs_boundary_face(const MatrixFree<dim, number>               &data,
                           VectorType                                  &dst,
-                          const std::vector<const VectorType *>       &src,
+                          const VectorType                            &src,
                           const std::pair<unsigned int, unsigned int> &face_range) const
   {
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_vorticity(data, true, 0, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
 
     AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
     exact_velocity.set_time(time);
@@ -1566,12 +1529,8 @@ private:
           {
             eval_p_minus.reinit(face);
             eval_vorticity.reinit(face);
-            eval_u_minus.reinit(face);
 
-            eval_vorticity.gather_evaluate(*src[1], EvaluationFlags::gradients);
-            eval_u_minus.gather_evaluate(*src[0],
-                                         EvaluationFlags::values |
-                                           EvaluationFlags::gradients);
+            eval_vorticity.gather_evaluate(src, EvaluationFlags::gradients);
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
@@ -1606,6 +1565,177 @@ private:
 
                 const auto curl_flux = (-viscosity) * normal * curl_omega;
 
+                eval_p_minus.submit_value(flux + curl_flux, q);
+                eval_p_minus.submit_gradient({}, q);
+              }
+
+            eval_p_minus.integrate_scatter(EvaluationFlags::values |
+                                             EvaluationFlags::gradients,
+                                           dst);
+          }
+        else
+          {
+            eval_p_minus.reinit(face);
+
+            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+              {
+                const auto f = evaluate_function(rhs, eval_p_minus.quadrature_point(q));
+
+                const auto normal = eval_p_minus.normal_vector(q);
+
+                const auto flux = -f * normal;
+
+                const auto g_p =
+                  evaluate_scalar_function(exact_pressure,
+                                           eval_p_minus.quadrature_point(q));
+
+                const VectorizedArray<number> penalty_factor =
+                  eval_p_minus.read_cell_data(array_penalty_parameter);
+                const auto penalty = penalty_factor * 2. * g_p;
+
+                eval_p_minus.submit_value(flux + penalty, q);
+                eval_p_minus.submit_normal_derivative(-g_p, q);
+              }
+
+            eval_p_minus.integrate_scatter(EvaluationFlags::values |
+                                             EvaluationFlags::gradients,
+                                           dst);
+          }
+      }
+  }
+
+
+
+  void
+  local_convective_domain(const MatrixFree<dim, number>        &data,
+                   VectorType                                  &dst,
+                   const VectorType                            &src,
+                   const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, 1, 1);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 1);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        eval_p.reinit(cell);
+        eval_u.reinit(cell);
+
+        eval_u.gather_evaluate(src,
+                               EvaluationFlags::values | EvaluationFlags::gradients);
+
+        // loop over quadrature points and compute the local volume flux
+        for (const unsigned int q : eval_p.quadrature_point_indices())
+          {
+            const auto convective_flux = - eval_u.get_gradient(q) * eval_u.get_value(q);
+            eval_p.submit_gradient(convective_flux, q);
+          }
+
+        // multiply by nabla v^h(x) and sum
+        eval_p.integrate_scatter(EvaluationFlags::gradients, dst);
+      }
+  }
+
+  void
+  local_convective_inner_face(const MatrixFree<dim, number>        &data,
+                       VectorType                                  &dst,
+                       const VectorType                            &src,
+                       const std::pair<unsigned int, unsigned int> &face_range) const
+  {
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, 0, 1);
+
+    for (unsigned int face = face_range.first; face < face_range.second; face++)
+      {
+        eval_p_minus.reinit(face);
+        eval_p_plus.reinit(face);
+        eval_u_minus.reinit(face);
+        eval_u_plus.reinit(face);
+
+        eval_u_minus.gather_evaluate(src,
+                                     EvaluationFlags::values |
+                                       EvaluationFlags::gradients);
+        eval_u_plus.gather_evaluate(src,
+                                    EvaluationFlags::values | EvaluationFlags::gradients);
+
+        for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+          {
+            const auto normal = eval_p_minus.normal_vector(q);
+
+            if (use_pressure_convective_upwind_flux)
+              {
+                const auto u_minus      = eval_u_minus.get_value(q);
+                const auto u_plus       = eval_u_plus.get_value(q);
+                const auto u_minus_grad = eval_u_minus.get_gradient(q);
+                const auto u_plus_grad  = eval_u_plus.get_gradient(q);
+                const auto value_flux =
+                  0.5 * (u_minus_grad + u_plus_grad) * 0.5 * (u_minus + u_plus);
+
+                eval_p_minus.submit_value(value_flux * normal, q);
+                eval_p_plus.submit_value(-value_flux * normal, q);
+
+
+                const auto grad_flux = 0.5 * (u_minus - u_plus);
+                eval_p_minus.submit_gradient(grad_flux * (u_minus * normal), q);
+                eval_p_plus.submit_gradient(grad_flux * (u_plus * normal), q);
+              }
+            else
+              {
+                const auto gradu_u_minus =
+                  eval_u_minus.get_gradient(q) * eval_u_minus.get_value(q);
+                const auto gradu_u_plus =
+                  eval_u_plus.get_gradient(q) * eval_u_plus.get_value(q);
+                const auto convective_flux =
+                  number(0.5) * (gradu_u_minus + gradu_u_plus) * normal;
+
+                eval_p_minus.submit_value(convective_flux, q);
+                eval_p_plus.submit_value(-convective_flux, q);
+                eval_p_minus.submit_gradient({}, q);
+                eval_p_plus.submit_gradient({}, q);
+              }
+          }
+
+        eval_p_minus.integrate_scatter(EvaluationFlags::values |
+                                         EvaluationFlags::gradients,
+                                       dst);
+        eval_p_plus.integrate_scatter(EvaluationFlags::values |
+                                        EvaluationFlags::gradients,
+                                      dst);
+      }
+  }
+
+  void
+  local_convective_boundary_face(const MatrixFree<dim, number>        &data,
+                          VectorType                                  &dst,
+                          const VectorType                            &src,
+                          const std::pair<unsigned int, unsigned int> &face_range) const
+  {
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
+
+    AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
+    exact_velocity.set_time(time);
+
+    for (unsigned int face = face_range.first; face < face_range.second; face++)
+      {
+        if (data.get_boundary_id(face) == 0)
+          {
+            eval_p_minus.reinit(face);
+            eval_u_minus.reinit(face);
+
+            eval_u_minus.gather_evaluate(src,
+                                         EvaluationFlags::values |
+                                           EvaluationFlags::gradients);
+
+            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+              {
+                const auto normal = eval_p_minus.normal_vector(q);
+
+                exact_velocity.set_time(time);
+                const auto g =
+                  evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
+
                 if (use_pressure_convective_upwind_flux)
                   {
                     const auto u_minus      = eval_u_minus.get_value(q);
@@ -1613,7 +1743,7 @@ private:
 
                     const auto grad_flux = (u_minus - g) * (u_minus * normal);
                     const auto value_flux =
-                      -u_plus - u_minus_grad * (u_minus - g) - viscosity * curl_omega;
+                      - u_minus_grad * (u_minus - g);
 
                     eval_p_minus.submit_value(value_flux * normal, q);
                     eval_p_minus.submit_gradient(grad_flux, q);
@@ -1625,7 +1755,7 @@ private:
 
                     const auto convective_value_flux = (grad_u * (g - u)) * normal;
 
-                    eval_p_minus.submit_value(flux + curl_flux + convective_value_flux,
+                    eval_p_minus.submit_value(convective_value_flux,
                                               q);
                     eval_p_minus.submit_gradient({}, q);
                   }
@@ -1640,15 +1770,11 @@ private:
             eval_p_minus.reinit(face);
             eval_u_minus.reinit(face);
 
-            eval_u_minus.gather_evaluate(*src[0], EvaluationFlags::values);
+            eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
-                const auto f = evaluate_function(rhs, eval_p_minus.quadrature_point(q));
-
                 const auto normal = eval_p_minus.normal_vector(q);
-
-                const auto flux = -f * normal;
 
                 exact_velocity.set_time(time);
                 const auto grad_u =
@@ -1657,17 +1783,8 @@ private:
                 const auto u_plus          = eval_u_minus.get_value(q);
                 const auto convective_flux = (grad_u * u_plus) * normal;
 
-
-                const auto g_p =
-                  evaluate_scalar_function(exact_pressure,
-                                           eval_p_minus.quadrature_point(q));
-
-                const VectorizedArray<number> penalty_factor =
-                  eval_p_minus.read_cell_data(array_penalty_parameter);
-                const auto penalty = penalty_factor * 2. * g_p;
-
-                eval_p_minus.submit_value(flux + convective_flux + penalty, q);
-                eval_p_minus.submit_normal_derivative(-g_p, q);
+                eval_p_minus.submit_value(convective_flux, q);
+                eval_p_minus.submit_normal_derivative({}, q);
               }
 
             eval_p_minus.integrate_scatter(EvaluationFlags::values |
@@ -1814,7 +1931,11 @@ do_test(const unsigned int fe_degree,
   GridGenerator::hyper_cube(tria, -L / 2., L / 2.);
 
   if (use_neumann_boundary)
+  {
     tria.begin()->face(0)->set_all_boundary_ids(1);
+    tria.begin()->face(1)->set_all_boundary_ids(1);
+    tria.begin()->face(2)->set_all_boundary_ids(1);
+  }
   tria.refine_global(n_refinements);
 
   DoFHandler<dim> dof_handler_u(tria);
@@ -1838,7 +1959,7 @@ do_test(const unsigned int fe_degree,
   // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
 
-  unsigned int bdf_order   = 2;
+  unsigned int bdf_order   = 3;
   unsigned int bdf_order_p = 2;
 
   BDFTimeIntegratorConstants bdf(bdf_order);
@@ -1917,12 +2038,22 @@ do_test(const unsigned int fe_degree,
         {
           pressure_op.set_time(current_time - (i + 1) * time_step);
           vec_p_rhs_n   = 0.;
-          vec_vorticity = 0.;
-          momentum_op.evaluate_vorticity(vec_vorticity, vec_u_old[i]);
-          pressure_op.compute_rhs(vec_p_rhs_n, vec_u_old[i], vec_vorticity);
-          vec_p_rhs.add(bdf_p.get_beta(i), vec_p_rhs_n);
+          pressure_op.compute_convective_rhs(vec_p_rhs_n, vec_u_old[i]);
+          vec_p_rhs.add(bdf_p.get_beta(i), vec_p_rhs_n);          
         }
+
+      speed_extrapolated = 0.;
+      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
+        speed_extrapolated.add(bdf_p.get_beta(i), vec_u_old[i]);
+      
+      
       pressure_op.set_time(current_time);
+      vec_p_rhs_n   = 0.;
+      vec_vorticity = 0.;
+      momentum_op.evaluate_vorticity(vec_vorticity, speed_extrapolated);
+      pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity);
+      vec_p_rhs.add(1, vec_p_rhs_n);
+
 
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
@@ -1946,10 +2077,6 @@ do_test(const unsigned int fe_degree,
         {
           vec_u_deriv.add(bdf.get_alpha(i) / time_step, vec_u_old[i]);
           speed_extrapolated.add(bdf.get_beta(i), vec_u_old[i]);
-        }
-      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
-        {
-          // speed_extrapolated.add(bdf_p.get_beta(i), vec_u_old[i]);
         }
 
       vec_u_rhs = 0.;
@@ -2119,12 +2246,12 @@ main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-  for (unsigned int i = 1; i < 7; ++i)
-    do_test<2, double>(3, i, 14);
+  //for (unsigned int i = 1; i < 7; ++i)
+  //  do_test<2, double>(3, i, 14);
 
-  for (unsigned int i = 1; i < 7; ++i)
-    do_test<2, double>(5, i, 14);
+  //for (unsigned int i = 1; i < 7; ++i)
+  //  do_test<2, double>(5, i, 14);
 
-  // for (unsigned int i = 1; i < 15; ++i)
-  // do_test<2, double>(5, 4, i);
+   for (unsigned int i = 1; i < 15; ++i)
+   do_test<2, double>(5, 4, i);
 }
