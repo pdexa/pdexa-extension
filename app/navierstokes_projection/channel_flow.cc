@@ -736,7 +736,8 @@ private:
           integrator_inner.read_cell_data(penalty_factor_continuity);
 
         // Dirichlet boundary
-        if (matrix_free.get_boundary_id(face) == 0)
+        if (matrix_free.get_boundary_id(face) == 0 ||
+            matrix_free.get_boundary_id(face) == 2)
           {
             for (unsigned int q = 0; q < integrator_inner.n_q_points; ++q)
               {
@@ -1005,7 +1006,8 @@ private:
         const VectorizedArray<number> sigma =
           integrator_inner.read_cell_data(array_penalty_parameter) * get_penalty_factor();
 
-        if (matrix_free.get_boundary_id(face) == 0)
+        if (matrix_free.get_boundary_id(face) == 0 ||
+            matrix_free.get_boundary_id(face) == 2)
           {
             for (unsigned int q = 0; q < integrator_inner.n_q_points; ++q)
               {
@@ -1396,7 +1398,7 @@ private:
         const VectorizedArray<number> penalty_factor =
           eval_minus.read_cell_data(array_penalty_parameter);
 
-        if (data.get_boundary_id(face) == 0)
+        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
           {
             // Do nothing
             for (const unsigned int q : eval_minus.quadrature_point_indices())
@@ -1517,7 +1519,7 @@ private:
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
-        if (data.get_boundary_id(face) == 0)
+        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
           {
             eval_p_minus.reinit(face);
             eval_vorticity.reinit(face);
@@ -1712,7 +1714,7 @@ private:
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
-        if (data.get_boundary_id(face) == 0)
+        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
           {
             eval_p_minus.reinit(face);
             eval_u_minus.reinit(face);
@@ -1865,7 +1867,7 @@ private:
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
-        if (data.get_boundary_id(face) == 0)
+        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
           {
             eval_p_minus.reinit(face);
             eval_u_minus.reinit(face);
@@ -1920,15 +1922,24 @@ do_test(const unsigned int fe_degree,
 
   GridGenerator::channel_with_cylinder(tria);
 
+  dealii::Point<dim> midpoint;
+  midpoint[0] = 0.2;
+  midpoint[1] = 0.2;
+
   for (auto cell : tria.cell_iterators())
     for (const auto &f : cell->face_indices())
       if (cell->face(f)->at_boundary())
         {
           if (std::abs(cell->face(f)->center()[0] - 2.2) < 1e-12)
             cell->face(f)->set_all_boundary_ids(1);
+          else if (midpoint.distance(cell->face(f)->center()) <= 0.15)
+            {
+              cell->face(f)->set_all_boundary_ids(2);
+            }
           else
             cell->face(f)->set_all_boundary_ids(0);
         }
+
   tria.refine_global(n_refinements);
 
   DoFHandler<dim> dof_handler_u(tria);
@@ -2000,6 +2011,11 @@ do_test(const unsigned int fe_degree,
   const Number       end_time         = 8.0;
   const unsigned int output_interval  = 50;
   unsigned int       time_step_number = 0;
+
+  Number drag_max = -10000000000.;
+  Number lift_max = -10000000000.;
+  Number drag_min = 100000000000.;
+  Number lift_min = 100000000000.;
 
   const bool write_output = true;
   while (current_time <= end_time)
@@ -2094,6 +2110,78 @@ do_test(const unsigned int fe_degree,
 
       vec_u_old[0].swap(vec_u);
 
+      // Compute lift and drag
+      {
+        auto                   matrix_free = momentum_op.get_matrix_free();
+        Tensor<1, dim, Number> Force;
+        for (unsigned int d = 0; d < dim; ++d)
+          Force[d] = 0.0;
+        FEFaceEvaluation<dim, -1, 0, 1, Number>   integrator_pressure(matrix_free,
+                                                                    true,
+                                                                    1,
+                                                                    1);
+        FEFaceEvaluation<dim, -1, 0, dim, Number> integrator_velocity(matrix_free,
+                                                                      true,
+                                                                      0,
+                                                                      1);
+
+        for (unsigned int face = matrix_free.n_inner_face_batches();
+             face <
+             (matrix_free.n_inner_face_batches() + matrix_free.n_boundary_face_batches());
+             face++)
+          {
+            integrator_velocity.reinit(face);
+            integrator_velocity.read_dof_values(vec_u_old[0]);
+            integrator_velocity.evaluate(dealii::EvaluationFlags::gradients);
+
+            integrator_pressure.reinit(face);
+            integrator_pressure.read_dof_values(vec_p);
+            integrator_pressure.evaluate(dealii::EvaluationFlags::values);
+
+            dealii::types::boundary_id boundary_id = matrix_free.get_boundary_id(face);
+            if (boundary_id == 2)
+              {
+                for (unsigned int q = 0; q < integrator_velocity.n_q_points; ++q)
+                  {
+                    dealii::VectorizedArray<Number> pressure =
+                      integrator_pressure.get_value(q);
+
+                    dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> normal =
+                      integrator_velocity.get_normal_vector(q);
+                    dealii::Tensor<2, dim, dealii::VectorizedArray<Number>>
+                      velocity_gradient = integrator_velocity.get_gradient(q);
+
+                    dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> tau =
+                      pressure * normal -
+                      viscosity * (velocity_gradient + transpose(velocity_gradient)) *
+                        normal;
+
+                    integrator_velocity.submit_value(tau, q);
+                  }
+
+                dealii::Tensor<1, dim, dealii::VectorizedArray<Number>> Force_local =
+                  integrator_velocity.integrate_value();
+
+                // sum over all entries of dealii::VectorizedArray
+                for (unsigned int d = 0; d < dim; ++d)
+                  {
+                    for (unsigned int n = 0;
+                         n < matrix_free.n_active_entries_per_face_batch(face);
+                         ++n)
+                      Force[d] += Force_local[d][n];
+                  }
+              }
+          }
+        Force                     = dealii::Utilities::MPI::sum(Force, MPI_COMM_WORLD);
+        const Number current_drag = Force[0] / (4. / 9. * u_x_max * u_x_max * 0.5 * 0.1);
+        const Number current_lift = Force[1] / (4. / 9. * u_x_max * u_x_max * 0.5 * 0.1);
+
+        drag_max = std::max(drag_max, current_drag);
+        drag_min = std::min(drag_min, current_drag);
+        lift_max = std::max(lift_max, current_lift);
+        lift_min = std::min(lift_min, current_lift);
+      }
+
       if (write_output && time_step_number % output_interval == 0)
         {
           Vector<double> error_per_cell;
@@ -2142,6 +2230,9 @@ do_test(const unsigned int fe_degree,
           // "solution-L2-" + std::to_string(n_refinements) + "_p_" +
           // std::to_string(degree) + ".vtu";
           data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
+
+          pcout << "Max/min drag/lift: " << drag_max << " " << drag_min << " " << lift_max
+                << " " << lift_min << std::endl;
         }
     }
 
@@ -2173,6 +2264,8 @@ do_test(const unsigned int fe_degree,
 
   pcout << "L2 norm velocity/pressure: " << velocity_error << " " << pressure_error
         << std::endl;
+  pcout << "Max/min drag/lift: " << drag_max << " " << drag_min << " " << lift_max << " "
+        << lift_min << std::endl;
   pcout << std::endl;
 }
 
