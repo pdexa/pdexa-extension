@@ -25,6 +25,8 @@
 #include <ginkgo/core/matrix/dense.hpp>
 #include <ginkgo/extensions/kokkos.hpp>
 
+#include "pdexa-ext/deal.II/lac/vector_view.h"
+
 namespace dealii {
 namespace GinkgoInterface {
 
@@ -88,6 +90,29 @@ create_vector(const std::shared_ptr<const gko::Executor>& exec,
     exec, v.get_mpi_communicator(), gko::dim<2>{v.size(), 1},
     GinkgoInterface::create_vector(exec, ArrayView<const ValueType, MemorySpace>{v.begin(), v.locally_owned_size()}));
 }
+
+template<typename ValueType, typename MemorySpace>
+LinearAlgebra::distributed::VectorView<ValueType, MemorySpace>
+create_vector(gko::experimental::distributed::Vector<ValueType>* v,
+              std::shared_ptr<const Utilities::MPI::Partitioner> partitioner) {
+  gko::ext::kokkos::detail::assert_compatibility<typename MemorySpace::kokkos_space>(*v);
+  Assert(partitioner && partitioner->size() == v->get_size()[0] &&
+           partitioner->locally_owned_size() == v->get_local_vector()->get_size()[0],
+         ExcMessage("The Ginkgo vector and the MPI::Partitioner are not compatible"));
+  return {v->get_local_values(), std::move(partitioner)};
+}
+
+template<typename ValueType, typename MemorySpace>
+LinearAlgebra::distributed::VectorView<const ValueType, MemorySpace>
+create_vector(const gko::experimental::distributed::Vector<ValueType>* v,
+              std::shared_ptr<const Utilities::MPI::Partitioner> partitioner) {
+  gko::ext::kokkos::detail::assert_compatibility<typename MemorySpace::kokkos_space>(*v);
+  Assert(partitioner && partitioner->size() == v->get_size()[0] &&
+           partitioner->locally_owned_size() == v->get_local_vector()->get_size()[0],
+         ExcMessage("The Ginkgo vector and the MPI::Partitioner are not compatible"));
+  return {v->get_const_local_values(), std::move(partitioner)};
+}
+
 } // namespace MPI
 
 namespace detail {
@@ -330,6 +355,52 @@ inverse_operator(const std::shared_ptr<gko::LinOp>& gko_op,
   return inverse_operator<DomainValueType, RangeValueType, DomainMemorySpace, RangeMemorySpace>(
     gko_op->get_executor(), gko_op->get_executor(), gko_op, solver, logger);
 }
+
+
+template<typename DealOp, typename MemorySpaceType>
+class GinkgoOperator : public gko::EnableLinOp<GinkgoOperator<DealOp, MemorySpaceType>>, gko::experimental::distributed::DistributedBase {
+  friend class gko::EnablePolymorphicObject<GinkgoOperator, gko::LinOp>;
+
+  using memory_space    = MemorySpaceType;
+  using value_type = typename DealOp::value_type;
+  using VectorType = gko::experimental::distributed::Vector<value_type>;
+
+public:
+  static std::unique_ptr<GinkgoOperator> create(const std::shared_ptr<const gko::Executor>& exec,
+                                         gko::experimental::mpi::communicator comm,
+                                         const DealOp* deal_op,
+                                         const std::shared_ptr<const Utilities::MPI::Partitioner>& partitioner) {
+    return std::unique_ptr<GinkgoOperator>(new GinkgoOperator(exec, comm, deal_op, partitioner));
+  }
+
+protected:
+  void apply_impl(const gko::LinOp* b, gko::LinOp* x) const override {
+    auto deal_b = MPI::create_vector<value_type, memory_space>(gko::as<VectorType>(x), partitioner_);
+    auto deal_x = MPI::create_vector<value_type, memory_space>(gko::as<VectorType>(x), partitioner_);
+    deal_op_->vmult(deal_b, deal_x);
+  }
+
+  void apply_impl(const gko::LinOp* alpha, const gko::LinOp* b, const gko::LinOp* beta, gko::LinOp* x) const override {
+    auto clone_x = gko::clone(x);
+    apply_impl(b, x);
+    gko::as<VectorType>(x)->scale(alpha);
+    gko::as<VectorType>(x)->add_scaled(beta, clone_x);
+  }
+
+private:
+  GinkgoOperator(const std::shared_ptr<const gko::Executor>& exec, gko::experimental::mpi::communicator comm) :
+      gko::EnableLinOp<GinkgoOperator>(exec), DistributedBase(comm) {}
+
+  GinkgoOperator(const std::shared_ptr<const gko::Executor>& exec,
+                 gko::experimental::mpi::communicator comm,
+                 const DealOp* deal_op,
+                 const std::shared_ptr<const Utilities::MPI::Partitioner>& partitioner) :
+      gko::EnableLinOp<GinkgoOperator>(exec), DistributedBase(comm), deal_op_(deal_op), partitioner_(partitioner) {}
+
+  const DealOp* deal_op_ = nullptr;
+
+  std::shared_ptr<const Utilities::MPI::Partitioner> partitioner_ = nullptr;
+};
 
 } // namespace GinkgoInterface
 } // namespace dealii
