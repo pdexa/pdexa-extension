@@ -1930,7 +1930,7 @@ do_test(const unsigned int fe_degree,
         const unsigned int n_refinements,
         const unsigned int n_refinements_time)
 {
-  auto deal_exec = gko::ext::kokkos::create_executor(memory_space::kokkos_space::execution_space{});
+  auto deal_exec = gko::OmpExecutor::create();
 
   ConditionalOStream pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
 
