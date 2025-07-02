@@ -37,7 +37,13 @@
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <pdexa-ext/deal.II/lac/ginkgo_interface.h>
+
 #include <fstream>
+#include <ginkgo/core/log/convergence.hpp>
+#include <ginkgo/core/solver/cg.hpp>
+#include <ginkgo/core/stop/iteration.hpp>
+#include <ginkgo/core/stop/residual_norm.hpp>
 
 using namespace dealii;
 
@@ -1170,7 +1176,9 @@ template <int dim, typename number>
 class PressureOperator
 {
 public:
+  using value_type = number;
   using VectorType = LinearAlgebra::distributed::Vector<number>;
+  using VectorViewType = LinearAlgebra::distributed::VectorView<number>;
 
   PressureOperator() = default;
 
@@ -1246,9 +1254,14 @@ public:
     this->time = time;
   }
 
-  void
-  vmult(VectorType &dst, const VectorType &src) const
-  {
+  void vmult(VectorType& dst, const VectorType& src) const {
+    VectorViewType dst_view(dst);
+    // this is not undefined behavior, since it is only used as a const&
+    VectorViewType src_view(const_cast<VectorType&>(src));
+    vmult(dst_view, src_view);
+  }
+
+  void vmult(VectorViewType& dst, const VectorViewType& src) const {
     matrix_free->loop(&PressureOperator::local_apply_domain,
                       &PressureOperator::local_apply_inner_face,
                       &PressureOperator::local_apply_boundary_face,
@@ -1316,11 +1329,10 @@ private:
   unsigned int                                           bdf_order;
 
   void
-  local_apply_domain(const MatrixFree<dim, number>               &data,
-                     VectorType                                  &dst,
-                     const VectorType                            &src,
-                     const std::pair<unsigned int, unsigned int> &cell_range) const
-  {
+  local_apply_domain(const MatrixFree<dim, number>& data,
+                          VectorViewType& dst,
+                          const VectorViewType& src,
+                          const std::pair<unsigned int, unsigned int>& cell_range) const {
     FEEvaluation<dim, -1, 0, 1, number> eval(data, dof_no_p, 2);
 
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
@@ -1341,10 +1353,9 @@ private:
 
   void
   local_apply_inner_face(const MatrixFree<dim, number>               &data,
-                         VectorType                                  &dst,
-                         const VectorType                            &src,
-                         const std::pair<unsigned int, unsigned int> &face_range) const
-  {
+                              VectorViewType& dst,
+                              const VectorViewType& src,
+                              const std::pair<unsigned int, unsigned int>& face_range) const {
     FEFaceEvaluation<dim, -1, 0, 1, number> eval_minus(data, true, dof_no_p, 2);
     FEFaceEvaluation<dim, -1, 0, 1, number> eval_plus(data, false, dof_no_p, 2);
 
@@ -1389,10 +1400,9 @@ private:
 
   void
   local_apply_boundary_face(const MatrixFree<dim, number>               &data,
-                            VectorType                                  &dst,
-                            const VectorType                            &src,
-                            const std::pair<unsigned int, unsigned int> &face_range) const
-  {
+                                 VectorViewType& dst,
+                                 const VectorViewType& src,
+                                 const std::pair<unsigned int, unsigned int>& face_range) const {
     FEFaceEvaluation<dim, -1, 0, 1, number> eval_minus(data, true, dof_no_p, 2);
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
@@ -1917,8 +1927,9 @@ do_test(const unsigned int fe_degree,
         const unsigned int n_refinements,
         const unsigned int n_refinements_time)
 {
-  ConditionalOStream pcout(std::cout,
-                           Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
+  auto host_exec = gko::ReferenceExecutor::create();
+
+  ConditionalOStream pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
 
   FESystem<dim>  fe_u(FE_DGQ<dim>(fe_degree), dim);
   FE_DGQ<dim>    fe_p(fe_degree - 1);
@@ -2014,12 +2025,26 @@ do_test(const unsigned int fe_degree,
   const Number end_time         = 1.0;
   unsigned int time_step_number = bdf.get_order() - 1;
 
-  const bool write_output = false;
-  while (current_time <= end_time)
-    {
-      current_time += time_step;
-      ++time_step_number;
-      momentum_op.set_time(current_time);
+  auto logger = gko::share(gko::log::Convergence<double>::create());
+
+  auto gko_pressure_op =
+    gko::share(GinkgoInterface::GinkgoOperator<PressureOperator<dim, double>, MemorySpace::Host>::create(
+      host_exec, MPI_COMM_WORLD, &pressure_op, momentum_op.get_matrix_free().get_vector_partitioner(dof_no_p)));
+
+  auto solver =
+    gko::solver::Cg<double>::build()
+      .with_criteria(
+        gko::stop::Iteration::build().with_max_iters(10000),
+        gko::stop::ResidualNorm<double>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(1e-12))
+      .on(host_exec)
+      ->generate(gko_pressure_op);
+  solver->add_logger(logger);
+
+  const bool write_output = true;
+  while (current_time <= end_time) {
+    current_time += time_step;
+    ++time_step_number;
+    momentum_op.set_time(current_time);
 
       // Pressure step
       vec_p_rhs = 0.;
@@ -2056,20 +2081,17 @@ do_test(const unsigned int fe_degree,
 
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
-      SolverControl control(10000, 1e-12 * vec_p_rhs.l2_norm());
-      SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
-      // vec_p = 0.;
-      solver.solve(pressure_op, vec_p, vec_p_rhs, PreconditionIdentity());
-      if (!use_neumann_boundary)
-        VectorTools::subtract_mean_value(vec_p);
-      if (write_output)
-        pcout << "Pressure solver: " << control.last_step() << " iterations" << std::endl;
+       vec_p = 0.;
+      solver->apply(GinkgoInterface::MPI::create_vector(host_exec, vec_p_rhs),
+                    GinkgoInterface::MPI::create_vector(host_exec, vec_p));
+      if (write_output) pcout << "Pressure solver: " << logger->get_num_iterations() << " iterations" << std::endl;
+      if (!use_neumann_boundary) VectorTools::subtract_mean_value(vec_p);
 
       // exact_pressure.set_time(current_time);
       // VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
 
       // Momentum step
-      vec_u_deriv        = 0.;
+      vec_u_deriv = 0.;
       speed_extrapolated = 0.;
 
       for (unsigned int i = 0; i < bdf.get_order(); ++i)
