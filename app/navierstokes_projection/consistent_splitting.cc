@@ -2044,6 +2044,7 @@ do_test(const unsigned int fe_degree,
         gko::stop::Iteration::build().with_max_iters(10000),
         gko::stop::ResidualNorm<Number>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(1e-12))
       .with_krylov_dim(30)
+      .with_ortho_method(gko::solver::gmres::ortho_method::cgs)
       .on(deal_exec)
       ->generate(gko_momentum_op);
   momentum_solver->add_logger(logger);
@@ -2057,7 +2058,7 @@ do_test(const unsigned int fe_degree,
       ->generate(gko_pressure_op);
   pressure_solver->add_logger(logger);
 
-  const bool write_output = true;
+  const bool write_output = false;
   while (current_time <= end_time) {
     current_time += time_step;
     ++time_step_number;
@@ -2284,9 +2285,8 @@ main(int argc, char **argv)
   // for (unsigned int i = 1; i < 7; ++i)
   //   do_test<2, double>(3, i, 14);
 
-  // for (unsigned int i = 1; i < 7; ++i)
-  //   do_test<2, double>(5, i, 14);
+  //for (unsigned int i = 1; i < 7; ++i)
+    // do_test<2, double>(5, i, 14);
 
-  for (unsigned int i = 1; i < 15; ++i)
-    do_test<2, double>(5, 4, i);
+  for (unsigned int i = 1; i < 2; ++i) do_test<2, double>(5, 4, i);
 }
