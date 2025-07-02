@@ -42,6 +42,7 @@
 #include <fstream>
 #include <ginkgo/core/log/convergence.hpp>
 #include <ginkgo/core/solver/cg.hpp>
+#include <ginkgo/core/solver/gmres.hpp>
 #include <ginkgo/core/stop/iteration.hpp>
 #include <ginkgo/core/stop/residual_norm.hpp>
 
@@ -355,6 +356,7 @@ public:
   using value_type = Number;
   using number     = Number;
   using VectorType = LinearAlgebra::distributed::Vector<Number, memory_space>;
+  using VectorViewType = LinearAlgebra::distributed::VectorView<number, memory_space>;
 
   static const int dim = dim_;
 
@@ -486,7 +488,7 @@ public:
   }
 
   virtual void
-  vmult(VectorType &dst, const VectorType &src) const
+  vmult(VectorViewType &dst, const VectorViewType &src) const
   {
     this->matrix_free.loop(&MomentumOperator::do_cell_integral_range,
                            &MomentumOperator::do_face_integral_range,
@@ -555,8 +557,8 @@ private:
 
   void
   do_cell_integral_range(const MatrixFree<dim, number>               &matrix_free,
-                         VectorType                                  &dst,
-                         const VectorType                            &src,
+                         VectorViewType                                  &dst,
+                         const VectorViewType                            &src,
                          const std::pair<unsigned int, unsigned int> &range) const
   {
     FEEvaluation<dim, -1, 0, n_components, Number> integrator(matrix_free,
@@ -619,8 +621,8 @@ private:
 
   void
   do_face_integral_range(const MatrixFree<dim, number>               &matrix_free,
-                         VectorType                                  &dst,
-                         const VectorType                            &src,
+                         VectorViewType                                  &dst,
+                         const VectorViewType                            &src,
                          const std::pair<unsigned int, unsigned int> &range) const
   {
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_inner(matrix_free,
@@ -732,8 +734,8 @@ private:
 
   void
   do_boundary_integral_range(const MatrixFree<dim, number>               &matrix_free,
-                             VectorType                                  &dst,
-                             const VectorType                            &src,
+                             VectorViewType                                  &dst,
+                             const VectorViewType                            &src,
                              const std::pair<unsigned int, unsigned int> &range) const
   {
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_inner(matrix_free,
@@ -2029,18 +2031,31 @@ do_test(const unsigned int fe_degree,
 
   auto logger = gko::share(gko::log::Convergence<double>::create());
 
+  auto gko_momentum_op =
+    gko::share(GinkgoInterface::GinkgoOperator<MomentumOperator<dim, dim, double>, memory_space>::create(
+      deal_exec, MPI_COMM_WORLD, &momentum_op, momentum_op.get_matrix_free().get_vector_partitioner(dof_no_v)));
   auto gko_pressure_op =
     gko::share(GinkgoInterface::GinkgoOperator<PressureOperator<dim, double>, memory_space>::create(
       deal_exec, MPI_COMM_WORLD, &pressure_op, momentum_op.get_matrix_free().get_vector_partitioner(dof_no_p)));
 
-  auto solver =
+  auto momentum_solver =
+    gko::solver::Gmres<Number>::build()
+      .with_criteria(
+        gko::stop::Iteration::build().with_max_iters(10000),
+        gko::stop::ResidualNorm<Number>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(1e-12))
+      .with_krylov_dim(30)
+      .on(deal_exec)
+      ->generate(gko_momentum_op);
+  momentum_solver->add_logger(logger);
+
+  auto pressure_solver =
     gko::solver::Cg<double>::build()
       .with_criteria(
         gko::stop::Iteration::build().with_max_iters(10000),
         gko::stop::ResidualNorm<double>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(1e-12))
       .on(deal_exec)
       ->generate(gko_pressure_op);
-  solver->add_logger(logger);
+  pressure_solver->add_logger(logger);
 
   const bool write_output = true;
   while (current_time <= end_time) {
@@ -2084,8 +2099,8 @@ do_test(const unsigned int fe_degree,
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
        vec_p = 0.;
-      solver->apply(GinkgoInterface::MPI::create_vector(deal_exec, vec_p_rhs),
-                    GinkgoInterface::MPI::create_vector(deal_exec, vec_p));
+      pressure_solver->apply(GinkgoInterface::MPI::create_vector(deal_exec, vec_p_rhs),
+                             GinkgoInterface::MPI::create_vector(deal_exec, vec_p));
       if (write_output) pcout << "Pressure solver: " << logger->get_num_iterations() << " iterations" << std::endl;
       if (!use_neumann_boundary) VectorTools::subtract_mean_value(vec_p);
 
@@ -2105,13 +2120,10 @@ do_test(const unsigned int fe_degree,
       vec_u_rhs = 0.;
       momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, vec_p);
 
-      SolverControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
-      SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
       vec_u.swap(speed_extrapolated); // = 0.;
-      solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
-      if (write_output)
-        pcout << "Momentum solver: " << control_mom.last_step() << " iterations"
-              << std::endl;
+      momentum_solver->apply(GinkgoInterface::MPI::create_vector(deal_exec, vec_u_rhs),
+                             GinkgoInterface::MPI::create_vector(deal_exec, vec_u));
+      if (write_output) pcout << "Momentum solver: " << logger->get_num_iterations() << " iterations" << std::endl;
 
       // exact_velocity.set_time(current_time);
       // VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
