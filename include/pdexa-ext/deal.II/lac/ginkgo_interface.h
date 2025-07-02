@@ -103,14 +103,16 @@ create_vector(gko::experimental::distributed::Vector<ValueType>* v,
 }
 
 template<typename ValueType, typename MemorySpace>
-LinearAlgebra::distributed::VectorView<const ValueType, MemorySpace>
+LinearAlgebra::distributed::VectorView<ValueType, MemorySpace>
 create_vector(const gko::experimental::distributed::Vector<ValueType>* v,
               std::shared_ptr<const Utilities::MPI::Partitioner> partitioner) {
+  // @todo: this uses const_cast to create a non-const vector view. The correct handling would be to allow the vector
+  //        view to use a const value type, but that doesn't match with the normal deal.ii usage
   gko::ext::kokkos::detail::assert_compatibility<typename MemorySpace::kokkos_space>(*v);
   Assert(partitioner && partitioner->size() == v->get_size()[0] &&
            partitioner->locally_owned_size() == v->get_local_vector()->get_size()[0],
          ExcMessage("The Ginkgo vector and the MPI::Partitioner are not compatible"));
-  return {v->get_const_local_values(), std::move(partitioner)};
+  return {const_cast<ValueType*>(v->get_const_local_values()), std::move(partitioner)};
 }
 
 } // namespace MPI
@@ -375,9 +377,9 @@ public:
 
 protected:
   void apply_impl(const gko::LinOp* b, gko::LinOp* x) const override {
-    auto deal_b = MPI::create_vector<value_type, memory_space>(gko::as<VectorType>(x), partitioner_);
+    auto deal_b = MPI::create_vector<value_type, memory_space>(gko::as<VectorType>(b), partitioner_);
     auto deal_x = MPI::create_vector<value_type, memory_space>(gko::as<VectorType>(x), partitioner_);
-    deal_op_->vmult(deal_b, deal_x);
+    deal_op_->vmult(deal_x, deal_b);
   }
 
   void apply_impl(const gko::LinOp* alpha, const gko::LinOp* b, const gko::LinOp* beta, gko::LinOp* x) const override {
@@ -395,7 +397,7 @@ private:
                  gko::experimental::mpi::communicator comm,
                  const DealOp* deal_op,
                  const std::shared_ptr<const Utilities::MPI::Partitioner>& partitioner) :
-      gko::EnableLinOp<GinkgoOperator>(exec), DistributedBase(comm), deal_op_(deal_op), partitioner_(partitioner) {}
+      gko::EnableLinOp<GinkgoOperator>(exec, gko::dim<2>(partitioner->size())), DistributedBase(comm), deal_op_(deal_op), partitioner_(partitioner) {}
 
   const DealOp* deal_op_ = nullptr;
 
