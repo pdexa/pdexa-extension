@@ -47,6 +47,7 @@
 
 using namespace dealii;
 
+using memory_space = MemorySpace::Host;
 
 const bool use_extrapolated_velocity                 = false;
 const bool use_pressure_convective_upwind_flux       = false;
@@ -353,7 +354,7 @@ public:
   typedef MomentumOperator<dim_, n_components, Number> This;
   using value_type = Number;
   using number     = Number;
-  using VectorType = LinearAlgebra::distributed::Vector<Number>;
+  using VectorType = LinearAlgebra::distributed::Vector<Number, memory_space>;
 
   static const int dim = dim_;
 
@@ -1177,8 +1178,8 @@ class PressureOperator
 {
 public:
   using value_type = number;
-  using VectorType = LinearAlgebra::distributed::Vector<number>;
-  using VectorViewType = LinearAlgebra::distributed::VectorView<number>;
+  using VectorType = LinearAlgebra::distributed::Vector<number, memory_space>;
+  using VectorViewType = LinearAlgebra::distributed::VectorView<number, memory_space>;
 
   PressureOperator() = default;
 
@@ -1927,7 +1928,7 @@ do_test(const unsigned int fe_degree,
         const unsigned int n_refinements,
         const unsigned int n_refinements_time)
 {
-  auto host_exec = gko::ReferenceExecutor::create();
+  auto deal_exec = gko::ext::kokkos::create_executor(memory_space::kokkos_space::execution_space{});
 
   ConditionalOStream pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
 
@@ -1982,8 +1983,9 @@ do_test(const unsigned int fe_degree,
   momentum_op.set_viscosity(viscosity);
   momentum_op.set_time(0.0);
 
-  LinearAlgebra::distributed::Vector<Number> vec_u, vec_u_deriv, vec_u_rhs, vec_p,
-    vec_u_norm, speed_extrapolated, vec_vorticity, vec_p_rhs, vec_p_rhs_n, vec_p_norm,
+  LinearAlgebra::distributed::Vector<Number, memory_space> vec_u, vec_u_deriv, vec_u_rhs, vec_p,
+    vec_u_norm,
+    speed_extrapolated, vec_vorticity, vec_p_rhs, vec_p_rhs_n, vec_p_norm,
     vec_div_u;
   momentum_op.initialize_dof_vector(vec_u, dof_no_v);
   momentum_op.initialize_dof_vector(vec_u_deriv, dof_no_v);
@@ -2028,15 +2030,15 @@ do_test(const unsigned int fe_degree,
   auto logger = gko::share(gko::log::Convergence<double>::create());
 
   auto gko_pressure_op =
-    gko::share(GinkgoInterface::GinkgoOperator<PressureOperator<dim, double>, MemorySpace::Host>::create(
-      host_exec, MPI_COMM_WORLD, &pressure_op, momentum_op.get_matrix_free().get_vector_partitioner(dof_no_p)));
+    gko::share(GinkgoInterface::GinkgoOperator<PressureOperator<dim, double>, memory_space>::create(
+      deal_exec, MPI_COMM_WORLD, &pressure_op, momentum_op.get_matrix_free().get_vector_partitioner(dof_no_p)));
 
   auto solver =
     gko::solver::Cg<double>::build()
       .with_criteria(
         gko::stop::Iteration::build().with_max_iters(10000),
         gko::stop::ResidualNorm<double>::build().with_baseline(gko::stop::mode::rhs_norm).with_reduction_factor(1e-12))
-      .on(host_exec)
+      .on(deal_exec)
       ->generate(gko_pressure_op);
   solver->add_logger(logger);
 
@@ -2082,8 +2084,8 @@ do_test(const unsigned int fe_degree,
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
        vec_p = 0.;
-      solver->apply(GinkgoInterface::MPI::create_vector(host_exec, vec_p_rhs),
-                    GinkgoInterface::MPI::create_vector(host_exec, vec_p));
+      solver->apply(GinkgoInterface::MPI::create_vector(deal_exec, vec_p_rhs),
+                    GinkgoInterface::MPI::create_vector(deal_exec, vec_p));
       if (write_output) pcout << "Pressure solver: " << logger->get_num_iterations() << " iterations" << std::endl;
       if (!use_neumann_boundary) VectorTools::subtract_mean_value(vec_p);
 
