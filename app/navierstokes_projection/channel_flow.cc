@@ -24,15 +24,26 @@
 #include <deal.II/grid/manifold_lib.h>
 
 #include <deal.II/lac/affine_constraints.h>
+#include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_control.h>
 #include <deal.II/lac/solver_gmres.h>
+#include <deal.II/lac/trilinos_precondition.h>
+#include <deal.II/lac/trilinos_sparse_matrix.h>
+#include <deal.II/lac/trilinos_sparsity_pattern.h>
 
 #include <deal.II/matrix_free/fe_evaluation.h>
 #include <deal.II/matrix_free/matrix_free.h>
 #include <deal.II/matrix_free/operators.h>
 #include <deal.II/matrix_free/tools.h>
+
+#include <deal.II/multigrid/mg_coarse.h>
+#include <deal.II/multigrid/mg_matrix.h>
+#include <deal.II/multigrid/mg_smoother.h>
+#include <deal.II/multigrid/mg_tools.h>
+#include <deal.II/multigrid/mg_transfer_matrix_free.h>
+#include <deal.II/multigrid/multigrid.h>
 
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
@@ -48,6 +59,7 @@ const bool use_neumann_boundary                      = true;
 const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = true;
 const bool use_leray_projection                      = true;
+const bool use_amg                                   = false;
 
 const double penalty_divergence = 1.0;
 const double penalty_continuity = 1.0;
@@ -1154,8 +1166,85 @@ private:
   unsigned int fe_degree_u;
 };
 
+
 template <int dim, typename number>
-class PressureOperator
+class InverseMassPreconditioner
+{
+public:
+  using VectorType = LinearAlgebra::distributed::Vector<number>;
+  typedef InverseMassPreconditioner<dim, number> This;
+
+
+  InverseMassPreconditioner() = default;
+
+  void
+  reinit(const MatrixFree<dim, number> &matrix_free, number scaling_factor_in)
+  {
+    scaling_factor    = scaling_factor_in;
+    this->matrix_free = &matrix_free;
+  }
+
+  void
+  set_scaling_factor(number scaling_factor_in)
+  {
+    scaling_factor = scaling_factor_in;
+  }
+
+  void
+  vmult(VectorType &dst, const VectorType &src) const
+  {
+    dst.zero_out_ghost_values();
+
+    matrix_free->cell_loop(
+      &This::cell_loop_matrix_free_operator,
+      this,
+      dst,
+      src,
+      [&](const unsigned int start_range, const unsigned int end_range) {
+        for (unsigned int i = start_range; i < end_range; ++i)
+          dst.local_element(i) *= 0.;
+      },
+      [&](const unsigned int start_range, const unsigned int end_range) {
+        for (unsigned int i = start_range; i < end_range; ++i)
+          dst.local_element(i) *= scaling_factor;
+      },
+      dof_no_v);
+  }
+
+private:
+  void
+  cell_loop_matrix_free_operator(
+    const dealii::MatrixFree<dim, number> &,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, dim, number> integrator(*matrix_free,
+                                                     dof_no_v,
+                                                     quad_no_v_mass);
+
+    MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, number> inverse_mass(
+      integrator);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        integrator.reinit(cell);
+        integrator.read_dof_values(src, 0);
+
+        inverse_mass.apply(integrator.begin_dof_values(), integrator.begin_dof_values());
+
+        integrator.set_dof_values(dst, 0);
+      }
+  }
+
+  const MatrixFree<dim, number> *matrix_free;
+  number                         scaling_factor;
+};
+
+
+
+template <int dim, typename number>
+class PressureOperator : public Subscriptor
 {
 public:
   using VectorType = LinearAlgebra::distributed::Vector<number>;
@@ -1163,22 +1252,26 @@ public:
   PressureOperator() = default;
 
   void
-  reinit(const MatrixFree<dim, number> &matrix_free, const unsigned int bdf_order_in)
+  reinit(std::shared_ptr<const MatrixFree<dim, number>> matrix_free,
+         const unsigned int                             bdf_order_in,
+         const number                                   time_step_in)
   {
-    bdf_order                    = bdf_order_in;
-    this->matrix_free            = &matrix_free;
-    const unsigned int fe_degree = matrix_free.get_dof_handler(dof_no_p).get_fe().degree;
+    bdf_order         = bdf_order_in;
+    time_step         = time_step_in;
+    this->matrix_free = matrix_free;
+
+    const unsigned int fe_degree = matrix_free->get_dof_handler(dof_no_p).get_fe().degree;
     const double       penalty_factor = 1.0 * (fe_degree + 1) * (fe_degree);
     {
       unsigned int n_cells =
-        matrix_free.n_cell_batches() + matrix_free.n_ghost_cell_batches();
+        matrix_free->n_cell_batches() + matrix_free->n_ghost_cell_batches();
       array_penalty_parameter.resize(n_cells);
 
       const dealii::FiniteElement<dim> &fe =
-        matrix_free.get_dof_handler(dof_no_p).get_fe();
+        matrix_free->get_dof_handler(dof_no_p).get_fe();
       const auto reference_cells =
-        matrix_free.get_dof_handler(dof_no_p).get_fe().reference_cell();
-      MappingQ1<dim> mapping;
+        matrix_free->get_dof_handler(dof_no_p).get_fe().reference_cell();
+      MappingQGeneric<dim> mapping(fe_degree);
 
       const auto quadrature =
         reference_cells.template get_gauss_type_quadrature<dim>(fe_degree + 1);
@@ -1194,11 +1287,11 @@ public:
 
       for (unsigned int i = 0; i < n_cells; ++i)
         {
-          for (unsigned int v = 0; v < matrix_free.n_active_entries_per_cell_batch(i);
+          for (unsigned int v = 0; v < matrix_free->n_active_entries_per_cell_batch(i);
                ++v)
             {
               typename dealii::DoFHandler<dim>::cell_iterator cell =
-                matrix_free.get_cell_iterator(i, v, dof_no_p);
+                matrix_free->get_cell_iterator(i, v, dof_no_p);
               fe_values.reinit(cell);
 
               // calculate cell volume
@@ -1246,6 +1339,12 @@ public:
                       true,
                       MatrixFree<dim, number>::DataAccessOnFaces::gradients,
                       MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+  }
+
+  void
+  Tvmult(VectorType &dst, const VectorType &src) const
+  {
+    vmult(dst, src);
   }
 
   void
@@ -1302,8 +1401,85 @@ public:
     bdf_order = bdf_order_in;
   }
 
+  void
+  get_system_matrix(TrilinosWrappers::SparseMatrix &system_matrix)
+  {
+    const auto &dof_handler = this->matrix_free->get_dof_handler(dof_no_p);
+    TrilinosWrappers::SparsityPattern dsp(
+      this->matrix_free->get_mg_level() == numbers::invalid_unsigned_int ?
+        dof_handler.locally_owned_dofs() :
+        dof_handler.locally_owned_mg_dofs(this->matrix_free->get_mg_level()),
+      dof_handler.get_triangulation().get_communicator());
+
+    if (matrix_free->get_mg_level() == numbers::invalid_unsigned_int)
+      DoFTools::make_flux_sparsity_pattern(dof_handler, dsp, AffineConstraints<number>());
+    else
+      MGTools::make_flux_sparsity_pattern(dof_handler, dsp, matrix_free->get_mg_level());
+
+    dsp.compress();
+    system_matrix.reinit(dsp);
+
+    MatrixFreeTools::compute_matrix(
+      *matrix_free,
+      AffineConstraints<number>(),
+      system_matrix,
+      &PressureOperator::local_apply_domain_matrix_based,
+      &PressureOperator::local_apply_inner_face_matrix_based,
+      &PressureOperator::local_apply_boundary_face_matrix_based,
+      this,
+      dof_no_p,
+      quad_no_p);
+  }
+
+  void
+  compute_inverse_diagonal(VectorType &diagonal_vector) const
+  {
+    this->matrix_free->initialize_dof_vector(diagonal_vector, dof_no_p);
+    MatrixFreeTools::compute_diagonal(
+      *matrix_free,
+      diagonal_vector,
+      &PressureOperator::local_apply_domain_matrix_based,
+      &PressureOperator::local_apply_inner_face_matrix_based,
+      &PressureOperator::local_apply_boundary_face_matrix_based,
+      this,
+      dof_no_p,
+      quad_no_p);
+
+    for (unsigned int i = 0; i < diagonal_vector.locally_owned_size(); ++i)
+      {
+        if (std::abs(diagonal_vector.local_element(i)) > 1.0e-10)
+          diagonal_vector.local_element(i) = 1.0 / diagonal_vector.local_element(i);
+        else
+          diagonal_vector.local_element(i) = 1.0;
+      }
+  }
+
+
+  number
+  el(unsigned int, unsigned int) const
+  {
+    DEAL_II_NOT_IMPLEMENTED();
+    return 0;
+  }
+
+  types::global_dof_index
+  m() const
+  {
+    if (matrix_free->get_mg_level() == numbers::invalid_unsigned_int)
+      return matrix_free->get_dof_handler(dof_no_p).n_dofs();
+    else
+      return matrix_free->get_dof_handler(dof_no_p).n_dofs(matrix_free->get_mg_level());
+  }
+
+  std::shared_ptr<const MatrixFree<dim, number>>
+  get_matrix_free() const
+  {
+    return matrix_free;
+  }
+
+
 private:
-  const MatrixFree<dim, number>                         *matrix_free;
+  std::shared_ptr<const MatrixFree<dim, number>>         matrix_free;
   dealii::AlignedVector<dealii::VectorizedArray<number>> array_penalty_parameter;
   number                                                 time;
   double                                                 time_step;
@@ -1433,6 +1609,95 @@ private:
   }
 
   void
+  local_apply_domain_matrix_based(FEEvaluation<dim, -1, 0, 1, number> &eval) const
+  {
+    eval.evaluate(EvaluationFlags::gradients);
+
+    for (const unsigned int q : eval.quadrature_point_indices())
+      eval.submit_gradient(eval.get_gradient(q), q);
+
+    eval.integrate(EvaluationFlags::gradients);
+  }
+
+
+  void
+  local_apply_inner_face_matrix_based(
+    FEFaceEvaluation<dim, -1, 0, 1, number> &eval_minus,
+    FEFaceEvaluation<dim, -1, 0, 1, number> &eval_plus) const
+  {
+    eval_minus.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
+    eval_plus.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
+
+    const VectorizedArray<number> penalty_factor =
+      std::max(eval_minus.read_cell_data(array_penalty_parameter),
+               eval_plus.read_cell_data(array_penalty_parameter));
+
+    for (const unsigned int q : eval_minus.quadrature_point_indices())
+      {
+        const auto u_minus = eval_minus.get_value(q);
+        const auto u_plus  = eval_plus.get_value(q);
+
+        const auto viscous_value_flux =
+          make_vectorized_array<number>(0.5) *
+            (eval_minus.get_normal_derivative(q) + eval_plus.get_normal_derivative(q)) -
+          penalty_factor * (u_minus - u_plus);
+        const auto viscous_gradient_flux =
+          make_vectorized_array<number>(0.5) * (u_plus - u_minus);
+
+        eval_minus.submit_normal_derivative(viscous_gradient_flux, q);
+        eval_plus.submit_normal_derivative(viscous_gradient_flux, q);
+
+        eval_minus.submit_value(-viscous_value_flux, q);
+        eval_plus.submit_value(viscous_value_flux, q);
+      }
+
+    eval_minus.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
+    eval_plus.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
+  }
+
+
+  void
+  local_apply_boundary_face_matrix_based(
+    FEFaceEvaluation<dim, -1, 0, 1, number> &eval_minus) const
+  {
+    eval_minus.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
+
+    const VectorizedArray<number> penalty_factor =
+      eval_minus.read_cell_data(array_penalty_parameter);
+
+    if (eval_minus.boundary_id() == 0 || eval_minus.boundary_id() == 2)
+      {
+        // Do nothing
+        for (const unsigned int q : eval_minus.quadrature_point_indices())
+          {
+            eval_minus.submit_normal_derivative({}, q);
+            eval_minus.submit_value({}, q);
+          }
+      }
+    else if (eval_minus.boundary_id() == 1)
+      {
+        for (const unsigned int q : eval_minus.quadrature_point_indices())
+          {
+            const auto u_minus = eval_minus.get_value(q);
+
+            const auto viscous_value_flux =
+              2.0 * penalty_factor * u_minus - eval_minus.get_normal_derivative(q);
+            const auto viscous_gradient_flux = -u_minus;
+
+            eval_minus.submit_normal_derivative(viscous_gradient_flux, q);
+            eval_minus.submit_value(viscous_value_flux, q);
+          }
+      }
+    else
+      AssertThrow(false,
+                  ExcNotImplemented("Boundary id " +
+                                    std::to_string(int(eval_minus.boundary_id())) +
+                                    " not known"));
+
+    eval_minus.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
+  }
+
+  void
   local_rhs_domain(const MatrixFree<dim, number> &data,
                    VectorType                    &dst,
                    const VectorType &,
@@ -1451,13 +1716,11 @@ private:
         for (const unsigned int q : eval_p.quadrature_point_indices())
           {
             const auto f = evaluate_function(rhs, eval_p.quadrature_point(q));
-            eval_p.submit_value({}, q);
             eval_p.submit_gradient(f, q);
           }
 
         // multiply by nabla v^h(x) and sum
-        eval_p.integrate_scatter(EvaluationFlags::values | EvaluationFlags::gradients,
-                                 dst);
+        eval_p.integrate_scatter(EvaluationFlags::gradients, dst);
       }
   }
 
@@ -1486,16 +1749,10 @@ private:
 
             eval_p_minus.submit_value(-flux, q);
             eval_p_plus.submit_value(flux, q);
-            eval_p_minus.submit_gradient({}, q);
-            eval_p_plus.submit_gradient({}, q);
           }
 
-        eval_p_minus.integrate_scatter(EvaluationFlags::values |
-                                         EvaluationFlags::gradients,
-                                       dst);
-        eval_p_plus.integrate_scatter(EvaluationFlags::values |
-                                        EvaluationFlags::gradients,
-                                      dst);
+        eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+        eval_p_plus.integrate_scatter(EvaluationFlags::values, dst);
       }
   }
 
@@ -1551,21 +1808,12 @@ private:
                   CurlCompute<dim, FEFaceEvaluation<dim, -1, 0, dim, number>>::compute(
                     eval_vorticity, q);
 
-                if (use_analytical_curl)
-                  {
-                    curl_omega =
-                      make_vectorized_array<number>(4.0 * numbers::PI * numbers::PI) * g;
-                  }
-
                 const auto curl_flux = (-viscosity) * normal * curl_omega;
 
                 eval_p_minus.submit_value(flux + curl_flux, q);
-                eval_p_minus.submit_gradient({}, q);
               }
 
-            eval_p_minus.integrate_scatter(EvaluationFlags::values |
-                                             EvaluationFlags::gradients,
-                                           dst);
+            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
           }
         else
           {
@@ -1777,12 +2025,9 @@ private:
                 const auto convective_flux = (grad_u * u_plus) * normal;
 
                 eval_p_minus.submit_value(convective_flux, q);
-                eval_p_minus.submit_normal_derivative({}, q);
               }
 
-            eval_p_minus.integrate_scatter(EvaluationFlags::values |
-                                             EvaluationFlags::gradients,
-                                           dst);
+            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
           }
       }
   }
@@ -1905,6 +2150,160 @@ private:
   }
 };
 
+template <int dim, typename number>
+class MultigridPreconditioner
+{
+  using VectorType       = LinearAlgebra::distributed::Vector<number>;
+  using SystemMatrixType = PressureOperator<dim, number>;
+  using LevelMatrixType  = PressureOperator<dim, number>;
+
+  using SmootherPreconditionerType = DiagonalMatrix<VectorType>;
+  using SmootherType =
+    PreconditionChebyshev<LevelMatrixType, VectorType, SmootherPreconditionerType>;
+  using PreconditionerType =
+    PreconditionMG<dim, VectorType, MGTransferMatrixFree<dim, number>>;
+
+public:
+  MultigridPreconditioner(SystemMatrixType &pressure_operator,
+                          Mapping<dim>     &mapping,
+                          number            time_step,
+                          unsigned int      bdf_order)
+  {
+    const unsigned int nlevels = pressure_operator.get_matrix_free()
+                                   ->get_dof_handler(dof_no_p)
+                                   .get_triangulation()
+                                   .n_global_levels();
+    mg_matrices.resize(0, nlevels - 1);
+
+    std::vector<std::shared_ptr<const Utilities::MPI::Partitioner>> partitioners(
+      pressure_operator.get_matrix_free()
+        ->get_dof_handler(dof_no_p)
+        .get_triangulation()
+        .n_global_levels());
+
+    for (unsigned int level = 0; level < nlevels; ++level)
+      {
+        typename MatrixFree<dim, float>::AdditionalData additional_data;
+
+        const unsigned int fe_degree_u =
+          pressure_operator.get_matrix_free()->get_dof_handler(dof_no_v).get_fe().degree;
+        const unsigned int fe_degree_p =
+          pressure_operator.get_matrix_free()->get_dof_handler(dof_no_p).get_fe().degree;
+        Quadrature<1> quadrature      = QGauss<1>(fe_degree_u + 2);
+        Quadrature<1> quadrature_mass = QGauss<1>(fe_degree_u + 1);
+        Quadrature<1> quadrature_p    = QGauss<1>(fe_degree_p + 1);
+
+
+        typename MatrixFree<dim, number>::AdditionalData data;
+        data.mapping_update_flags = (update_gradients | update_JxW_values |
+                                     update_quadrature_points | update_values);
+        data.mapping_update_flags_inner_faces =
+          (update_gradients | update_JxW_values | update_normal_vectors |
+           update_quadrature_points);
+        data.mapping_update_flags_boundary_faces =
+          (update_gradients | update_JxW_values | update_normal_vectors |
+           update_quadrature_points);
+        data.mg_level = level;
+        AffineConstraints<double> dummy;
+        dummy.close();
+
+        auto mg_mf_storage_level = std::make_shared<MatrixFree<dim, number>>();
+        mg_mf_storage_level->reinit(
+          mapping,
+          std::vector<const DoFHandler<dim> *>{
+            &pressure_operator.get_matrix_free()->get_dof_handler(dof_no_v),
+            &pressure_operator.get_matrix_free()->get_dof_handler(dof_no_p)},
+          std::vector<const AffineConstraints<double> *>{&dummy, &dummy},
+          std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
+          data);
+
+        mg_matrices[level].reinit(mg_mf_storage_level, bdf_order, time_step);
+
+        partitioners[level] =
+          mg_matrices[level].get_matrix_free()->get_vector_partitioner(dof_no_p);
+      }
+
+    mg_transfer.build(pressure_operator.get_matrix_free()->get_dof_handler(dof_no_p),
+                      partitioners);
+
+    mg_matrices[mg_matrices.min_level()].get_system_matrix(coarse_system_matrix);
+    TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
+    amg_data.smoother_sweeps = 1;
+    amg_data.n_cycles        = 1;
+    amg_data.smoother_type   = "ILU";
+
+    precondition_amg.initialize(coarse_system_matrix, amg_data);
+
+    smoother_data.resize(mg_matrices.min_level(), mg_matrices.max_level());
+
+    for (unsigned int level = 0; level < pressure_operator.get_matrix_free()
+                                           ->get_dof_handler(dof_no_p)
+                                           .get_triangulation()
+                                           .n_global_levels();
+         ++level)
+      {
+        if (level > 0)
+          {
+            smoother_data[level].smoothing_range     = 15.;
+            smoother_data[level].degree              = 4;
+            smoother_data[level].eig_cg_n_iterations = 10;
+          }
+        else
+          {
+            smoother_data[0].smoothing_range     = 1e-3;
+            smoother_data[0].degree              = numbers::invalid_unsigned_int;
+            smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
+          }
+
+        smoother_data[level].preconditioner =
+          std::make_shared<SmootherPreconditionerType>();
+        mg_matrices[level].compute_inverse_diagonal(
+          smoother_data[level].preconditioner->get_vector());
+      }
+    mg_smoother.initialize(mg_matrices, smoother_data);
+  }
+
+  unsigned int
+  solve(SystemMatrixType &pressure_operator,
+        VectorType       &vec_p,
+        const VectorType &vec_p_rhs)
+  {
+    ReductionControl coarse_grid_solver_control(10000, 1e-20, 1e-4, false, false);
+
+    SolverCG<VectorType> coarse_grid_solver(coarse_grid_solver_control);
+
+    std::unique_ptr<MGCoarseGridBase<VectorType>> mg_coarse;
+    mg_coarse = std::make_unique<MGCoarseGridIterativeSolver<VectorType,
+                                                             SolverCG<VectorType>,
+                                                             LevelMatrixType,
+                                                             decltype(precondition_amg)>>(
+      coarse_grid_solver, mg_matrices[mg_matrices.min_level()], precondition_amg);
+
+    mg::Matrix<VectorType> mg_matrix(mg_matrices);
+
+    Multigrid<VectorType> mg(
+      mg_matrix, *mg_coarse, mg_transfer, mg_smoother, mg_smoother);
+
+    PreconditionerType preconditioner(
+      pressure_operator.get_matrix_free()->get_dof_handler(dof_no_p), mg, mg_transfer);
+
+    SolverControl        control(100000, 1e-12 * vec_p_rhs.l2_norm());
+    SolverCG<VectorType> solver_cg(control);
+
+    solver_cg.solve(pressure_operator, vec_p, vec_p_rhs, preconditioner);
+    return control.last_step();
+  }
+
+private:
+  MGLevelObject<LevelMatrixType>                                    mg_matrices;
+  MGTransferMatrixFree<dim, number>                                 mg_transfer;
+  MGSmootherPrecondition<LevelMatrixType, SmootherType, VectorType> mg_smoother;
+  MGLevelObject<typename SmootherType::AdditionalData>              smoother_data;
+
+  TrilinosWrappers::SparseMatrix    coarse_system_matrix;
+  TrilinosWrappers::PreconditionAMG precondition_amg;
+};
+
 template <int dim, typename Number>
 void
 do_test(const unsigned int fe_degree,
@@ -1914,11 +2313,15 @@ do_test(const unsigned int fe_degree,
   ConditionalOStream pcout(std::cout,
                            Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
 
-  FESystem<dim>  fe_u(FE_DGQ<dim>(fe_degree), dim);
-  FE_DGQ<dim>    fe_p(fe_degree - 1);
-  MappingQ1<dim> mapping;
+  Timer                time_setup;
+  FESystem<dim>        fe_u(FE_DGQ<dim>(fe_degree), dim);
+  FE_DGQ<dim>          fe_p(fe_degree - 1);
+  MappingQGeneric<dim> mapping(fe_degree);
 
-  parallel::distributed::Triangulation<dim> tria(MPI_COMM_WORLD);
+  parallel::distributed::Triangulation<dim> tria(
+    MPI_COMM_WORLD,
+    Triangulation<dim>::limit_level_difference_at_vertices,
+    parallel::distributed::Triangulation<dim>::construct_multigrid_hierarchy);
 
   GridGenerator::channel_with_cylinder(tria);
 
@@ -1944,8 +2347,11 @@ do_test(const unsigned int fe_degree,
 
   DoFHandler<dim> dof_handler_u(tria);
   dof_handler_u.distribute_dofs(fe_u);
+  dof_handler_u.distribute_mg_dofs();
+
   DoFHandler<dim> dof_handler_p(tria);
   dof_handler_p.distribute_dofs(fe_p);
+  dof_handler_p.distribute_mg_dofs();
   pcout << "number of active_cells: " << tria.n_global_active_cells() << std::endl;
   pcout << "Solving with " << fe_u.get_name() << " x " << fe_p.get_name() << " element"
         << std::endl;
@@ -1994,9 +2400,33 @@ do_test(const unsigned int fe_degree,
   for (auto &vec : vec_u_old)
     momentum_op.initialize_dof_vector(vec, dof_no_v);
 
+  InverseMassPreconditioner<dim, double> inverse_mass;
+  inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
+
   PressureOperator<dim, double> pressure_op;
-  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order);
+  pressure_op.reinit(std::shared_ptr<const MatrixFree<dim, double>>(
+                       &momentum_op.get_matrix_free()),
+                     bdf_order,
+                     time_step);
   pressure_op.set_time_step(time_step);
+
+  TrilinosWrappers::SparseMatrix pressure_system_matrix;
+  if (use_amg)
+    pressure_op.get_system_matrix(pressure_system_matrix);
+  TrilinosWrappers::PreconditionAMG precondition_amg;
+
+  TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
+  amg_data.smoother_sweeps = 1;
+  amg_data.n_cycles        = 1;
+  amg_data.smoother_type   = "ILU";
+
+  if (use_amg)
+    precondition_amg.initialize(pressure_system_matrix, amg_data);
+
+  MultigridPreconditioner<dim, double> precondition_hmg(pressure_op,
+                                                        mapping,
+                                                        time_step,
+                                                        bdf_order);
 
   Number current_time = 0;
 
@@ -2009,7 +2439,7 @@ do_test(const unsigned int fe_degree,
   VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
 
   const Number       end_time         = 8.0;
-  const unsigned int output_interval  = 50;
+  const unsigned int output_interval  = 1;
   unsigned int       time_step_number = 0;
 
   Number drag_max = -10000000000.;
@@ -2018,8 +2448,14 @@ do_test(const unsigned int fe_degree,
   Number lift_min = 100000000000.;
 
   const bool write_output = true;
+
+  const double setup_time = time_setup.wall_time();
+  pcout << "Setup time: " << setup_time << std::endl;
+  Timer time_loop;
   while (current_time <= end_time)
     {
+      Timer time_single_step;
+
       current_time += time_step;
       ++time_step_number;
       momentum_op.set_time(current_time);
@@ -2064,17 +2500,25 @@ do_test(const unsigned int fe_degree,
       pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity);
       vec_p_rhs.add(1, vec_p_rhs_n);
 
-
+      unsigned int iteration_count;
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
       SolverControl control(100000, 1e-12 * vec_p_rhs.l2_norm());
       SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
       // vec_p = 0.;
-      solver.solve(pressure_op, vec_p, vec_p_rhs, PreconditionIdentity());
+      if (use_amg)
+        {
+          solver.solve(pressure_system_matrix, vec_p, vec_p_rhs, precondition_amg);
+          iteration_count = control.last_step();
+        }
+      else
+        {
+          iteration_count = precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs); //,
+        }
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p);
       if (write_output && time_step_number % output_interval == 0)
-        pcout << "Pressure solver: " << control.last_step() << " iterations" << std::endl;
+        pcout << "Pressure solver: " << iteration_count << " iterations" << std::endl;
 
       // exact_pressure.set_time(current_time);
       // VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
@@ -2095,7 +2539,11 @@ do_test(const unsigned int fe_degree,
       SolverControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
       vec_u.swap(speed_extrapolated); // = 0.;
-      solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
+      inverse_mass.set_scaling_factor(time_step / bdf.get_gamma0());
+      solver_mom.solve(momentum_op,
+                       vec_u,
+                       vec_u_rhs,
+                       inverse_mass); // PreconditionIdentity()
       if (write_output && time_step_number % output_interval == 0)
         pcout << "Momentum solver: " << control_mom.last_step() << " iterations"
               << std::endl;
@@ -2233,6 +2681,9 @@ do_test(const unsigned int fe_degree,
 
           pcout << "Max/min drag/lift: " << drag_max << " " << drag_min << " " << lift_max
                 << " " << lift_min << std::endl;
+
+          double single_step = time_single_step.wall_time();
+          pcout << "Time single step: " << single_step << std::endl;
         }
     }
 
@@ -2267,6 +2718,9 @@ do_test(const unsigned int fe_degree,
   pcout << "Max/min drag/lift: " << drag_max << " " << drag_min << " " << lift_max << " "
         << lift_min << std::endl;
   pcout << std::endl;
+
+  const double loop_time = time_loop.wall_time();
+  pcout << "Time loop time: " << loop_time << std::endl;
 }
 
 
