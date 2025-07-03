@@ -7,7 +7,7 @@ spack:
   specs:
   - mpi
   - ginkgo@main+mpi
-  - dealii@9.6.2~adol-c~arborx~assimp~cgal~examples~examples_compile~ginkgo+kokkos+mpi~muparser~opencascade+p4est+petsc~symengine~taskflow~trilinos
+  - dealii@9.6.2~adol-c~arborx~assimp~cgal~examples~examples_compile~ginkgo+kokkos+mpi~muparser~opencascade+p4est+petsc~symengine~taskflow~trilinos~complex
   - cxxopts
   - googletest
   - vtk@9.3.1
