@@ -42,10 +42,12 @@
 #include <deal.II/multigrid/mg_matrix.h>
 #include <deal.II/multigrid/mg_smoother.h>
 #include <deal.II/multigrid/mg_tools.h>
+#include <deal.II/multigrid/mg_transfer_global_coarsening.h>
 #include <deal.II/multigrid/mg_transfer_matrix_free.h>
 #include <deal.II/multigrid/multigrid.h>
 
 #include <deal.II/numerics/data_out.h>
+#include <deal.II/numerics/matrix_creator.h>
 #include <deal.II/numerics/vector_tools.h>
 
 #include <fstream>
@@ -59,7 +61,18 @@ const bool use_neumann_boundary                      = true;
 const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = true;
 const bool use_leray_projection                      = true;
-const bool use_amg                                   = false;
+
+const bool use_amg = false;
+const bool use_hmg = true;
+const bool use_pmg = true;
+const bool use_cmg = true;
+
+const bool use_velocity_point_jacobi = false;
+const bool use_inverse_mass_velocity = false;
+const bool use_mg_velocity           = true;
+const bool use_cmg_vel               = true;
+const bool use_pmg_vel               = true;
+const bool use_hmg_vel               = true;
 
 const double penalty_divergence = 1.0;
 const double penalty_continuity = 1.0;
@@ -348,10 +361,12 @@ public:
          const DoFHandler<dim> &dof_handler_u,
          const DoFHandler<dim> &dof_handler_p,
          const number           time_step_in,
-         const unsigned int     bdf_order_in)
+         const unsigned int     bdf_order_in,
+         const bool             is_dg_in)
   {
     bdf_order = bdf_order_in;
     time_step = time_step_in;
+    is_dg     = is_dg_in;
 
     fe_degree_u                        = dof_handler_u.get_fe().degree;
     const unsigned int fe_degree_p     = dof_handler_p.get_fe().degree;
@@ -535,6 +550,62 @@ public:
     return matrix_free;
   }
 
+  void
+  compute_inverse_diagonal(VectorType &diagonal_vector) const
+  {
+    initialize_dof_vector(diagonal_vector, dof_no_v);
+
+    if (is_dg)
+      MatrixFreeTools::compute_diagonal<dim, -1, 0, dim, number, VectorizedArray<number>>(
+        matrix_free,
+        diagonal_vector,
+        [&](auto &phi) { do_cell_integral_local(phi); },
+        [&](auto &phi_m, auto &phi_p) { do_face_integral_local(phi_m, phi_p); },
+        [&](auto &phi) { do_boundary_integral_local(phi); },
+        dof_no_v,
+        quad_no_v);
+    else
+      MatrixFreeTools::compute_diagonal<dim, -1, 0, dim, number, VectorizedArray<number>>(
+        matrix_free,
+        diagonal_vector,
+        [&](auto &phi) { do_cell_integral_local(phi); },
+        {},
+        [&](auto &phi) { do_boundary_integral_local(phi); },
+        dof_no_v,
+        quad_no_v);
+
+    for (unsigned int i = 0; i < diagonal_vector.locally_owned_size(); ++i)
+      {
+        if (std::abs(diagonal_vector.local_element(i)) > 1.0e-10)
+          diagonal_vector.local_element(i) = 1.0 / diagonal_vector.local_element(i);
+        else
+          diagonal_vector.local_element(i) = 1.0;
+      }
+  }
+
+
+  types::global_dof_index
+  m() const
+  {
+    if (matrix_free.get_mg_level() == numbers::invalid_unsigned_int)
+      return matrix_free.get_dof_handler(dof_no_v).n_dofs();
+    else
+      return matrix_free.get_dof_handler(dof_no_v).n_dofs(matrix_free.get_mg_level());
+  }
+
+  void
+  Tvmult(VectorType &, const VectorType &) const
+  {
+    DEAL_II_NOT_IMPLEMENTED();
+  }
+
+  number
+  el(unsigned int, unsigned int) const
+  {
+    DEAL_II_NOT_IMPLEMENTED();
+    return 0;
+  }
+
 
 private:
   number
@@ -609,11 +680,65 @@ private:
 
 
   void
+  do_cell_integral_local(FEEvaluation<dim, -1, 0, n_components, Number> &integrator) const
+  {
+    BDFTimeIntegratorConstants integration_constants(bdf_order);
+    double                     gamma0 = integration_constants.get_gamma0();
+
+    integrator.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
+
+    for (unsigned int q = 0; q < integrator.n_q_points; ++q)
+      {
+        const auto u          = integrator.get_value(q);
+        const auto time_deriv = make_vectorized_array<number>(gamma0 / time_step) * u;
+
+        const auto grad_u = integrator.get_gradient(q);
+        const auto speed  = speeds_cells(integrator.get_current_cell_index(), q);
+
+        const auto divergence_penalty =
+          penalty_factor_divergence[integrator.get_current_cell_index()] *
+          integrator.get_divergence(q);
+        Tensor<2, dim, VectorizedArray<number>> div_penalty;
+        for (unsigned int d = 0; d < dim; ++d)
+          for (unsigned int e = 0; e < dim; ++e)
+            div_penalty[d][e] = 0.;
+
+        for (unsigned int d = 0; d < dim; ++d)
+          div_penalty[d][d] = divergence_penalty;
+
+        if (!use_skew_symmetric_convective_formulation)
+          {
+            const auto convective_flux = grad_u * speed;
+
+            integrator.submit_value(time_deriv + convective_flux, q);
+            integrator.submit_gradient(
+              div_penalty + make_vectorized_array<number>(viscosity) * grad_u, q);
+          }
+        else
+          {
+            const auto convective_value_flux    = 0.5 * grad_u * speed;
+            const auto convective_gradient_flux = -0.5 * outer_product(speed, u);
+
+            integrator.submit_value(time_deriv + convective_value_flux, q);
+            integrator.submit_gradient(div_penalty +
+                                         make_vectorized_array<number>(viscosity) *
+                                           grad_u +
+                                         convective_gradient_flux,
+                                       q);
+          }
+      }
+    integrator.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
+  }
+
+
+  void
   do_face_integral_range(const MatrixFree<dim, number>               &matrix_free,
                          VectorType                                  &dst,
                          const VectorType                            &src,
                          const std::pair<unsigned int, unsigned int> &range) const
   {
+    if (!is_dg)
+      return;
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_inner(matrix_free,
                                                                         true,
                                                                         dof_no_v,
@@ -718,6 +843,95 @@ private:
                                              EvaluationFlags::gradients,
                                            dst);
       }
+  }
+
+
+  void
+  do_face_integral_local(
+    FEFaceEvaluation<dim, -1, 0, n_components, Number> &integrator_inner,
+    FEFaceEvaluation<dim, -1, 0, n_components, Number> &integrator_outer) const
+  {
+    integrator_inner.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
+    integrator_outer.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
+
+    const VectorizedArray<number> sigma =
+      std::max(integrator_inner.read_cell_data(array_penalty_parameter),
+               integrator_outer.read_cell_data(array_penalty_parameter)) *
+      get_penalty_factor();
+
+    const VectorizedArray<number> cont_pen =
+      0.5 * (integrator_inner.read_cell_data(penalty_factor_continuity) +
+             integrator_outer.read_cell_data(penalty_factor_continuity));
+
+    for (unsigned int q = 0; q < integrator_inner.n_q_points; ++q)
+      {
+        const auto normal = integrator_inner.normal_vector(q);
+
+        const Tensor<1, dim, VectorizedArray<number>> solution_jump =
+          (integrator_inner.get_value(q) - integrator_outer.get_value(q));
+
+        const Tensor<1, dim, VectorizedArray<number>> solution_average =
+          make_vectorized_array<number>(0.5) *
+          (integrator_inner.get_value(q) + integrator_outer.get_value(q));
+
+
+        const Tensor<1, dim, VectorizedArray<number>> averaged_normal_derivative =
+          make_vectorized_array<number>(viscosity) *
+          (integrator_inner.get_normal_derivative(q) +
+           integrator_outer.get_normal_derivative(q)) *
+          number(0.5);
+
+        const Tensor<1, dim, VectorizedArray<number>> test_by_value =
+          make_vectorized_array<number>(viscosity) * solution_jump * sigma -
+          averaged_normal_derivative;
+
+        const auto speed = speeds_faces(integrator_inner.get_cell_or_face_batch_id(), q);
+        const auto speed_normal = speed * normal;
+        const auto convective_flux =
+          speed_normal * solution_average +
+          make_vectorized_array<number>(0.5) * std::abs(speed_normal) * solution_jump;
+
+        const auto convective_flux_inner =
+          convective_flux - speed_normal * integrator_inner.get_value(q);
+        const auto convective_flux_outer =
+          -convective_flux + speed_normal * integrator_outer.get_value(q);
+
+        const auto continuity_penalty_value =
+          cont_pen * (solution_jump * normal) * normal;
+
+        if (!use_skew_symmetric_convective_formulation)
+          {
+            integrator_inner.submit_value(continuity_penalty_value + test_by_value +
+                                            convective_flux_inner,
+                                          q);
+            integrator_outer.submit_value(-continuity_penalty_value - test_by_value +
+                                            convective_flux_outer,
+                                          q);
+          }
+        else
+          {
+            const auto convective_value_flux =
+              speed * (solution_average * normal) +
+              0.5 * (std::abs(speed_normal) * solution_jump);
+
+            integrator_inner.submit_value(continuity_penalty_value + test_by_value +
+                                            0.5 * convective_flux_inner +
+                                            0.5 * convective_value_flux,
+                                          q);
+            integrator_outer.submit_value(-continuity_penalty_value - test_by_value +
+                                            0.5 * convective_flux_outer -
+                                            0.5 * convective_value_flux,
+                                          q);
+          }
+
+        integrator_inner.submit_normal_derivative(
+          -solution_jump * make_vectorized_array<number>(viscosity) * number(0.5), q);
+        integrator_outer.submit_normal_derivative(
+          -solution_jump * make_vectorized_array<number>(viscosity) * number(0.5), q);
+      }
+
+    integrator_inner.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
+    integrator_outer.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
   }
 
 
@@ -833,6 +1047,99 @@ private:
 
 
   void
+  do_boundary_integral_local(
+    FEFaceEvaluation<dim, -1, 0, n_components, Number> &integrator_inner) const
+  {
+    AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
+    exact_velocity.set_time(time);
+
+    integrator_inner.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
+
+    const VectorizedArray<number> sigma =
+      integrator_inner.read_cell_data(array_penalty_parameter) * get_penalty_factor();
+
+    const VectorizedArray<number> cont_pen =
+      integrator_inner.read_cell_data(penalty_factor_continuity);
+
+    // Dirichlet boundary
+    if (integrator_inner.boundary_id() == 0 || integrator_inner.boundary_id() == 2)
+      {
+        for (unsigned int q = 0; q < integrator_inner.n_q_points; ++q)
+          {
+            const auto normal = integrator_inner.normal_vector(q);
+
+            const Tensor<1, dim, VectorizedArray<number>> u_inner =
+              make_vectorized_array<number>(viscosity) * integrator_inner.get_value(q);
+
+            const Tensor<1, dim, VectorizedArray<number>> normal_derivative_inner =
+              make_vectorized_array<number>(viscosity) *
+              integrator_inner.get_normal_derivative(q);
+
+            const Tensor<1, dim, VectorizedArray<number>> test_by_value =
+              number(2.0) * u_inner * sigma - normal_derivative_inner;
+
+            const auto speed =
+              speeds_faces(integrator_inner.get_cell_or_face_batch_id(), q);
+            const auto speed_normal = speed * normal;
+            const auto convective_flux =
+              (std::abs(speed_normal) - speed_normal) * integrator_inner.get_value(q);
+
+
+            const auto g =
+              evaluate_function(exact_velocity, integrator_inner.quadrature_point(q));
+            const auto continuity_penalty_value =
+              2. * cont_pen * ((integrator_inner.get_value(q) - g) * normal) * normal;
+
+            if (!use_skew_symmetric_convective_formulation)
+              {
+                integrator_inner.submit_value(continuity_penalty_value + test_by_value +
+                                                convective_flux,
+                                              q);
+              }
+            else
+              {
+                const auto convective_value_flux =
+                  (std::abs(speed_normal)) * integrator_inner.get_value(q);
+                integrator_inner.submit_value(continuity_penalty_value + test_by_value +
+                                                0.5 * convective_flux +
+                                                0.5 * convective_value_flux,
+                                              q);
+              }
+
+            integrator_inner.submit_normal_derivative(-u_inner, q);
+          }
+      }
+    else if (integrator_inner.boundary_id() == 1)
+      {
+        // Nothing to do
+        // Convective term cancels and viscous term is only inhomogenious
+        for (const unsigned int q : integrator_inner.quadrature_point_indices())
+          {
+            integrator_inner.submit_normal_derivative(
+              Tensor<1, dim, VectorizedArray<number>>(), q);
+            if (!use_skew_symmetric_convective_formulation)
+              integrator_inner.submit_value(Tensor<1, dim, VectorizedArray<number>>(), q);
+            else
+              {
+                const auto speed =
+                  speeds_faces(integrator_inner.get_cell_or_face_batch_id(), q);
+                const auto convective_flux = speed * (integrator_inner.get_value(q) *
+                                                      integrator_inner.normal_vector(q));
+                integrator_inner.submit_value(0.5 * convective_flux, q);
+              }
+          }
+      }
+    else
+      AssertThrow(false,
+                  ExcNotImplemented("Boundary id " +
+                                    std::to_string(int(integrator_inner.boundary_id())) +
+                                    " not known"));
+
+    integrator_inner.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
+  }
+
+
+  void
   do_rhs_cell_integral_range(const MatrixFree<dim, number>               &matrix_free,
                              VectorType                                  &dst,
                              const std::vector<const VectorType *>       &src,
@@ -902,6 +1209,9 @@ private:
                              const std::vector<const VectorType *>       &src,
                              const std::pair<unsigned int, unsigned int> &range) const
   {
+    if (!is_dg)
+      return;
+
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_inner(matrix_free,
                                                                         true,
                                                                         dof_no_v,
@@ -1144,15 +1454,13 @@ private:
 
   MatrixFree<dim, number> matrix_free;
 
-  Number penalty_factor;
-
-  number viscosity;
-
-  number time_step;
-
-  number time;
-
+  number       penalty_factor;
+  number       viscosity;
+  number       time_step;
+  number       time;
   unsigned int bdf_order;
+  unsigned int fe_degree_u;
+  bool         is_dg;
 
   dealii::AlignedVector<dealii::VectorizedArray<Number>>    array_penalty_parameter;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_cells;
@@ -1162,8 +1470,6 @@ private:
     penalty_factor_divergence;
   mutable dealii::AlignedVector<dealii::VectorizedArray<Number>>
     penalty_factor_continuity;
-
-  unsigned int fe_degree_u;
 };
 
 
@@ -1242,23 +1548,292 @@ private:
 };
 
 
+template <int dim, typename number>
+class MultigridPreconditionerVelocity
+{
+  using VectorType       = LinearAlgebra::distributed::Vector<number>;
+  using SystemMatrixType = MomentumOperator<dim, dim, number>;
+  using LevelMatrixType  = MomentumOperator<dim, dim, number>;
+
+  using SmootherPreconditionerType = DiagonalMatrix<VectorType>;
+  using SmootherType =
+    PreconditionChebyshev<LevelMatrixType, VectorType, SmootherPreconditionerType>;
+  using PreconditionerType =
+    PreconditionMG<dim, VectorType, MGTransferGlobalCoarsening<dim, VectorType>>;
+
+public:
+  MultigridPreconditionerVelocity(SystemMatrixType  &momentum_operator,
+                                  const unsigned int mapping_degree,
+                                  const number       time_step,
+                                  const unsigned int bdf_order)
+  {
+    const auto  mf          = momentum_operator.get_matrix_free();
+    const auto &dof_handler = mf.get_dof_handler(dof_no_v);
+
+    if (use_hmg_vel)
+      coarse_grid_triangulations =
+        MGTransferGlobalCoarseningTools::create_geometric_coarsening_sequence(
+          dof_handler.get_triangulation());
+    else
+      coarse_grid_triangulations.emplace_back(&(dof_handler.get_triangulation()),
+                                              [](auto *) {});
+    const unsigned int n_h_levels = coarse_grid_triangulations.size() - 1;
+
+    const std::vector<unsigned int> level_degrees =
+      use_pmg_vel ?
+        MGTransferGlobalCoarseningTools::create_polynomial_coarsening_sequence(
+          mf.get_dof_handler(dof_no_p).get_fe().degree,
+          MGTransferGlobalCoarseningTools::PolynomialCoarseningSequenceType::bisect) :
+        std::vector<unsigned int>{mf.get_dof_handler(dof_no_p).get_fe().degree};
+    const unsigned int n_p_levels = level_degrees.size();
+
+    const unsigned int minlevel = 0;
+    const unsigned int maxlevel =
+      use_cmg_vel ? n_h_levels + n_p_levels : n_h_levels + n_p_levels - 1;
+
+    dof_handlers_p.resize(minlevel, maxlevel);
+    dof_handlers_u.resize(minlevel, maxlevel);
+    mg_matrices.resize(minlevel, maxlevel);
+    transfers.resize(minlevel, maxlevel);
+
+    // h-MG with linear elements
+    for (unsigned int l = 0; l < n_h_levels; ++l)
+      {
+        auto &dof_handler_p = dof_handlers_p[l];
+        auto &dof_handler_u = dof_handlers_u[l];
+
+        if (use_cmg_vel)
+          {
+            const FE_Q<dim>     fe_p(level_degrees[0]);
+            const FESystem<dim> fe_u(FE_Q<dim>(level_degrees[0] + 1), dim);
+
+            dof_handler_p.reinit(*coarse_grid_triangulations[l]);
+            dof_handler_p.distribute_dofs(fe_p);
+            dof_handler_u.reinit(*coarse_grid_triangulations[l]);
+            dof_handler_u.distribute_dofs(fe_u);
+          }
+        else
+          {
+            const FE_DGQ<dim>   fe_p(level_degrees[0]);
+            const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[0] + 1), dim);
+
+            dof_handler_p.reinit(*coarse_grid_triangulations[l]);
+            dof_handler_p.distribute_dofs(fe_p);
+            dof_handler_u.reinit(*coarse_grid_triangulations[l]);
+            dof_handler_u.distribute_dofs(fe_u);
+          }
+      }
+    // p-MG
+    const unsigned int max_loop_it = use_cmg_vel ? maxlevel : maxlevel + 1;
+    for (unsigned int i = 0, l = n_h_levels; l < max_loop_it; ++l, ++i)
+      {
+        auto &dof_handler_p = dof_handlers_p[l];
+        auto &dof_handler_u = dof_handlers_u[l];
+
+        if (use_cmg_vel)
+          {
+            const FE_Q<dim>     fe_p(level_degrees[i]);
+            const FESystem<dim> fe_u(FE_Q<dim>(level_degrees[i] + 1), dim);
+
+            dof_handler_p.reinit(*coarse_grid_triangulations[n_h_levels]);
+            dof_handler_p.distribute_dofs(fe_p);
+            dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
+            dof_handler_u.distribute_dofs(fe_u);
+          }
+        else
+          {
+            const FE_DGQ<dim>   fe_p(level_degrees[i]);
+            const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[i] + 1), dim);
+
+            dof_handler_p.reinit(*coarse_grid_triangulations[n_h_levels]);
+            dof_handler_p.distribute_dofs(fe_p);
+            dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
+            dof_handler_u.distribute_dofs(fe_u);
+          }
+      }
+    // c-MG
+    if (use_cmg_vel)
+      {
+        const unsigned int l             = maxlevel;
+        auto              &dof_handler_p = dof_handlers_p[l];
+        auto              &dof_handler_u = dof_handlers_u[l];
+
+        const FE_DGQ<dim>   fe_p(level_degrees[level_degrees.size() - 1]);
+        const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[level_degrees.size() - 1] + 1),
+                                 dim);
+
+        dof_handler_p.reinit(*coarse_grid_triangulations[n_h_levels]);
+        dof_handler_p.distribute_dofs(fe_p);
+        dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
+        dof_handler_u.distribute_dofs(fe_u);
+      }
+
+    // init levels
+    for (unsigned int level = minlevel; level <= maxlevel; ++level)
+      {
+        mg_matrices[level].reinit(level < n_h_levels ?
+                                    MappingQGeneric<dim>(1) :
+                                    MappingQGeneric<dim>(mapping_degree),
+                                  dof_handlers_u[level],
+                                  dof_handlers_p[level],
+                                  time_step,
+                                  bdf_order,
+                                  dof_handlers_u[level].get_fe().n_dofs_per_vertex() ==
+                                    0);
+      }
+
+    // init transfer
+    for (unsigned int level = minlevel; level < maxlevel; ++level)
+      transfers[level + 1].reinit(dof_handlers_u[level + 1], dof_handlers_u[level]);
+
+    transfer = MGTransferGlobalCoarsening<dim, VectorType>(
+      transfers, [&](const auto l, auto &vec) {
+        mg_matrices[l].get_matrix_free().initialize_dof_vector(vec, dof_no_v);
+      });
+
+    // Setup smoother for every level
+    smoother_data.resize(minlevel, maxlevel);
+
+    for (unsigned int level = minlevel; level <= maxlevel; ++level)
+      {
+        if (level > 0)
+          {
+            smoother_data[level].smoothing_range     = 15.;
+            smoother_data[level].degree              = 5;
+            smoother_data[level].eig_cg_n_iterations = 10;
+          }
+        else
+          {
+            smoother_data[0].smoothing_range     = 1e-3;
+            smoother_data[0].degree              = numbers::invalid_unsigned_int;
+            smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
+          }
+
+        smoother_data[level].preconditioner =
+          std::make_shared<SmootherPreconditionerType>();
+        mg_matrices[level].compute_inverse_diagonal(
+          smoother_data[level].preconditioner->get_vector());
+      }
+
+    mg_smoother.initialize(mg_matrices, smoother_data);
+  }
+
+  void
+  update(number time, const VectorType speed_extrapolated)
+  {
+    const unsigned int min_level = mg_matrices.min_level();
+    const unsigned int max_level = mg_matrices.max_level();
+
+    MGLevelObject<VectorType> speed_on_levels(min_level, max_level);
+    transfer.interpolate_to_mg(speed_on_levels, speed_extrapolated);
+    for (unsigned int level = min_level; level <= max_level; ++level)
+      {
+        mg_matrices[level].set_time(time);
+        VectorType dummy, dummy_p;
+        mg_matrices[level].initialize_dof_vector(dummy, dof_no_v);
+        dummy = 0.;
+        mg_matrices[level].initialize_dof_vector(dummy_p, dof_no_p);
+        dummy_p = 0.;
+        mg_matrices[level].set_viscosity(viscosity);
+
+        mg_matrices[level].rhs(dummy, dummy, speed_on_levels[level], dummy_p);
+      }
+
+    // Update smoother for every level
+    smoother_data.resize(min_level, max_level);
+
+    for (unsigned int level = min_level; level <= max_level; ++level)
+      {
+        if (level > 0)
+          {
+            smoother_data[level].smoothing_range     = 15.;
+            smoother_data[level].degree              = 5;
+            smoother_data[level].eig_cg_n_iterations = 10;
+          }
+        else
+          {
+            smoother_data[0].smoothing_range     = 1e-3;
+            smoother_data[0].degree              = numbers::invalid_unsigned_int;
+            smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
+          }
+
+        smoother_data[level].preconditioner =
+          std::make_shared<SmootherPreconditionerType>();
+        mg_matrices[level].compute_inverse_diagonal(
+          smoother_data[level].preconditioner->get_vector());
+      }
+
+    mg_smoother.initialize(mg_matrices, smoother_data);
+  }
+
+  unsigned int
+  solve(SystemMatrixType &momentum_operator,
+        VectorType       &vec_u,
+        const VectorType &vec_u_rhs)
+  {
+    const unsigned int min_level = mg_matrices.min_level();
+
+    // Coarse grid solver
+    ReductionControl        coarse_grid_solver_control(10000, 1e-20, 1e-4, false, false);
+    SolverGMRES<VectorType> coarse_grid_solver(coarse_grid_solver_control);
+    std::unique_ptr<MGCoarseGridBase<VectorType>> mg_coarse;
+    const auto precond_point_jacobi = *smoother_data[min_level].preconditioner;
+    mg_coarse =
+      std::make_unique<MGCoarseGridIterativeSolver<VectorType,
+                                                   SolverGMRES<VectorType>,
+                                                   LevelMatrixType,
+                                                   decltype(precond_point_jacobi)>>(
+        coarse_grid_solver, mg_matrices[min_level], precond_point_jacobi);
+
+    // Setup levels and transfers
+    mg::Matrix<VectorType> mg_matrix(mg_matrices);
+    Multigrid<VectorType>  mg(mg_matrix, *mg_coarse, transfer, mg_smoother, mg_smoother);
+
+    PreconditionerType preconditioner(
+      momentum_operator.get_matrix_free().get_dof_handler(dof_no_v), mg, transfer);
+
+    SolverControl           control(100000, 1e-12 * vec_u_rhs.l2_norm());
+    SolverGMRES<VectorType> solver_gmres(control);
+
+    solver_gmres.solve(momentum_operator, vec_u, vec_u_rhs, preconditioner);
+    return control.last_step();
+  }
+
+private:
+  MGLevelObject<LevelMatrixType>                                    mg_matrices;
+  MGSmootherPrecondition<LevelMatrixType, SmootherType, VectorType> mg_smoother;
+  MGLevelObject<typename SmootherType::AdditionalData>              smoother_data;
+
+  MGLevelObject<DoFHandler<dim>>                     dof_handlers_p;
+  MGLevelObject<DoFHandler<dim>>                     dof_handlers_u;
+  MGLevelObject<MGTwoLevelTransfer<dim, VectorType>> transfers;
+  MGTransferGlobalCoarsening<dim, VectorType>        transfer;
+
+  std::vector<std::shared_ptr<const Triangulation<dim>>> coarse_grid_triangulations;
+};
+
+
 
 template <int dim, typename number>
 class PressureOperator : public Subscriptor
 {
 public:
   using VectorType = LinearAlgebra::distributed::Vector<number>;
+  using value_type = number;
+  using size_type  = types::global_dof_index;
 
   PressureOperator() = default;
 
   void
-  reinit(std::shared_ptr<const MatrixFree<dim, number>> matrix_free,
-         const unsigned int                             bdf_order_in,
-         const number                                   time_step_in)
+  reinit(const MatrixFree<dim, number> &matrix_free_in,
+         const unsigned int             bdf_order_in,
+         const number                   time_step_in,
+         const bool                     is_dg_in)
   {
     bdf_order         = bdf_order_in;
     time_step         = time_step_in;
-    this->matrix_free = matrix_free;
+    this->matrix_free = &matrix_free_in;
+    is_dg             = is_dg_in;
 
     const unsigned int fe_degree = matrix_free->get_dof_handler(dof_no_p).get_fe().degree;
     const double       penalty_factor = 1.0 * (fe_degree + 1) * (fe_degree);
@@ -1271,16 +1846,19 @@ public:
         matrix_free->get_dof_handler(dof_no_p).get_fe();
       const auto reference_cells =
         matrix_free->get_dof_handler(dof_no_p).get_fe().reference_cell();
-      MappingQGeneric<dim> mapping(fe_degree);
+      const auto mapping = matrix_free->get_mapping_info().mapping;
 
       const auto quadrature =
         reference_cells.template get_gauss_type_quadrature<dim>(fe_degree + 1);
-      dealii::FEValues<dim> fe_values(mapping, fe, quadrature, dealii::update_JxW_values);
+      dealii::FEValues<dim> fe_values(*mapping,
+                                      fe,
+                                      quadrature,
+                                      dealii::update_JxW_values);
 
       const auto face_quadrature =
         reference_cells.face_reference_cell(0)
           .template get_gauss_type_quadrature<dim - 1>(fe_degree + 1);
-      dealii::FEFaceValues<dim> fe_face_values(mapping,
+      dealii::FEFaceValues<dim> fe_face_values(*mapping,
                                                fe,
                                                face_quadrature,
                                                dealii::update_JxW_values);
@@ -1342,9 +1920,29 @@ public:
   }
 
   void
+  vmult_add(VectorType &dst, const VectorType &src) const
+  {
+    matrix_free->loop(&PressureOperator::local_apply_domain,
+                      &PressureOperator::local_apply_inner_face,
+                      &PressureOperator::local_apply_boundary_face,
+                      this,
+                      dst,
+                      src,
+                      false,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+  }
+
+  void
   Tvmult(VectorType &dst, const VectorType &src) const
   {
     vmult(dst, src);
+  }
+
+  void
+  Tvmult_add(VectorType &dst, const VectorType &src) const
+  {
+    vmult_add(dst, src);
   }
 
   void
@@ -1405,45 +2003,75 @@ public:
   get_system_matrix(TrilinosWrappers::SparseMatrix &system_matrix)
   {
     const auto &dof_handler = this->matrix_free->get_dof_handler(dof_no_p);
+
     TrilinosWrappers::SparsityPattern dsp(
-      this->matrix_free->get_mg_level() == numbers::invalid_unsigned_int ?
-        dof_handler.locally_owned_dofs() :
-        dof_handler.locally_owned_mg_dofs(this->matrix_free->get_mg_level()),
+      dof_handler.locally_owned_dofs(),
+      dof_handler.locally_owned_dofs(),
+      DoFTools::extract_locally_relevant_dofs(dof_handler),
       dof_handler.get_triangulation().get_communicator());
 
-    if (matrix_free->get_mg_level() == numbers::invalid_unsigned_int)
+    if (is_dg)
       DoFTools::make_flux_sparsity_pattern(dof_handler, dsp, AffineConstraints<number>());
     else
-      MGTools::make_flux_sparsity_pattern(dof_handler, dsp, matrix_free->get_mg_level());
+      DoFTools::make_sparsity_pattern(dof_handler, dsp, AffineConstraints<number>());
 
     dsp.compress();
     system_matrix.reinit(dsp);
+    system_matrix = 0.;
 
-    MatrixFreeTools::compute_matrix(
-      *matrix_free,
-      AffineConstraints<number>(),
-      system_matrix,
-      &PressureOperator::local_apply_domain_matrix_based,
-      &PressureOperator::local_apply_inner_face_matrix_based,
-      &PressureOperator::local_apply_boundary_face_matrix_based,
-      this,
-      dof_no_p,
-      quad_no_p);
+    if (is_dg)
+      MatrixFreeTools::compute_matrix<dim, -1, 0, 1, number, VectorizedArray<number>>(
+        *matrix_free,
+        AffineConstraints<number>(),
+        system_matrix,
+        [&](auto &phi) { local_apply_domain_matrix_based(phi); },
+        [&](auto &phi_m, auto &phi_p) {
+          local_apply_inner_face_matrix_based(phi_m, phi_p);
+        },
+        [&](auto &phi) { local_apply_boundary_face_matrix_based(phi); },
+        dof_no_p,
+        quad_no_p,
+        0);
+    else
+      MatrixFreeTools::compute_matrix<dim, -1, 0, 1, number, VectorizedArray<number>>(
+        *matrix_free,
+        AffineConstraints<number>(),
+        system_matrix,
+        [&](auto &phi) { local_apply_domain_matrix_based(phi); },
+        {},
+        [&](auto &phi) { local_apply_boundary_face_matrix_based(phi); },
+        dof_no_p,
+        quad_no_p,
+        0);
   }
 
   void
   compute_inverse_diagonal(VectorType &diagonal_vector) const
   {
     this->matrix_free->initialize_dof_vector(diagonal_vector, dof_no_p);
-    MatrixFreeTools::compute_diagonal(
-      *matrix_free,
-      diagonal_vector,
-      &PressureOperator::local_apply_domain_matrix_based,
-      &PressureOperator::local_apply_inner_face_matrix_based,
-      &PressureOperator::local_apply_boundary_face_matrix_based,
-      this,
-      dof_no_p,
-      quad_no_p);
+
+    if (is_dg)
+      MatrixFreeTools::compute_diagonal<dim, -1, 0, 1, number, VectorizedArray<number>>(
+        *matrix_free,
+        diagonal_vector,
+        [&](auto &phi) { local_apply_domain_matrix_based(phi); },
+        [&](auto &phi_m, auto &phi_p) {
+          local_apply_inner_face_matrix_based(phi_m, phi_p);
+        },
+        [&](auto &phi) { local_apply_boundary_face_matrix_based(phi); },
+        dof_no_p,
+        quad_no_p,
+        0);
+    else
+      MatrixFreeTools::compute_diagonal<dim, -1, 0, 1, number, VectorizedArray<number>>(
+        *matrix_free,
+        diagonal_vector,
+        [&](auto &phi) { local_apply_domain_matrix_based(phi); },
+        {},
+        [&](auto &phi) { local_apply_boundary_face_matrix_based(phi); },
+        dof_no_p,
+        quad_no_p,
+        0);
 
     for (unsigned int i = 0; i < diagonal_vector.locally_owned_size(); ++i)
       {
@@ -1465,25 +2093,23 @@ public:
   types::global_dof_index
   m() const
   {
-    if (matrix_free->get_mg_level() == numbers::invalid_unsigned_int)
-      return matrix_free->get_dof_handler(dof_no_p).n_dofs();
-    else
-      return matrix_free->get_dof_handler(dof_no_p).n_dofs(matrix_free->get_mg_level());
+    return matrix_free->get_dof_handler(dof_no_p).n_dofs();
   }
 
-  std::shared_ptr<const MatrixFree<dim, number>>
+  const MatrixFree<dim, number> &
   get_matrix_free() const
   {
-    return matrix_free;
+    return *matrix_free;
   }
 
 
 private:
-  std::shared_ptr<const MatrixFree<dim, number>>         matrix_free;
+  const MatrixFree<dim, number>                         *matrix_free;
   dealii::AlignedVector<dealii::VectorizedArray<number>> array_penalty_parameter;
   number                                                 time;
   double                                                 time_step;
   unsigned int                                           bdf_order;
+  bool                                                   is_dg;
 
   void
   local_apply_domain(const MatrixFree<dim, number>               &data,
@@ -1515,6 +2141,9 @@ private:
                          const VectorType                            &src,
                          const std::pair<unsigned int, unsigned int> &face_range) const
   {
+    if (!is_dg)
+      return;
+
     FEFaceEvaluation<dim, -1, 0, 1, number> eval_minus(data, true, 1, 2);
     FEFaceEvaluation<dim, -1, 0, 1, number> eval_plus(data, false, 1, 2);
 
@@ -1730,6 +2359,9 @@ private:
                        const VectorType &,
                        const std::pair<unsigned int, unsigned int> &face_range) const
   {
+    if (!is_dg)
+      return;
+
     FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(data, false, 1, 1);
 
@@ -1883,6 +2515,8 @@ private:
     const VectorType                            &src,
     const std::pair<unsigned int, unsigned int> &face_range) const
   {
+    if (!is_dg)
+      return;
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
@@ -2067,6 +2701,8 @@ private:
     const VectorType                            &src,
     const std::pair<unsigned int, unsigned int> &face_range) const
   {
+    if (!is_dg)
+      return;
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
@@ -2161,37 +2797,125 @@ class MultigridPreconditioner
   using SmootherType =
     PreconditionChebyshev<LevelMatrixType, VectorType, SmootherPreconditionerType>;
   using PreconditionerType =
-    PreconditionMG<dim, VectorType, MGTransferMatrixFree<dim, number>>;
+    PreconditionMG<dim, VectorType, MGTransferGlobalCoarsening<dim, VectorType>>;
 
 public:
-  MultigridPreconditioner(SystemMatrixType &pressure_operator,
-                          Mapping<dim>     &mapping,
-                          number            time_step,
-                          unsigned int      bdf_order)
+  MultigridPreconditioner(SystemMatrixType  &pressure_operator,
+                          const unsigned int mapping_degree,
+                          const number       time_step,
+                          const unsigned int bdf_order)
   {
-    const unsigned int nlevels = pressure_operator.get_matrix_free()
-                                   ->get_dof_handler(dof_no_p)
-                                   .get_triangulation()
-                                   .n_global_levels();
-    mg_matrices.resize(0, nlevels - 1);
+    const auto &dof_handler =
+      pressure_operator.get_matrix_free().get_dof_handler(dof_no_p);
 
-    std::vector<std::shared_ptr<const Utilities::MPI::Partitioner>> partitioners(
-      pressure_operator.get_matrix_free()
-        ->get_dof_handler(dof_no_p)
-        .get_triangulation()
-        .n_global_levels());
+    if (use_hmg)
+      coarse_grid_triangulations =
+        MGTransferGlobalCoarseningTools::create_geometric_coarsening_sequence(
+          dof_handler.get_triangulation());
+    else
+      coarse_grid_triangulations.emplace_back(&(dof_handler.get_triangulation()),
+                                              [](auto *) {});
+    const unsigned int n_h_levels = coarse_grid_triangulations.size() - 1;
 
-    for (unsigned int level = 0; level < nlevels; ++level)
+    const std::vector<unsigned int> level_degrees =
+      use_pmg ?
+        MGTransferGlobalCoarseningTools::create_polynomial_coarsening_sequence(
+          dof_handler.get_fe().degree,
+          MGTransferGlobalCoarseningTools::PolynomialCoarseningSequenceType::bisect) :
+        std::vector<unsigned int>{dof_handler.get_fe().degree};
+    const unsigned int n_p_levels = level_degrees.size();
+
+    const unsigned int minlevel = 0;
+    const unsigned int maxlevel =
+      use_cmg ? n_h_levels + n_p_levels : n_h_levels + n_p_levels - 1;
+
+    dof_handlers.resize(minlevel, maxlevel);
+    dof_handlers_u.resize(minlevel, maxlevel);
+    mg_matrices.resize(minlevel, maxlevel);
+    mg_matrices_mf.resize(minlevel, maxlevel);
+    transfers.resize(minlevel, maxlevel);
+
+    // h-MG with linear elements
+    for (unsigned int l = 0; l < n_h_levels; ++l)
       {
-        typename MatrixFree<dim, float>::AdditionalData additional_data;
+        auto &dof_handler   = dof_handlers[l];
+        auto &dof_handler_u = dof_handlers_u[l];
 
-        const unsigned int fe_degree_u =
-          pressure_operator.get_matrix_free()->get_dof_handler(dof_no_v).get_fe().degree;
-        const unsigned int fe_degree_p =
-          pressure_operator.get_matrix_free()->get_dof_handler(dof_no_p).get_fe().degree;
-        Quadrature<1> quadrature      = QGauss<1>(fe_degree_u + 2);
-        Quadrature<1> quadrature_mass = QGauss<1>(fe_degree_u + 1);
-        Quadrature<1> quadrature_p    = QGauss<1>(fe_degree_p + 1);
+        if (use_cmg)
+          {
+            const FE_Q<dim>     fe(level_degrees[0]);
+            const FESystem<dim> fe_u(FE_Q<dim>(level_degrees[0] + 1), dim);
+
+            dof_handler.reinit(*coarse_grid_triangulations[l]);
+            dof_handler.distribute_dofs(fe);
+            dof_handler_u.reinit(*coarse_grid_triangulations[l]);
+            dof_handler_u.distribute_dofs(fe_u);
+          }
+        else
+          {
+            const FE_DGQ<dim>   fe(level_degrees[0]);
+            const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[0] + 1), dim);
+
+            dof_handler.reinit(*coarse_grid_triangulations[l]);
+            dof_handler.distribute_dofs(fe);
+            dof_handler_u.reinit(*coarse_grid_triangulations[l]);
+            dof_handler_u.distribute_dofs(fe_u);
+          }
+      }
+    // p-MG
+    const unsigned int max_loop_it = use_cmg ? maxlevel : maxlevel + 1;
+    for (unsigned int i = 0, l = n_h_levels; l < max_loop_it; ++l, ++i)
+      {
+        auto &dof_handler   = dof_handlers[l];
+        auto &dof_handler_u = dof_handlers_u[l];
+
+        if (use_cmg)
+          {
+            const FE_Q<dim>     fe(level_degrees[i]);
+            const FESystem<dim> fe_u(FE_Q<dim>(level_degrees[i] + 1), dim);
+
+            dof_handler.reinit(*coarse_grid_triangulations[n_h_levels]);
+            dof_handler.distribute_dofs(fe);
+            dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
+            dof_handler_u.distribute_dofs(fe_u);
+          }
+        else
+          {
+            const FE_DGQ<dim>   fe(level_degrees[i]);
+            const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[i] + 1), dim);
+
+            dof_handler.reinit(*coarse_grid_triangulations[n_h_levels]);
+            dof_handler.distribute_dofs(fe);
+            dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
+            dof_handler_u.distribute_dofs(fe_u);
+          }
+      }
+    // c-MG
+    if (use_cmg)
+      {
+        const unsigned int l             = maxlevel;
+        auto              &dof_handler   = dof_handlers[l];
+        auto              &dof_handler_u = dof_handlers_u[l];
+
+        const FE_DGQ<dim>   fe(level_degrees[level_degrees.size() - 1]);
+        const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[level_degrees.size() - 1] + 1),
+                                 dim);
+
+
+        dof_handler.reinit(*coarse_grid_triangulations[n_h_levels]);
+        dof_handler.distribute_dofs(fe);
+        dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
+        dof_handler_u.distribute_dofs(fe_u);
+      }
+
+    // init levels
+    for (unsigned int level = minlevel; level <= maxlevel; ++level)
+      {
+        const unsigned int fe_degree_u     = dof_handlers_u[level].get_fe().degree;
+        const unsigned int fe_degree_p     = dof_handlers[level].get_fe().degree;
+        Quadrature<1>      quadrature      = QGauss<1>(fe_degree_u + 2);
+        Quadrature<1>      quadrature_mass = QGauss<1>(fe_degree_u + 1);
+        Quadrature<1>      quadrature_p    = QGauss<1>(fe_degree_p + 1);
 
 
         typename MatrixFree<dim, number>::AdditionalData data;
@@ -2203,49 +2927,43 @@ public:
         data.mapping_update_flags_boundary_faces =
           (update_gradients | update_JxW_values | update_normal_vectors |
            update_quadrature_points);
-        data.mg_level = level;
+        // data.mg_level = level;
         AffineConstraints<double> dummy;
         dummy.close();
 
-        auto mg_mf_storage_level = std::make_shared<MatrixFree<dim, number>>();
-        mg_mf_storage_level->reinit(
-          mapping,
-          std::vector<const DoFHandler<dim> *>{
-            &pressure_operator.get_matrix_free()->get_dof_handler(dof_no_v),
-            &pressure_operator.get_matrix_free()->get_dof_handler(dof_no_p)},
+        mg_matrices_mf[level].reinit(
+          level < n_h_levels ? MappingQGeneric<dim>(1) :
+                               MappingQGeneric<dim>(mapping_degree),
+          std::vector<const DoFHandler<dim> *>{&dof_handlers_u[level],
+                                               &dof_handlers[level]},
           std::vector<const AffineConstraints<double> *>{&dummy, &dummy},
           std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
           data);
 
-        mg_matrices[level].reinit(mg_mf_storage_level, bdf_order, time_step);
-
-        partitioners[level] =
-          mg_matrices[level].get_matrix_free()->get_vector_partitioner(dof_no_p);
+        mg_matrices[level].reinit(mg_matrices_mf[level],
+                                  bdf_order,
+                                  time_step,
+                                  dof_handlers[level].get_fe().n_dofs_per_vertex() == 0);
       }
 
-    mg_transfer.build(pressure_operator.get_matrix_free()->get_dof_handler(dof_no_p),
-                      partitioners);
+    // init transfer
+    for (unsigned int level = minlevel; level < maxlevel; ++level)
+      transfers[level + 1].reinit(dof_handlers[level + 1], dof_handlers[level]);
 
-    mg_matrices[mg_matrices.min_level()].get_system_matrix(coarse_system_matrix);
-    TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
-    amg_data.smoother_sweeps = 1;
-    amg_data.n_cycles        = 1;
-    amg_data.smoother_type   = "ILU";
+    transfer = MGTransferGlobalCoarsening<dim, VectorType>(
+      transfers, [&](const auto l, auto &vec) {
+        mg_matrices[l].get_matrix_free().initialize_dof_vector(vec, dof_no_p);
+      });
 
-    precondition_amg.initialize(coarse_system_matrix, amg_data);
+    // Setup smoother for every level
+    smoother_data.resize(minlevel, maxlevel);
 
-    smoother_data.resize(mg_matrices.min_level(), mg_matrices.max_level());
-
-    for (unsigned int level = 0; level < pressure_operator.get_matrix_free()
-                                           ->get_dof_handler(dof_no_p)
-                                           .get_triangulation()
-                                           .n_global_levels();
-         ++level)
+    for (unsigned int level = minlevel; level <= maxlevel; ++level)
       {
         if (level > 0)
           {
             smoother_data[level].smoothing_range     = 15.;
-            smoother_data[level].degree              = 4;
+            smoother_data[level].degree              = 5;
             smoother_data[level].eig_cg_n_iterations = 10;
           }
         else
@@ -2254,13 +2972,22 @@ public:
             smoother_data[0].degree              = numbers::invalid_unsigned_int;
             smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
           }
-
         smoother_data[level].preconditioner =
           std::make_shared<SmootherPreconditionerType>();
         mg_matrices[level].compute_inverse_diagonal(
           smoother_data[level].preconditioner->get_vector());
       }
+
     mg_smoother.initialize(mg_matrices, smoother_data);
+
+    // Setup corase grid AMG
+    mg_matrices[minlevel].get_system_matrix(coarse_system_matrix);
+    TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
+    amg_data.smoother_sweeps = 1;
+    amg_data.n_cycles        = 1;
+    amg_data.smoother_type   = "ILU";
+
+    precondition_amg.initialize(coarse_system_matrix, amg_data);
   }
 
   unsigned int
@@ -2268,24 +2995,23 @@ public:
         VectorType       &vec_p,
         const VectorType &vec_p_rhs)
   {
-    ReductionControl coarse_grid_solver_control(10000, 1e-20, 1e-4, false, false);
-
+    // Coarse grid solver
+    ReductionControl     coarse_grid_solver_control(10000, 1e-20, 1e-4, false, false);
     SolverCG<VectorType> coarse_grid_solver(coarse_grid_solver_control);
-
     std::unique_ptr<MGCoarseGridBase<VectorType>> mg_coarse;
-    mg_coarse = std::make_unique<MGCoarseGridIterativeSolver<VectorType,
-                                                             SolverCG<VectorType>,
-                                                             LevelMatrixType,
-                                                             decltype(precondition_amg)>>(
-      coarse_grid_solver, mg_matrices[mg_matrices.min_level()], precondition_amg);
+    mg_coarse =
+      std::make_unique<MGCoarseGridIterativeSolver<VectorType,
+                                                   SolverCG<VectorType>,
+                                                   TrilinosWrappers::SparseMatrix,
+                                                   decltype(precondition_amg)>>(
+        coarse_grid_solver, coarse_system_matrix, precondition_amg);
 
+    // Setup levels and transfers
     mg::Matrix<VectorType> mg_matrix(mg_matrices);
-
-    Multigrid<VectorType> mg(
-      mg_matrix, *mg_coarse, mg_transfer, mg_smoother, mg_smoother);
+    Multigrid<VectorType>  mg(mg_matrix, *mg_coarse, transfer, mg_smoother, mg_smoother);
 
     PreconditionerType preconditioner(
-      pressure_operator.get_matrix_free()->get_dof_handler(dof_no_p), mg, mg_transfer);
+      pressure_operator.get_matrix_free().get_dof_handler(dof_no_p), mg, transfer);
 
     SolverControl        control(100000, 1e-12 * vec_p_rhs.l2_norm());
     SolverCG<VectorType> solver_cg(control);
@@ -2296,13 +3022,21 @@ public:
 
 private:
   MGLevelObject<LevelMatrixType>                                    mg_matrices;
-  MGTransferMatrixFree<dim, number>                                 mg_transfer;
+  MGLevelObject<MatrixFree<dim, number>>                            mg_matrices_mf;
   MGSmootherPrecondition<LevelMatrixType, SmootherType, VectorType> mg_smoother;
   MGLevelObject<typename SmootherType::AdditionalData>              smoother_data;
+
+  MGLevelObject<DoFHandler<dim>>                     dof_handlers;
+  MGLevelObject<DoFHandler<dim>>                     dof_handlers_u;
+  MGLevelObject<MGTwoLevelTransfer<dim, VectorType>> transfers;
+  MGTransferGlobalCoarsening<dim, VectorType>        transfer;
+
+  std::vector<std::shared_ptr<const Triangulation<dim>>> coarse_grid_triangulations;
 
   TrilinosWrappers::SparseMatrix    coarse_system_matrix;
   TrilinosWrappers::PreconditionAMG precondition_amg;
 };
+
 
 template <int dim, typename Number>
 void
@@ -2319,9 +3053,7 @@ do_test(const unsigned int fe_degree,
   MappingQGeneric<dim> mapping(fe_degree);
 
   parallel::distributed::Triangulation<dim> tria(
-    MPI_COMM_WORLD,
-    Triangulation<dim>::limit_level_difference_at_vertices,
-    parallel::distributed::Triangulation<dim>::construct_multigrid_hierarchy);
+    MPI_COMM_WORLD, Triangulation<dim>::limit_level_difference_at_vertices);
 
   GridGenerator::channel_with_cylinder(tria);
 
@@ -2347,11 +3079,10 @@ do_test(const unsigned int fe_degree,
 
   DoFHandler<dim> dof_handler_u(tria);
   dof_handler_u.distribute_dofs(fe_u);
-  dof_handler_u.distribute_mg_dofs();
 
   DoFHandler<dim> dof_handler_p(tria);
   dof_handler_p.distribute_dofs(fe_p);
-  dof_handler_p.distribute_mg_dofs();
+
   pcout << "number of active_cells: " << tria.n_global_active_cells() << std::endl;
   pcout << "Solving with " << fe_u.get_name() << " x " << fe_p.get_name() << " element"
         << std::endl;
@@ -2368,7 +3099,8 @@ do_test(const unsigned int fe_degree,
     4.0 * time_step_size / std::pow(fe_degree, 1.5) * h_min / u_x_max;
 
   const Number time_step =
-    dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD); // time_step_size
+    1e-5 +
+    0. * dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD); // time_step_size
   pcout << "Time step size: " << time_step << std::endl;
 
   const unsigned int bdf_order   = 3;
@@ -2376,14 +3108,14 @@ do_test(const unsigned int fe_degree,
 
   MomentumOperator<dim, dim, Number> momentum_op;
   // set up operator
-  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order);
+  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order, true);
 
   momentum_op.set_viscosity(viscosity);
   momentum_op.set_time(0.0);
 
   LinearAlgebra::distributed::Vector<Number> vec_u, vec_u_deriv, vec_u_rhs, vec_p,
     vec_u_norm, speed_extrapolated, vec_vorticity, vec_p_rhs, vec_p_rhs_n, vec_p_norm,
-    vec_div_u;
+    vec_div_u, inverse_diagonal;
   momentum_op.initialize_dof_vector(vec_u, dof_no_v);
   momentum_op.initialize_dof_vector(vec_u_deriv, dof_no_v);
   momentum_op.initialize_dof_vector(vec_u_rhs, dof_no_v);
@@ -2396,18 +3128,24 @@ do_test(const unsigned int fe_degree,
   momentum_op.initialize_dof_vector(vec_p_norm, dof_no_p);
   momentum_op.initialize_dof_vector(vec_div_u, dof_no_p);
 
-  std::vector<LinearAlgebra::distributed::Vector<double>> vec_u_old(bdf_order);
+  std::vector<LinearAlgebra::distributed::Vector<Number>> vec_u_old(bdf_order);
   for (auto &vec : vec_u_old)
     momentum_op.initialize_dof_vector(vec, dof_no_v);
 
-  InverseMassPreconditioner<dim, double> inverse_mass;
+  InverseMassPreconditioner<dim, Number> inverse_mass;
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
 
-  PressureOperator<dim, double> pressure_op;
-  pressure_op.reinit(std::shared_ptr<const MatrixFree<dim, double>>(
-                       &momentum_op.get_matrix_free()),
-                     bdf_order,
-                     time_step);
+  MultigridPreconditionerVelocity<dim, Number> preconditioner_velocity(
+    momentum_op, mapping.get_degree(), time_step, bdf_order);
+
+  DiagonalMatrix<LinearAlgebra::distributed::Vector<Number>>
+    preconditioner_velocity_pointjacobi;
+  DiagonalMatrix<LinearAlgebra::distributed::Vector<Number>>
+    preconditioner_pressure_pointjacobi;
+
+
+  PressureOperator<dim, Number> pressure_op;
+  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, true);
   pressure_op.set_time_step(time_step);
 
   TrilinosWrappers::SparseMatrix pressure_system_matrix;
@@ -2423,8 +3161,8 @@ do_test(const unsigned int fe_degree,
   if (use_amg)
     precondition_amg.initialize(pressure_system_matrix, amg_data);
 
-  MultigridPreconditioner<dim, double> precondition_hmg(pressure_op,
-                                                        mapping,
+  MultigridPreconditioner<dim, Number> precondition_hmg(pressure_op,
+                                                        mapping.get_degree(),
                                                         time_step,
                                                         bdf_order);
 
@@ -2439,7 +3177,7 @@ do_test(const unsigned int fe_degree,
   VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
 
   const Number       end_time         = 8.0;
-  const unsigned int output_interval  = 1;
+  const unsigned int output_interval  = 50;
   unsigned int       time_step_number = 0;
 
   Number drag_max = -10000000000.;
@@ -2511,13 +3249,24 @@ do_test(const unsigned int fe_degree,
           solver.solve(pressure_system_matrix, vec_p, vec_p_rhs, precondition_amg);
           iteration_count = control.last_step();
         }
+      else if (use_cmg || use_hmg || use_pmg)
+        {
+          iteration_count = precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs);
+        }
       else
         {
-          iteration_count = precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs); //,
+          pressure_op.compute_inverse_diagonal(
+            preconditioner_pressure_pointjacobi.get_vector());
+
+          solver.solve(pressure_op,
+                       vec_p,
+                       vec_p_rhs,
+                       preconditioner_pressure_pointjacobi); // PreconditionIdentity()
+          iteration_count = control.last_step();
         }
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p);
-      if (write_output && time_step_number % output_interval == 0)
+      if ((write_output && time_step_number % output_interval == 0))
         pcout << "Pressure solver: " << iteration_count << " iterations" << std::endl;
 
       // exact_pressure.set_time(current_time);
@@ -2535,18 +3284,41 @@ do_test(const unsigned int fe_degree,
 
       vec_u_rhs = 0.;
       momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, vec_p);
+      if (use_mg_velocity)
+        preconditioner_velocity.update(current_time, speed_extrapolated);
 
       SolverControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
       vec_u.swap(speed_extrapolated); // = 0.;
-      inverse_mass.set_scaling_factor(time_step / bdf.get_gamma0());
-      solver_mom.solve(momentum_op,
-                       vec_u,
-                       vec_u_rhs,
-                       inverse_mass); // PreconditionIdentity()
-      if (write_output && time_step_number % output_interval == 0)
-        pcout << "Momentum solver: " << control_mom.last_step() << " iterations"
-              << std::endl;
+      unsigned int n_iterations_vel;
+      if (use_mg_velocity)
+        {
+          n_iterations_vel = preconditioner_velocity.solve(momentum_op, vec_u, vec_u_rhs);
+        }
+      else if (use_inverse_mass_velocity)
+        {
+          inverse_mass.set_scaling_factor(time_step / bdf.get_gamma0());
+          solver_mom.solve(momentum_op, vec_u, vec_u_rhs, inverse_mass);
+          n_iterations_vel = control_mom.last_step();
+        }
+      else if (use_velocity_point_jacobi)
+        {
+          momentum_op.compute_inverse_diagonal(
+            preconditioner_velocity_pointjacobi.get_vector());
+          solver_mom.solve(momentum_op,
+                           vec_u,
+                           vec_u_rhs,
+                           preconditioner_velocity_pointjacobi);
+          n_iterations_vel = control_mom.last_step();
+        }
+      else
+        {
+          solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
+          n_iterations_vel = control_mom.last_step();
+        }
+
+      if ((write_output && time_step_number % output_interval == 0))
+        pcout << "Momentum solver: " << n_iterations_vel << " iterations" << std::endl;
 
       // exact_velocity.set_time(current_time);
       // VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
@@ -2733,9 +3505,9 @@ main(int argc, char **argv)
   //   do_test<2, double>(3, i, 14);
 
   // for (unsigned int i = 1; i < 7; ++i)
-  //   do_test<2, double>(5, i, 14);
+  // do_test<2, double>(5, i, 0);
 
   // for (unsigned int i = 1; i < 15; ++i)
   // do_test<2, double>(5, 4, i);
-  do_test<2, double>(3, 2, 0);
+  do_test<2, double>(8, 3, 0);
 }
