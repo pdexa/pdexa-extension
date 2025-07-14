@@ -62,10 +62,11 @@ const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = true;
 const bool use_leray_projection                      = true;
 
-const bool use_amg = false;
-const bool use_hmg = true;
-const bool use_pmg = true;
-const bool use_cmg = true;
+const bool use_amg                  = false;
+const bool use_hmg                  = true;
+const bool use_pmg                  = true;
+const bool use_cmg                  = true;
+const bool use_pointjacobi_pressure = false;
 
 const bool use_velocity_point_jacobi = false;
 const bool use_inverse_mass_velocity = false;
@@ -361,12 +362,11 @@ public:
          const DoFHandler<dim> &dof_handler_u,
          const DoFHandler<dim> &dof_handler_p,
          const number           time_step_in,
-         const unsigned int     bdf_order_in,
-         const bool             is_dg_in)
+         const unsigned int     bdf_order_in)
   {
     bdf_order = bdf_order_in;
     time_step = time_step_in;
-    is_dg     = is_dg_in;
+    is_dg     = dof_handler_u.get_fe().n_dofs_per_vertex() == 0;
 
     fe_degree_u                        = dof_handler_u.get_fe().degree;
     const unsigned int fe_degree_p     = dof_handler_p.get_fe().degree;
@@ -1548,11 +1548,12 @@ private:
 };
 
 
-template <int dim, typename number>
+template <int dim, typename number_system, typename number = number_system>
 class MultigridPreconditionerVelocity
 {
   using VectorType       = LinearAlgebra::distributed::Vector<number>;
-  using SystemMatrixType = MomentumOperator<dim, dim, number>;
+  using VectorTypeSystem = LinearAlgebra::distributed::Vector<number_system>;
+  using SystemMatrixType = MomentumOperator<dim, dim, number_system>;
   using LevelMatrixType  = MomentumOperator<dim, dim, number>;
 
   using SmootherPreconditionerType = DiagonalMatrix<VectorType>;
@@ -1677,9 +1678,7 @@ public:
                                   dof_handlers_u[level],
                                   dof_handlers_p[level],
                                   time_step,
-                                  bdf_order,
-                                  dof_handlers_u[level].get_fe().n_dofs_per_vertex() ==
-                                    0);
+                                  bdf_order);
       }
 
     // init transfer
@@ -1719,7 +1718,7 @@ public:
   }
 
   void
-  update(number time, const VectorType speed_extrapolated)
+  update(number time, const VectorTypeSystem speed_extrapolated)
   {
     const unsigned int min_level = mg_matrices.min_level();
     const unsigned int max_level = mg_matrices.max_level();
@@ -1767,9 +1766,9 @@ public:
   }
 
   unsigned int
-  solve(SystemMatrixType &momentum_operator,
-        VectorType       &vec_u,
-        const VectorType &vec_u_rhs)
+  solve(SystemMatrixType       &momentum_operator,
+        VectorTypeSystem       &vec_u,
+        const VectorTypeSystem &vec_u_rhs)
   {
     const unsigned int min_level = mg_matrices.min_level();
 
@@ -1792,8 +1791,8 @@ public:
     PreconditionerType preconditioner(
       momentum_operator.get_matrix_free().get_dof_handler(dof_no_v), mg, transfer);
 
-    SolverControl           control(100000, 1e-12 * vec_u_rhs.l2_norm());
-    SolverGMRES<VectorType> solver_gmres(control);
+    SolverControl                 control(100000, 1e-12 * vec_u_rhs.l2_norm());
+    SolverGMRES<VectorTypeSystem> solver_gmres(control);
 
     solver_gmres.solve(momentum_operator, vec_u, vec_u_rhs, preconditioner);
     return control.last_step();
@@ -1827,13 +1826,12 @@ public:
   void
   reinit(const MatrixFree<dim, number> &matrix_free_in,
          const unsigned int             bdf_order_in,
-         const number                   time_step_in,
-         const bool                     is_dg_in)
+         const number                   time_step_in)
   {
     bdf_order         = bdf_order_in;
     time_step         = time_step_in;
     this->matrix_free = &matrix_free_in;
-    is_dg             = is_dg_in;
+    is_dg = matrix_free->get_dof_handler(dof_no_p).get_fe().n_dofs_per_vertex() == 0;
 
     const unsigned int fe_degree = matrix_free->get_dof_handler(dof_no_p).get_fe().degree;
     const double       penalty_factor = 1.0 * (fe_degree + 1) * (fe_degree);
@@ -2786,11 +2784,12 @@ private:
   }
 };
 
-template <int dim, typename number>
+template <int dim, typename number_operator, typename number = number_operator>
 class MultigridPreconditioner
 {
   using VectorType       = LinearAlgebra::distributed::Vector<number>;
-  using SystemMatrixType = PressureOperator<dim, number>;
+  using VectorTypeSystem = LinearAlgebra::distributed::Vector<number_operator>;
+  using SystemMatrixType = PressureOperator<dim, number_operator>;
   using LevelMatrixType  = PressureOperator<dim, number>;
 
   using SmootherPreconditionerType = DiagonalMatrix<VectorType>;
@@ -2940,10 +2939,7 @@ public:
           std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
           data);
 
-        mg_matrices[level].reinit(mg_matrices_mf[level],
-                                  bdf_order,
-                                  time_step,
-                                  dof_handlers[level].get_fe().n_dofs_per_vertex() == 0);
+        mg_matrices[level].reinit(mg_matrices_mf[level], bdf_order, time_step);
       }
 
     // init transfer
@@ -2991,17 +2987,17 @@ public:
   }
 
   unsigned int
-  solve(SystemMatrixType &pressure_operator,
-        VectorType       &vec_p,
-        const VectorType &vec_p_rhs)
+  solve(SystemMatrixType       &pressure_operator,
+        VectorTypeSystem       &vec_p,
+        const VectorTypeSystem &vec_p_rhs)
   {
     // Coarse grid solver
-    ReductionControl     coarse_grid_solver_control(10000, 1e-20, 1e-4, false, false);
-    SolverCG<VectorType> coarse_grid_solver(coarse_grid_solver_control);
+    ReductionControl coarse_grid_solver_control(10000, 1e-20, 1e-4, false, false);
+    SolverCG<VectorTypeSystem> coarse_grid_solver(coarse_grid_solver_control);
     std::unique_ptr<MGCoarseGridBase<VectorType>> mg_coarse;
     mg_coarse =
       std::make_unique<MGCoarseGridIterativeSolver<VectorType,
-                                                   SolverCG<VectorType>,
+                                                   SolverCG<VectorTypeSystem>,
                                                    TrilinosWrappers::SparseMatrix,
                                                    decltype(precondition_amg)>>(
         coarse_grid_solver, coarse_system_matrix, precondition_amg);
@@ -3013,8 +3009,8 @@ public:
     PreconditionerType preconditioner(
       pressure_operator.get_matrix_free().get_dof_handler(dof_no_p), mg, transfer);
 
-    SolverControl        control(100000, 1e-12 * vec_p_rhs.l2_norm());
-    SolverCG<VectorType> solver_cg(control);
+    SolverControl              control(100000, 1e-12 * vec_p_rhs.l2_norm());
+    SolverCG<VectorTypeSystem> solver_cg(control);
 
     solver_cg.solve(pressure_operator, vec_p, vec_p_rhs, preconditioner);
     return control.last_step();
@@ -3108,7 +3104,7 @@ do_test(const unsigned int fe_degree,
 
   MomentumOperator<dim, dim, Number> momentum_op;
   // set up operator
-  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order, true);
+  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order);
 
   momentum_op.set_viscosity(viscosity);
   momentum_op.set_time(0.0);
@@ -3135,7 +3131,7 @@ do_test(const unsigned int fe_degree,
   InverseMassPreconditioner<dim, Number> inverse_mass;
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
 
-  MultigridPreconditionerVelocity<dim, Number> preconditioner_velocity(
+  MultigridPreconditionerVelocity<dim, Number, float> preconditioner_velocity(
     momentum_op, mapping.get_degree(), time_step, bdf_order);
 
   DiagonalMatrix<LinearAlgebra::distributed::Vector<Number>>
@@ -3145,7 +3141,7 @@ do_test(const unsigned int fe_degree,
 
 
   PressureOperator<dim, Number> pressure_op;
-  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, true);
+  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step);
   pressure_op.set_time_step(time_step);
 
   TrilinosWrappers::SparseMatrix pressure_system_matrix;
@@ -3161,10 +3157,10 @@ do_test(const unsigned int fe_degree,
   if (use_amg)
     precondition_amg.initialize(pressure_system_matrix, amg_data);
 
-  MultigridPreconditioner<dim, Number> precondition_hmg(pressure_op,
-                                                        mapping.get_degree(),
-                                                        time_step,
-                                                        bdf_order);
+  MultigridPreconditioner<dim, Number, Number> precondition_hmg(pressure_op,
+                                                                mapping.get_degree(),
+                                                                time_step,
+                                                                bdf_order);
 
   Number current_time = 0;
 
@@ -3253,7 +3249,7 @@ do_test(const unsigned int fe_degree,
         {
           iteration_count = precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs);
         }
-      else
+      else if (use_pointjacobi_pressure)
         {
           pressure_op.compute_inverse_diagonal(
             preconditioner_pressure_pointjacobi.get_vector());
@@ -3261,12 +3257,17 @@ do_test(const unsigned int fe_degree,
           solver.solve(pressure_op,
                        vec_p,
                        vec_p_rhs,
-                       preconditioner_pressure_pointjacobi); // PreconditionIdentity()
+                       preconditioner_pressure_pointjacobi);
+          iteration_count = control.last_step();
+        }
+      else
+        {
+          solver.solve(pressure_op, vec_p, vec_p_rhs, PreconditionIdentity());
           iteration_count = control.last_step();
         }
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p);
-      if ((write_output && time_step_number % output_interval == 0))
+      if (write_output && time_step_number % output_interval == 0)
         pcout << "Pressure solver: " << iteration_count << " iterations" << std::endl;
 
       // exact_pressure.set_time(current_time);
@@ -3317,7 +3318,7 @@ do_test(const unsigned int fe_degree,
           n_iterations_vel = control_mom.last_step();
         }
 
-      if ((write_output && time_step_number % output_interval == 0))
+      if (write_output && time_step_number % output_interval == 0)
         pcout << "Momentum solver: " << n_iterations_vel << " iterations" << std::endl;
 
       // exact_velocity.set_time(current_time);
@@ -3404,6 +3405,9 @@ do_test(const unsigned int fe_degree,
 
       if (write_output && time_step_number % output_interval == 0)
         {
+          double single_step = time_single_step.wall_time();
+          pcout << "Time single step: " << single_step << std::endl;
+
           Vector<double> error_per_cell;
           exact_velocity.set_time(current_time);
           exact_pressure.set_time(current_time);
@@ -3453,9 +3457,6 @@ do_test(const unsigned int fe_degree,
 
           pcout << "Max/min drag/lift: " << drag_max << " " << drag_min << " " << lift_max
                 << " " << lift_min << std::endl;
-
-          double single_step = time_single_step.wall_time();
-          pcout << "Time single step: " << single_step << std::endl;
         }
     }
 
@@ -3487,12 +3488,12 @@ do_test(const unsigned int fe_degree,
 
   pcout << "L2 norm velocity/pressure: " << velocity_error << " " << pressure_error
         << std::endl;
-  pcout << "Max/min drag/lift: " << drag_max << " " << drag_min << " " << lift_max << " "
-        << lift_min << std::endl;
-  pcout << std::endl;
+  pcout << std::scientific << std::setprecision(20) << "Max/min drag/lift: " << drag_max
+        << " " << drag_min << " " << lift_max << " " << lift_min << std::endl;
 
   const double loop_time = time_loop.wall_time();
   pcout << "Time loop time: " << loop_time << std::endl;
+  pcout << std::endl;
 }
 
 
@@ -3509,5 +3510,5 @@ main(int argc, char **argv)
 
   // for (unsigned int i = 1; i < 15; ++i)
   // do_test<2, double>(5, 4, i);
-  do_test<2, double>(8, 3, 0);
+  do_test<2, double>(3, 2, 0);
 }
