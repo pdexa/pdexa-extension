@@ -49,12 +49,12 @@ const bool use_extrapolated_velocity                 = false;
 const bool use_pressure_convective_upwind_flux       = false;
 const bool use_neumann_boundary                      = false;
 const bool use_periodic_boundary                     = false;
-const bool use_analytical_curl                       = true;
+const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = false;
-const bool use_leray_projection                      = false;
+const bool use_leray_projection                      = true;
 const bool use_stationary_stokes                     = false;
 
-const double viscosity = 0.025;
+const double viscosity = 1;
 const double u_x_max   = 1.;
 
 template <int dim>
@@ -68,18 +68,26 @@ public:
   {}
 
   double
-  value(const dealii::Point<dim> &p, const unsigned int component = 0) const final
+   value(const dealii::Point<dim> &p, const unsigned int component = 0) const final
   {
     const double t      = this->get_time();
     const double pi     = dealii::numbers::PI;
     double       result = 0.0;
-    if (component == 0)
-      result = -std::sin(2. * pi * p[1]);
+    /*if (component == 0)
+      result = -std::sin(2 * pi * p[0]) * std::cos(pi * p[1]);
     else if (component == 1)
-      result = std::sin(2. * pi * p[0]);
-
-    result *= std::exp(-4. * viscosity * pi * pi * t);
-    return result;
+      result = std::cos(pi * p[0]) * std::sin(2 * pi * p[1]);*/
+    //result *= std::exp(-4. * viscosity * pi * pi * t);
+    if (component == 0)
+          result = pi * std::sin(2 * pi * p[1]) * std::sin(pi * p[0]) * std::sin(pi * p[0]);
+    else if (component == 1)
+      result = -pi * std::sin(2 * pi * p[0]) * std::sin(pi * p[1]) * std::sin(pi * p[1]);
+    
+    //result *= std::exp(-6. * viscosity * pi * pi * t);
+    if(!use_stationary_stokes)
+      result *= std::sin(t);
+      //result *= std::exp(-5. * viscosity * pi * pi * t);
+    return result; 
   }
 
   dealii::Tensor<1, dim, double>
@@ -124,11 +132,118 @@ public:
     const double t  = this->get_time();
     const double pi = dealii::numbers::PI;
 
-    const double result = -std::cos(2. * pi * p[0]) * std::cos(2. * pi * p[1])
-                          * std::exp(-8. * viscosity * pi * pi * t);
+    double result = std::cos(pi * p[0]) * std::sin(pi * p[1]);
+
+    /*const double result = -std::sin(2. * pi * p[0]) * std::sin(pi * p[1]) *
+                            std::sin(2. * pi * p[1]) * std::sin(pi * p[0])
+                          * std::exp(-10. * viscosity * pi * pi * t);*/
+    if (!use_stationary_stokes)
+      result *= std::sin(t);
 
     return result;
   }
+
+  
+
+  /*dealii::Tensor<1, dim, double> 
+  gradient(const dealii::Point<dim> &p, const unsigned int ) const final
+  {
+    const double t  = this->get_time();
+    const double pi = dealii::numbers::PI;
+
+    dealii::Tensor<1, dim, double> result;
+    
+    result[0] = 2 * pi * std::sin(2. * pi * p[0]) * std::cos(2. * pi * p[1]);
+    result[1] = 2 * pi * std::cos(2. * pi * p[0]) * std::sin(2. * pi * p[1]);
+    return  result;
+  }*/
+
+private:
+  const double u_x_max, viscosity;
+};
+
+template <int dim>
+class AnalyticalCurlu : public dealii::Function<dim>
+{
+public:
+  AnalyticalCurlu(const double u_x_max, const double viscosity)
+    : dealii::Function<dim>(dim, 0.0)
+    , u_x_max(u_x_max)
+    , viscosity(viscosity)
+  {}
+
+  double
+  value(const dealii::Point<dim> &p, const unsigned int component) const final
+  {
+    const double t  = this->get_time();
+    const double pi = dealii::numbers::PI;
+    double result = 0.0;
+
+    if (component == 0)
+      /*result = -pi * std::sin(2 * pi * p[1]) * std::sin(pi * p[0]) -
+               pi * std::sin(2 * pi * p[0]) * std::sin(pi * p[1]);*/
+      //result = 2 * pi * (std::cos(2 * pi *p[0]) +  std::cos(2 * pi *p[1]));
+      result = -2 * pi * pi * (std::cos(2 * pi * p[0]) * std::sin(pi * p[1]) * std::sin(pi * p[1]) +
+                   std::cos(2. * pi *p[1]) * std::sin(pi * p[0]) * std::sin(pi * p[0]));
+                   // std::sin(2. * pi *p[0]) * std::sin(pi * p[1]));
+     //result = 2 * pi * (std::cos(2 * pi *p[0]) +  std::cos(2 * pi *p[1]));
+                   // std::sin(2. * pi *p[0]) * std::sin(pi * p[1]));
+    //if(!use_stationary_stokes)
+    //  result *= std::exp(-8. * viscosity * pi * pi * t);
+    else if (component ==1)
+      result = 0.;
+    if(!use_stationary_stokes)
+      //result *= std::exp(-5. * viscosity * pi * pi * t);
+      result *= std::sin(t);
+
+    return result;
+  }
+  private:
+  const double u_x_max, viscosity;
+};
+
+
+template <int dim>
+class AnalyticalCurlCurlu : public dealii::Function<dim>
+{
+public:
+  AnalyticalCurlCurlu(const double u_x_max, const double viscosity)
+    : dealii::Function<dim>(dim, 0.0)
+    , u_x_max(u_x_max)
+    , viscosity(viscosity)
+  {}
+
+  double
+  value(const dealii::Point<dim> &p, const unsigned int component = 0) const final
+  {
+    const double t  = this->get_time();
+    const double pi = dealii::numbers::PI;
+    double result = 0.0;
+
+    if (component == 0)
+      result = 4 * pi * pi * pi * (-std::cos(2 * pi * p[0]) * std::sin(pi * p[1]) * std::cos(pi * p[1]) +
+                  std::sin(2. * pi *p[1]) * std::sin(pi * p[0]) * std::sin(pi * p[0])); 
+    else if (component == 1)
+      result = 4 * pi * pi * pi * (std::cos(2 * pi * p[1]) * std::sin(pi * p[0]) * std::cos(pi * p[0]) -
+                  std::sin(2. * pi *p[0]) * std::sin(pi * p[1]) * std::sin(pi * p[1])); 
+    /*if(component == 0)
+      result = -pi * pi * (2. * std::cos(2. * pi * p[1]) * std::sin(pi * p[0]) + 
+             std::sin(2. * pi * p[0]) * std::cos(pi * p[1]));
+    else if(component == 1)
+      result = pi *pi * (std::sin(2. * pi * p[1]) * std::cos(pi * p[0]) + 
+             2. * std::cos(2. * pi * p[0]) * std::sin(pi * p[1]));*/
+    
+    /*if(!use_stationary_stokes)
+      result *= std::exp(-5. * viscosity * pi * pi * t);*/
+    /*if(component == 0)
+      result = -4 * pi * pi * std::sin(2. * pi *p[1]);
+    else if(component == 1)
+      result = 4 * pi * pi * std::sin(2. * pi *p[0]);*/
+    if(!use_stationary_stokes)
+      //result *= std::exp(-4. * viscosity * pi * pi * t);
+      result *= std::sin(t);
+    return result;
+  }  
 
   /*dealii::Tensor<1, dim, double> 
   gradient(const dealii::Point<dim> &p, const unsigned int ) const final
@@ -162,17 +277,71 @@ public:
   double
   value(const dealii::Point<dim> &p, const unsigned int component = 0) const final
   {
-    (void)p;
+    /*(void)p;
     (void)component;
+    double result = 0.0;*/
     const double                   t  = this->get_time();
     const double                   pi = dealii::numbers::PI;
     double result = 0.0;
+    const double x = p[0];
+    const double y = p[1];
     /*if (component == 0)
       result = -viscosity *  4 * pi * pi * std::sin(2 * pi * p[1]) + 2 * pi * std::sin(2 * pi * p[0]) * std::cos(2 * pi * p[1]);
     else if (component == 1)
       result = viscosity *  4 * pi * pi * std::sin(2 * pi * p[0]) + 2 * pi * std::cos(2 * pi * p[0]) * std::sin(2 * pi * p[1]);*/
+    /*if (component == 0)
+      result = (-2 * pi * pi * viscosity * std::cos(pi * p[0]) * std::cos(pi * p[0]) * std::sin(2 * pi * p[1])) 
+              * std::exp(-6 * viscosity * pi * pi * t) +
+              pi *std::sin(pi * p[0]) * std::sin(pi * p[1]) * (2 * std::sin(pi * p[0]) * std::sin(2 * pi * p[0]) * std::sin(pi * p[1]) +1)
+              * std::exp(-12 * viscosity * pi * pi * t);
+    else if (component == 1)
+      result = (2 * pi * pi * viscosity * std::cos(pi * p[1]) * std::cos(pi * p[1]) * std::sin(2 * pi * p[0])) 
+              * std::exp(-6 * viscosity * pi * pi * t) +
+              pi *std::cos(pi * p[1]) * (4 * std::sin(pi * p[0]) * std::sin(pi * p[0])  * 
+               std::sin(pi * p[1]) * std::sin(pi * p[1]) * std::sin(pi * p[1]) + std::cos(pi * p[0]))
+              * std::exp(-12 * viscosity * pi * pi * t);*/
+    if (use_stationary_stokes)
+    {
+      if(component == 0)
+        result = -(2 * pi * pi * pi * viscosity * (-1 + 2 * std::cos(2 * pi * x)) * std::sin(2 * pi * y) -
+                pi * std::cos(pi * x) * std::sin(pi * y));
+      else if (component == 1)
+        result =(2 * pi * pi * pi * viscosity * (-1 + 2 * std::cos(2 * pi * y)) * std::sin(2 * pi * x) +
+                  pi * std::sin(pi * x) * std::cos(pi * y));
+    }
+    else
+    {
+      if (component == 0)
+        result = pi * std::sin(2 * pi * y) * std::sin(pi * x) * std::sin(pi * x) * std::cos(t) -
+                (2 * pi * pi * pi * viscosity * (-1 + 2 * std::cos(2 * pi * x)) * std::sin(2 * pi * y) +
+                pi * std::sin(pi * x) * std::sin(pi * y)) * std::sin(t) +
+                2 * pi * pi * pi * std::sin(2 * pi * x) * std::sin(pi * x) * std::sin(pi * x) *
+                  std::sin(pi * y) * std::sin(pi * y) * std::sin(t) * std::sin(t);
+                //std::sin(2. * pi *y) * std::sin(pi * x));
+        //result = pi*(16.0*pi*pi*viscosity*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::cos(pi*y) - 4.0*pi*pi*viscosity*std::sin(t)*std::cos(pi*y) + 4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::cos(pi*x) - 1.0*std::sin(t)*std::sin(pi*x) + 2.0*std::sin(pi*x)*std::sin(pi*x)*std::cos(t)*std::cos(pi*y))*std::sin(pi*y);
+        //pi*(4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::cos(pi*x) + 16.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::cos(pi*y) - 1.0*std::sin(t)*std::sin(pi*x) - 4.0*pi*pi*std::sin(t)*std::cos(pi*y) + 2.0*std::sin(pi*x)*std::sin(pi*x)*std::cos(t)*std::cos(pi*y))*std::sin(pi*y);
+
+      else if (component == 1)
+        result = -pi * std::sin(2 * pi * x) * std::sin(pi * y) * std::sin(pi * y) * std::cos(t) +
+                  (2 * pi * pi * pi * viscosity * (-1 + 2 * std::cos(2 * pi * y)) * std::sin(2 * pi * x) +
+                  pi * std::cos(pi * x) * std::cos(pi * y)) * std::sin(t) +
+                  2 * pi * pi * pi * std::sin(2 * pi * y) * std::sin(pi * x) * std::sin(pi * x) *
+                    std::sin(pi * y) * std::sin(pi * y) * std::sin(t) * std::sin(t);
+        //result = pi*(-16.0*pi*pi*viscosity*std::sin(t)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*x) + 4.0*pi*pi*viscosity*std::sin(t)*std::sin(pi*x)*std::cos(pi*x) + 4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*y) + 1.0*std::sin(t)*std::cos(pi*x)*std::cos(pi*y) - 2.0*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(t)*std::cos(pi*x));
+        //pi*(4.0*pi*pi*std::sin(t)*std::sin(t)*std::sin(pi*x)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*y) - 16.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(pi*x) + 4.0*pi*pi*std::sin(t)*std::sin(pi*x)*std::cos(pi*x) + 1.0*std::sin(t)*std::cos(pi*x)*std::cos(pi*y) - 2.0*std::sin(pi*x)*std::sin(pi*y)*std::sin(pi*y)*std::cos(t)*std::cos(pi*x));
+    }
+    /*if (component == 0)
+      result = 2 * pi * std::cos(2 * pi * x) * (std::cos(pi * y) * std::cos(pi * y) * std::sin(2 * pi * x) - 
+                std::sin(pi * y) * std::sin(2 * pi * y) * std::sin(pi * x));
+    else if (component == 1)
+      result = 2 * pi * std::cos(2 * pi * y) * (std::cos(pi * x) * std::cos(pi * x) * std::sin(2 * pi * y) - 
+              std::sin(pi * x) * std::sin(2 * pi * x) * std::sin(pi * y));
+    if(!use_stationary_stokes)
+      //result *= std::sin(t);
+      result *= std::exp(-10. * viscosity * pi * pi * t);*/
     return result;
   }
+
 
 private:
   const double u_x_max, viscosity;
@@ -376,10 +545,12 @@ public:
 
 const unsigned int dof_no_v = 0;
 const unsigned int dof_no_p = 1;
+const unsigned int dof_no_curl = 2;
 
 const unsigned int quad_no_v      = 0;
 const unsigned int quad_no_v_mass = 1;
 const unsigned int quad_no_p      = 2;
+const unsigned int quad_no_curl      = 3;
 
 template <int dim_, int n_components = dim_, typename Number = double>
 class MomentumOperator : public Subscriptor
@@ -396,6 +567,7 @@ public:
   reinit(const Mapping<dim>    &mapping,
          const DoFHandler<dim> &dof_handler_u,
          const DoFHandler<dim> &dof_handler_p,
+         const DoFHandler<dim> &dof_handler_curl,
          const number           time_step_in,
          const unsigned int     bdf_order_in)
   {
@@ -404,9 +576,11 @@ public:
 
     const unsigned int fe_degree_u     = dof_handler_u.get_fe().degree;
     const unsigned int fe_degree_p     = dof_handler_p.get_fe().degree;
+    const unsigned int fe_degree_curl     = dof_handler_curl.get_fe().degree;
     Quadrature<1>      quadrature      = QGauss<1>(fe_degree_u + 2);
     Quadrature<1>      quadrature_mass = QGauss<1>(fe_degree_u + 1);
     Quadrature<1>      quadrature_p    = QGauss<1>(fe_degree_p + 1);
+    Quadrature<1>      quadrature_curl      = QGauss<1>(fe_degree_curl + 1);
 
 
     typename MatrixFree<dim, number>::AdditionalData data;
@@ -414,32 +588,47 @@ public:
       (update_gradients | update_JxW_values | update_quadrature_points | update_values);
     data.mapping_update_flags_inner_faces =
       (update_gradients | update_JxW_values | update_normal_vectors |
-       update_quadrature_points);
+       update_quadrature_points | update_values);
     data.mapping_update_flags_boundary_faces =
       (update_gradients | update_JxW_values | update_normal_vectors |
-       update_quadrature_points);
+       update_quadrature_points | update_values);
 
     AffineConstraints<double> dummy;
     dummy.close();
-    /*AffineConstraints<number> constraint;
-    std::vector<dealii::GridTools::PeriodicFacePair<
-    typename dealii::DoFHandler<dim>::cell_iterator>>
-    periodic_faces_dof;
-    for (unsigned int d = 0; d < dim; ++d)
+    if(use_periodic_boundary)
+    { 
+       std::vector<GridTools::PeriodicFacePair<typename DoFHandler<dim>::cell_iterator>>
+        periodicity_vector;
+      /*for (unsigned int d = 0; d < dim; ++d)
+        GridTools::collect_periodic_faces(
+          dof_handler_u, 2 * d, 2 * d + 1, d, periodicity_vector);*/
       GridTools::collect_periodic_faces(
-        dof_handler_u, 2 * d, 2 * d + 1, d, periodic_faces_dof);
-    
-    DoFTools::make_periodicity_constraints<dim, dim, number>(periodic_faces_dof,
-                                                           constraint);
-    constraint.close();*/
-
-
-    matrix_free.reinit(
+        dof_handler_u, 1, 0, 0, periodicity_vector);
+      GridTools::collect_periodic_faces(
+        dof_handler_u, 3, 2, 1, periodicity_vector);
+      
+      constraint_u.clear();
+      constraint_u.reinit(dof_handler_u.locally_owned_dofs(), DoFTools::extract_locally_relevant_dofs(dof_handler_u));
+      DoFTools::make_periodicity_constraints<dim, dim, number>(periodicity_vector,
+                                                            constraint_u);
+      constraint_u.close();
+      matrix_free.reinit(
       mapping,
-      std::vector<const DoFHandler<dim> *>{&dof_handler_u, &dof_handler_p},
-      std::vector<const AffineConstraints<double> *>{&dummy, &dummy},
-      std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
+      std::vector<const DoFHandler<dim> *>{&dof_handler_u, &dof_handler_p, &dof_handler_curl},
+      std::vector<const AffineConstraints<double> *>{&constraint_u, &dummy, &dummy},
+      std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p, quadrature_curl}},
       data);
+    
+    }
+    else{
+      matrix_free.reinit(
+      mapping,
+      std::vector<const DoFHandler<dim> *>{&dof_handler_u, &dof_handler_p, &dof_handler_curl},
+      std::vector<const AffineConstraints<double> *>{&dummy, &dummy, &dummy},
+      std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p, quadrature_curl}},
+      data);
+    }
+
 
     FEEvaluation<dim, -1, 0, dim, number> eval_cell(matrix_free, 0, 0);
     speeds_cells.reinit(matrix_free.n_cell_batches(), eval_cell.n_q_points);
@@ -562,7 +751,7 @@ public:
 
 
 
-  void
+  /*void
   evaluate_gradP(VectorType &dst, const VectorType &src) const
   {
     this->matrix_free.cell_loop(
@@ -577,7 +766,7 @@ public:
         mass_inv.apply(eval_u.begin_dof_values(), eval_u.begin_dof_values());
         eval_u.set_dof_values(dst);
       }
-  }
+  }*/
 
   void
   evaluate_vorticity(VectorType &dst, const VectorType &src) const
@@ -585,7 +774,7 @@ public:
     this->matrix_free.cell_loop(
       &MomentumOperator::local_vorticity_domain, this, dst, src, true);
 
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free, 0, 1);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free, dof_no_curl, quad_no_curl);
     MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, number> mass_inv(eval_u);
     for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
       {
@@ -601,6 +790,13 @@ public:
   get_matrix_free() const
   {
     return matrix_free;
+  }
+
+
+  const AffineConstraints<double> &
+  get_constraints() const
+  {
+    return constraint_u;
   }
 
 
@@ -821,27 +1017,39 @@ private:
               {
                 const auto normal = integrator_inner.normal_vector(q);
 
-                const Tensor<1, dim, VectorizedArray<number>> u_inner =
-                  make_vectorized_array<number>(viscosity) *
-                  integrator_inner.get_value(q);
+                const Tensor<1, dim, VectorizedArray<number>> u_inner = integrator_inner.get_value(q);
+                  
+                  
 
                 const Tensor<1, dim, VectorizedArray<number>> normal_derivative_inner =
                   make_vectorized_array<number>(viscosity) *
-                  integrator_inner.get_normal_derivative(q);
+                  integrator_inner.get_gradient(q) * normal;
+
+                //const Tensor<1, dim, VectorizedArray<number>> test_by_value =
+                //  number(2.0) * make_vectorized_array<number>(viscosity) * u_inner * sigma - normal_derivative_inner;
 
                 const Tensor<1, dim, VectorizedArray<number>> test_by_value =
-                  number(2.0) * u_inner * sigma - normal_derivative_inner;
+                  make_vectorized_array<number>(viscosity) * u_inner * sigma - normal_derivative_inner;
+
 
                 const auto speed        = speeds_faces(face, q);
                 const auto speed_normal = speed * normal;
+                //const auto convective_flux =
+                //  (std::abs(speed_normal) - speed_normal) * integrator_inner.get_value(q);
                 const auto convective_flux =
-                  (std::abs(speed_normal) - speed_normal) * integrator_inner.get_value(q);
-
-                if (!use_skew_symmetric_convective_formulation)
+                  number(0.5) * std::abs(speed_normal) * integrator_inner.get_value(q);
+                if(use_stationary_stokes)
+                {
+                  integrator_inner.submit_value(test_by_value, q);
+                  
+                }
+                else
+                {
+                  if (!use_skew_symmetric_convective_formulation)
                   {
                     integrator_inner.submit_value(test_by_value + convective_flux, q);
                   }
-                else
+                  else
                   {
                     const auto convective_value_flux =
                       (std::abs(speed_normal)) * integrator_inner.get_value(q);
@@ -849,12 +1057,15 @@ private:
                                                     0.5 * convective_value_flux,
                                                   q);
                   }
+                }
 
-                integrator_inner.submit_normal_derivative(-u_inner, q);
+                //integrator_inner.submit_gradient(make_vectorized_array<number>(viscosity) * outer_product(-u_inner, normal), q);
+                integrator_inner.submit_gradient(make_vectorized_array<number>(viscosity) * 0.5  * outer_product(-u_inner, normal), q);
               }
           }
-        else if (matrix_free.get_boundary_id(face) == 1)
+        else if (matrix_free.get_boundary_id(face) == 1) //might need changes
           {
+            std::cout<<"neumann bc\n";
             // Nothing to do
             // Convective term cancels and viscous term is only inhomogenious
             for (const unsigned int q : integrator_inner.quadrature_point_indices())
@@ -935,16 +1146,18 @@ private:
             {
               //const auto grad_p = evaluate_gradient_scalar(pressure, integrator.quadrature_point(q));
               //integrator_p.get_value(q);
-              integrator.submit_value(f - grad_p, q);  
-              //integrator.submit_divergence(p, q);
+              //integrator.submit_value(f - grad_p, q);
+              integrator.submit_value(f, q);  
+              integrator.submit_divergence(integrator_p.get_value(q), q);
             }
             else
             {
-              integrator.submit_value(f + alpha_u - grad_p, q);
+              integrator.submit_value(f + alpha_u, q);
+              integrator.submit_divergence(integrator_p.get_value(q), q);
             }
           }
-        //integrator.integrate_scatter(EvaluationFlags::values | EvaluationFlags::gradients, dst);
-        integrator.integrate_scatter(EvaluationFlags::values, dst);
+        integrator.integrate_scatter(EvaluationFlags::values | EvaluationFlags::gradients, dst);
+        //integrator.integrate_scatter(EvaluationFlags::values, dst);
       }
   }
 
@@ -1008,17 +1221,17 @@ private:
               (integrator_speed_inner.get_value(q) + integrator_speed_outer.get_value(q));
 
 
-            // const Tensor<1, dim, VectorizedArray<number>> p_avg =
-            // number(0.5)*(integrator_inner_p.get_value(q) +
-            // integrator_outer_p.get_value(q)) * integrator_inner.normal_vector(q);
+             const Tensor<1, dim, VectorizedArray<number>> p_avg =
+             number(0.5)*(integrator_inner_p.get_value(q) +
+             integrator_outer_p.get_value(q)) * integrator_inner.normal_vector(q);
             const Tensor<1, dim, VectorizedArray<number>> p_jump =
               number(0.5) *
               (integrator_inner_p.get_value(q) - integrator_outer_p.get_value(q)) *
               normal;
 
 
-            // integrator_inner.submit_value(-p_avg, q);
-            // integrator_outer.submit_value(p_avg, q);
+             //integrator_inner.submit_value(-p_avg, q);
+             //integrator_outer.submit_value(p_avg, q);
             /*integrator_inner.submit_value(p_jump, q);
             integrator_outer.submit_value(p_jump, q);*/
             integrator_inner.submit_value({}, q);
@@ -1098,8 +1311,9 @@ private:
                   }
                 else
                   {
-                    speed = make_vectorized_array<number>(0.5) *
-                            (integrator_speed_inner.get_value(q) + g);
+                    //speed = make_vectorized_array<number>(0.5) *
+                    //        (integrator_speed_inner.get_value(q) + g);
+                    speed = integrator_speed_inner.get_value(q);
                   }
 
                 speeds_faces(face, q)   = speed;
@@ -1109,17 +1323,21 @@ private:
 
                 const auto value_flux =
                   make_vectorized_array<number>(2.0 * viscosity) * sigma * g;
-                const auto gradient_flux = make_vectorized_array<number>(viscosity) * g;
+                //const auto gradient_flux = make_vectorized_array<number>(viscosity) * g;
 
                 const Tensor<1, dim, VectorizedArray<number>> p =
-                  0. * integrator_inner.normal_vector(q);
-                // integrator_inner_p.get_value(q) * integrator_inner.normal_vector(q);
+                 // 0. * integrator_inner.normal_vector(q);
+                integrator_inner_p.get_value(q) * integrator_inner.normal_vector(q);
 
-                integrator_inner.submit_normal_derivative(-gradient_flux, q);
-
+                if(use_stationary_stokes)
+                {
+                  integrator_inner.submit_value(value_flux, q);
+                }
+                else{
                 if (!use_skew_symmetric_convective_formulation)
                   {
-                    integrator_inner.submit_value(value_flux - p + convective_flux, q);
+                    //integrator_inner.submit_value(value_flux - p + convective_flux, q);
+                    integrator_inner.submit_value(- p, q);
                   }
                 else
                   {
@@ -1129,9 +1347,13 @@ private:
                                                     0.5 * convective_value_flux,
                                                   q);
                   }
+                }
+                  integrator_inner.submit_gradient({}, q);
+                  //integrator_inner.submit_gradient(make_vectorized_array<number>(viscosity) *
+                  //                        outer_product(-g, normal), q);
               }
           }
-        else if (matrix_free.get_boundary_id(face) == 1)
+        else if (matrix_free.get_boundary_id(face) == 1) //might need changes for RT elements
           {
             for (const unsigned int q : integrator_inner.quadrature_point_indices())
               {
@@ -1161,47 +1383,26 @@ private:
       }
   }
 
-
-  void
-  local_gradP_domain(const MatrixFree<dim, number>               &data,
-                         VectorType                                  &dst,
-                         const VectorType                            &src,
-                         const std::pair<unsigned int, unsigned int> &cell_range) const
-  {
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 1);
-    FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, 1, 1);
-
-    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
-      {
-        eval_u.reinit(cell);
-        eval_p.reinit(cell);
-        eval_p.gather_evaluate(src, EvaluationFlags::gradients);
-
-        for (unsigned int q : eval_u.quadrature_point_indices())
-          {
-            
-            eval_u.submit_value(eval_p.get_gradient(q), q);
-            //std::cout<<eval_p.get_gradient(q)<<"\n";
-          }
-
-        eval_u.integrate_scatter(dealii::EvaluationFlags::values, dst);
-      }
-  }
-
   void
   local_vorticity_domain(const MatrixFree<dim, number>               &data,
                          VectorType                                  &dst,
                          const VectorType                            &src,
                          const std::pair<unsigned int, unsigned int> &cell_range) const
   {
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, quad_no_v);
+    FEEvaluation<dim, -1, 0, dim, number> integrator_curl(data, 2, quad_no_v);
+
+    
+    AnalyticalCurlu<dim> curlu(u_x_max, viscosity);
+    curlu.set_time(time);
 
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
         eval_u.reinit(cell);
+        integrator_curl.reinit(cell);
         eval_u.gather_evaluate(src, EvaluationFlags::gradients);
 
-        for (unsigned int q = 0; q < eval_u.n_q_points; ++q)
+        for (unsigned int q = 0; q < integrator_curl.n_q_points; ++q)
           {
             if constexpr (dim == 2)
               {
@@ -1210,15 +1411,17 @@ private:
                 for (unsigned int d = 0; d < dim; ++d)
                   omega_vector[d] = 0.;
                 omega_vector[0] = omega[0];
-                eval_u.submit_value(omega_vector, q);
+                //omega_vector = evaluate_function(curlu, integrator_curl.quadrature_point(q));
+                //std::cout<<"exact curl "<<omega_vector<<"\n";
+                integrator_curl.submit_value(omega_vector, q);
               }
             else if constexpr (dim == 3)
               {
-                eval_u.submit_value(eval_u.get_curl(q), q);
+                integrator_curl.submit_value(eval_u.get_curl(q), q);
               }
           }
 
-        eval_u.integrate_scatter(dealii::EvaluationFlags::values, dst);
+        integrator_curl.integrate_scatter(EvaluationFlags::values, dst);
       }
   }
 
@@ -1237,7 +1440,190 @@ private:
   dealii::AlignedVector<dealii::VectorizedArray<Number>>    array_penalty_parameter;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_cells;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_faces;
+  AffineConstraints<number> constraint_u;
 };
+
+template <int dim_, int n_components = dim_, typename number = double>
+class ProjectorOperator
+{
+  public:
+  using VectorType = LinearAlgebra::distributed::Vector<number>;
+
+  ProjectorOperator() = default;
+
+  void
+  reinit(const MatrixFree<dim_, number> &matrix_free)
+  {
+    this->matrix_free            = &matrix_free;
+    const unsigned int fe_degree = matrix_free.get_dof_handler(dof_no_v).get_fe().degree;
+  }
+
+  void
+  vmult(VectorType &dst, const VectorType &src) const
+  {
+  
+
+    matrix_free->cell_loop(&ProjectorOperator::local_apply_domain,
+                      this,
+                      dst,
+                      src,
+                      true);
+  }
+
+  void
+  compute_rhs(VectorType &dst, const VectorType &src)
+  {
+    
+    matrix_free->cell_loop(&ProjectorOperator::local_vorticity_domain,
+                      this,
+                      dst,
+                      src,
+                      true);
+  }
+
+  private:
+  const MatrixFree<dim_, number>                         *matrix_free;
+
+  void
+  local_apply_domain(const MatrixFree<dim_, number>               &data,
+                     VectorType                                  &dst,
+                     const VectorType                            &src,
+                     const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim_, -1, 0, n_components, number> eval(data,
+                                                              dof_no_v,
+                                                              quad_no_v);
+    //FEEvaluation<dim, -1, 0, dim, number> eval(data, dof_no_v, quad_no_v);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        eval.reinit(cell);
+
+        // compute u^h(x) from src
+        eval.gather_evaluate(src, EvaluationFlags::values);
+
+        // loop over quadrature points and compute the local volume flux
+        for (unsigned int q = 0; q < eval.n_q_points; ++q)
+          eval.submit_value(eval.get_value(q), q);
+
+        // multiply by nabla v^h(x) and sum
+        eval.integrate_scatter(EvaluationFlags::values, dst);
+      }
+  }
+
+
+  void
+  local_vorticity_domain(const MatrixFree<dim_, number>               &data,
+                         VectorType                                  &dst,
+                         const VectorType                            &src,
+                         const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+     FEEvaluation<dim_, -1, 0, n_components, number> eval_u(data,
+                                                              dof_no_v,
+                                                              quad_no_v);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        eval_u.reinit(cell);
+        eval_u.gather_evaluate(src, EvaluationFlags::gradients);
+
+        for (unsigned int q = 0; q < eval_u.n_q_points; ++q)
+          {
+            if constexpr (dim_ == 2)
+              {
+                const auto omega = eval_u.get_curl(q);
+                dealii::Tensor<1, dim_, dealii::VectorizedArray<number>> omega_vector;
+                for (unsigned int d = 0; d < dim_; ++d)
+                  omega_vector[d] = 0.;
+                omega_vector[0] = omega[0];
+                eval_u.submit_value(omega_vector, q);
+              }
+            else if constexpr (dim_ == 3)
+              {
+                eval_u.submit_value(eval_u.get_curl(q), q);
+              }
+          }
+
+        eval_u.integrate_scatter(EvaluationFlags::values, dst);
+      }
+  }
+
+};
+
+/*template <int dim_, int n_components = dim_, typename number = double>
+class ProjectorOperatorDG
+{
+  public:
+  using VectorType = LinearAlgebra::distributed::Vector<number>;
+
+  ProjectorOperatorDG() = default;
+
+  void
+  reinit(const MatrixFree<dim_, number> &matrix_free)
+  {
+    this->matrix_free            = &matrix_free;
+  }
+
+  void
+  evaluate_vorticity(VectorType &dst, const VectorType &src) const
+  {
+      matrix_free->cell_loop(
+      &ProjectorOperatorDG::local_vorticity_domain, this, dst, src, true);
+
+    FEEvaluation<dim_, -1, 0, dim_, number> eval_u((*matrix_free), 2, quad_no_v);
+    MatrixFreeOperators::CellwiseInverseMassMatrix<dim_, -1, dim_, number> mass_inv(eval_u);
+    for (unsigned int cell = 0; cell < matrix_free->n_cell_batches(); ++cell)
+      {
+        eval_u.reinit(cell);
+        eval_u.read_dof_values(dst);
+        mass_inv.apply(eval_u.begin_dof_values(), eval_u.begin_dof_values());
+        eval_u.set_dof_values(dst);
+      }
+  }
+  private:
+  const MatrixFree<dim_, number>                         *matrix_free;
+
+  void
+  local_vorticity_domain(const MatrixFree<dim_, number>               &data,
+                         VectorType                                  &dst,
+                         const VectorType                            &src,
+                         const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim_, -1, 0, dim_, number> curl_integrator(data, dof_no_curl, quad_no_v);
+    FEEvaluation<dim_, -1, 0, dim_, number> eval_u(data, dof_no_v, quad_no_v);
+
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        curl_integrator.reinit(cell);
+        eval_u.reinit(cell);
+        eval_u.gather_evaluate(src, EvaluationFlags::gradients);
+
+
+        for (unsigned int q = 0; q < eval_u.n_q_points; ++q)
+          {
+            if constexpr (dim_ == 2)
+              {
+                const auto omega = eval_u.get_curl(q);
+                dealii::Tensor<1, dim_, dealii::VectorizedArray<number>> omega_vector;
+                for (unsigned int d = 0; d < dim_; ++d)
+                  omega_vector[d] = 0.;
+                omega_vector[0] = omega[0];
+                std::cout<<"omega: "<<omega_vector<<"\n";
+                eval_u.submit_value(omega_vector, q);
+              }
+            else if constexpr (dim_ == 3)
+              {
+                curl_integrator.submit_value(eval_u.get_curl(q), q);
+              }
+          }
+
+        curl_integrator.integrate_scatter(dealii::EvaluationFlags::values, dst);
+      }
+  }
+
+};*/
+
 
 template <int dim, typename number>
 class PressureOperator
@@ -1622,6 +2008,7 @@ private:
                     div_factor = 1. / (2. * time_step) *
                                  (eval_u_minus.get_value(q) - eval_u_plus.get_value(q)) *
                                  normal;
+                    //div_factor = 0;
                   }
                 else
                   {
@@ -1654,7 +2041,7 @@ private:
                           const std::pair<unsigned int, unsigned int> &face_range) const
   {
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_vorticity(data, true, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_vorticity(data, true, dof_no_curl, 1);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
 
     AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
@@ -1663,6 +2050,9 @@ private:
     exact_pressure.set_time(time);
     AnalyticalRHS<dim> rhs(u_x_max, viscosity);
     rhs.set_time(time);
+    
+    AnalyticalCurlCurlu<dim> analytical_curl_curl_u(u_x_max, viscosity);
+    analytical_curl_curl_u.set_time(time);
 
     BDFTimeIntegratorConstants integration_constants(bdf_order);
 
@@ -1700,14 +2090,17 @@ private:
                   }
                 const auto flux = (-u_plus) * normal;
 
-                Tensor<1, dim, VectorizedArray<number>> curl_omega =
-                  CurlCompute<dim, FEFaceEvaluation<dim, -1, 0, dim, number>>::compute(
+                //Tensor<1, dim, VectorizedArray<number>> curl_omega =
+                  auto curl_omega = CurlCompute<dim, FEFaceEvaluation<dim, -1, 0, dim, number>>::compute(
                     eval_vorticity, q);
 
                 if (use_analytical_curl)
                   {
+                    //curl_omega =
+                    //  make_vectorized_array<number>(4.0 * numbers::PI * numbers::PI) * g;
                     curl_omega =
-                      make_vectorized_array<number>(4.0 * numbers::PI * numbers::PI) * g;
+                      evaluate_function(analytical_curl_curl_u,
+                                               eval_p_minus.quadrature_point(q));
                   }
 
                 const auto curl_flux = (-viscosity) * normal * curl_omega;
@@ -1729,22 +2122,25 @@ private:
                     const auto u      = eval_u_minus.get_value(q);
                     const auto grad_u = eval_u_minus.get_gradient(q);
 
+                    //const auto convective_value_flux = -(grad_u *u) * normal;
                     const auto convective_value_flux = (grad_u * (g - u)) * normal;
-
                     VectorizedArray<number> div_u;
                     if (use_leray_projection)
                       {
                         div_u = 1. / time_step * (u - g) * normal;
+                        //div_u = 0;
                       }
                     else
                       {
                         div_u = 0.;
                       }
-
-                    eval_p_minus.submit_value(flux + curl_flux + convective_value_flux +
+                    //std::cout<<"convective_value_flux: "<<convective_value_flux<<std::endl;
+                    /*eval_p_minus.submit_value(flux + curl_flux + convective_value_flux +
                                                 div_u,
-                                              q);
+                                              q);*/
+                    eval_p_minus.submit_value(flux + curl_flux + div_u, q);
                     eval_p_minus.submit_gradient({}, q);
+                    //std::cout<<"div_u: "<<div_u<<std::endl;
                   }
               }
 
@@ -1801,22 +2197,24 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
 {
   ConditionalOStream pcout(std::cout,
                            Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
+  std::cout<<std::setprecision(12);
 
-  //FESystem<dim>  fe_u(FE_DGQ<dim>(fe_degree + 1), dim);
+  FESystem<dim>  fe_curl(FE_DGQ<dim>(fe_degree + 1), dim);
+  //fe_u = std::make_shared<dealii::FE_RaviartThomasNodal<dim>>(param.degree_u - 1);
   FE_RaviartThomasNodal<dim>    fe_u(fe_degree);
   FE_DGQ<dim>    fe_p(fe_degree);
   MappingQ1<dim> mapping;
 
-  parallel::distributed::Triangulation<dim> tria(MPI_COMM_WORLD);
+  parallel::distributed::Triangulation<dim> tria(
+    MPI_COMM_WORLD, Triangulation<dim>::limit_level_difference_at_vertices);
 
   double L = 1.;
-  //GridGenerator::hyper_cube(tria, -L / 2., L / 2.);
-  GridGenerator::hyper_cube(tria, 0., 1);
+  //GridGenerator::hyper_cube(tria, -1. / 2., 1. / 2.);
+  GridGenerator::hyper_cube(tria, -1., 1.);
 
   if (use_neumann_boundary)
     tria.begin()->face(0)->set_all_boundary_ids(1);
-  
-  if (use_periodic_boundary)
+  else if (use_periodic_boundary)
   {
     for (unsigned int face = 0; face < GeometryInfo<dim>::faces_per_cell;
       ++face)
@@ -1835,11 +2233,16 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
   dof_handler_u.distribute_dofs(fe_u);
   DoFHandler<dim> dof_handler_p(tria);
   dof_handler_p.distribute_dofs(fe_p);
+  DoFHandler<dim> dof_handler_curl(tria);
+  dof_handler_curl.distribute_dofs(fe_curl);
+
   pcout << "number of active_cells: " << tria.n_global_active_cells() << std::endl;
   pcout << "Solving with " << fe_u.get_name() << " x " << fe_p.get_name() << " element"
         << std::endl;
   pcout << "number of degrees of freedom: " << dof_handler_u.n_dofs() << " + "
         << dof_handler_p.n_dofs() << std::endl;
+  
+  pcout << "number of degrees of freedom (for curl): " << dof_handler_curl.n_dofs() << std::endl;
 
   double h_min = std::numeric_limits<double>::max();
   for (const auto &cell : dof_handler_u.active_cell_iterators())
@@ -1854,13 +2257,13 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
 
   MomentumOperator<dim, dim, Number> momentum_op;
   // set up operator
-  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order);
+  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, dof_handler_curl, time_step, bdf_order);
 
   momentum_op.set_viscosity(viscosity);
   momentum_op.set_time(0.0);
 
   LinearAlgebra::distributed::Vector<Number> vec_u, vec_u_deriv, vec_u_rhs, vec_p, vec_u_extrapolated,
-    vec_p_extrapolated, vec_p_projected, vec_u_norm, speed_extrapolated, vec_vorticity, vec_p_rhs,
+    vec_p_extrapolated, vec_p_projected, vec_u_norm, speed_extrapolated, vec_vorticity, vec_vorticity_rhs, vec_p_rhs,
     vec_p_norm;
   momentum_op.initialize_dof_vector(vec_u, dof_no_v);
   momentum_op.initialize_dof_vector(vec_u_deriv, dof_no_v);
@@ -1871,9 +2274,12 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
   momentum_op.initialize_dof_vector(vec_u_extrapolated, dof_no_v);                
   momentum_op.initialize_dof_vector(vec_u_norm, dof_no_v);
   momentum_op.initialize_dof_vector(speed_extrapolated, dof_no_v);
-  momentum_op.initialize_dof_vector(vec_vorticity, dof_no_v);
+  momentum_op.initialize_dof_vector(vec_vorticity, dof_no_curl);
+  momentum_op.initialize_dof_vector(vec_vorticity_rhs, dof_no_curl);
   momentum_op.initialize_dof_vector(vec_p_rhs, dof_no_p);
   momentum_op.initialize_dof_vector(vec_p_norm, dof_no_p);
+
+  
 
   std::vector<LinearAlgebra::distributed::Vector<double>> vec_u_old(bdf_order);
   std::vector<LinearAlgebra::distributed::Vector<double>> vec_p_old(bdf_order);
@@ -1886,10 +2292,17 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
   pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order);
   pressure_op.set_time_step(time_step);
 
+  ProjectorOperator<dim> projector_op;
+  projector_op.reinit(momentum_op.get_matrix_free());
+
   Number current_time = 0;
 
   AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
   AnalyticalSolutionPressure<dim> exact_pressure(u_x_max, viscosity);
+  AnalyticalCurlu<dim> exact_curl(u_x_max, viscosity);
+  AnalyticalRHS<dim> exact_rhs(u_x_max, viscosity);
+    
+
 
   for (unsigned int i = 0; i < bdf_order; ++i)
     {
@@ -1909,10 +2322,11 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
     }
 
   current_time -= time_step;
-  const Number end_time         = 1.0;
+  const Number end_time         = 2.0;
   unsigned int time_step_number = bdf.get_order() - 1;
 
-  const bool write_output = true;
+  const bool write_output = false;
+  const unsigned int vtk_output_interval = 5;
   while (current_time <= end_time)
     {
       current_time += time_step;
@@ -1932,20 +2346,17 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
           speed_extrapolated.add(bdf.get_beta(i), vec_u_old[i]);
           vec_p_extrapolated.add(bdf.get_beta(i), vec_p_old[i]);
         }
-
-      vec_u_rhs = 0.;
+      
       /*exact_pressure.set_time(current_time);
       VectorTools::interpolate(mapping,
                                dof_handler_p,
                                exact_pressure,
                                vec_p_extrapolated);*/
-      //std::cout<<"type vec_p_extrapolated: "<<typeid(vec_p_extrapolated).name()<<"\n";
-      //momentum_op.evaluate_gradP(vec_p_projected,vec_p_extrapolated);
+      vec_u_rhs = 0.;
       momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, vec_p_extrapolated);
 
       SolverControl control_mom(100000, 1e-12 * vec_u_rhs.l2_norm(), true);
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
-      //vec_u.swap(speed_extrapolated); // = 0.;
       solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
       if(use_periodic_boundary)
         VectorTools::subtract_mean_value(vec_u);
@@ -1953,91 +2364,90 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
         pcout << "Momentum solver: " << control_mom.last_step() << " iterations"
               << std::endl;
       
-      if (write_output)
-        {
-          Vector<double> error_per_cell;
-          Vector<double> norm_per_cell;
-          exact_velocity.set_time(current_time);
-          exact_pressure.set_time(current_time);
-
-          VectorTools::integrate_difference(mapping,
-                                            dof_handler_u,
-                                            vec_u_old[0],
-                                            exact_velocity,
-                                            error_per_cell,
-                                            QGauss<dim>(fe_u.degree + 3),
-                                            VectorTools::L2_norm);
-          const double velocity_error =
-            VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
-
-
-          vec_u_norm = 0.;
-          VectorTools::integrate_difference(mapping,
-                                            dof_handler_u,
-                                            vec_u_norm,
-                                            exact_velocity,
-                                            norm_per_cell,
-                                            QGauss<dim>(fe_u.degree + 3),
-                                            VectorTools::L2_norm);
-          const double velocity_norm =
-            VectorTools::compute_global_error(tria, norm_per_cell, VectorTools::L2_norm);
-
-          pcout << "L2 error velocity/pressure: " << velocity_error / velocity_norm << std::endl;
-          pcout << std::endl;
-        }
-
       // Pressure step
-      vec_vorticity = 0.;
-      //momentum_op.evaluate_vorticity(vec_vorticity, vec_u);
+
+      /*exact_velocity.set_time(current_time);
+      VectorTools::interpolate(mapping,
+                               dof_handler_u,
+                               exact_velocity,
+                               vec_u);*/
+      
+      /*projector_op.compute_rhs(vec_vorticity_rhs, vec_u);
+      SolverControl control_vort(100000, 1e-12 * vec_vorticity_rhs.l2_norm());
+      SolverCG<LinearAlgebra::distributed::Vector<double>> solver_vort(control_vort);
+      solver_vort.solve(projector_op, vec_vorticity, vec_vorticity_rhs,
+                        PreconditionIdentity());*/
+      momentum_op.evaluate_vorticity(vec_vorticity, vec_u);
+
+      vec_vorticity_rhs = 0.;
+      exact_curl.set_time(current_time);
+      VectorTools::interpolate(mapping,
+                               dof_handler_curl,
+                               exact_curl,
+                               vec_vorticity_rhs);
+      
       pressure_op.compute_rhs(vec_p_rhs, vec_u, vec_vorticity, vec_u_deriv);
-      //if (!use_neumann_boundary)
-      //  VectorTools::subtract_mean_value(vec_p_rhs);
+      if (!use_neumann_boundary)
+        VectorTools::subtract_mean_value(vec_p_rhs);
       SolverControl control(100000, 1e-12 * vec_p_rhs.l2_norm());
       SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
-      //vec_p.swap(vec_p_extrapolated); // = 0.;
       solver.solve(pressure_op, vec_p, vec_p_rhs, PreconditionIdentity());
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p);
+      
       if (write_output)
         pcout << "Pressure solver: " << control.last_step() << " iterations" << std::endl;
 
-      // exact_pressure.set_time(current_time);
-      // VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
-
-      for (unsigned int i = bdf.get_order() - 1; i != 0; --i)
-        {
-          std::swap(vec_u_old[i], vec_u_old[i - 1]);
-          std::swap(vec_p_old[i], vec_p_old[i - 1]);
-        }
-
-      vec_u_old[0].swap(vec_u);
-      vec_p_old[0].swap(vec_p);
 
       if (write_output)
-        {
+        {    
+          //vec_u.update_ghost_values();      
+          if(use_periodic_boundary)
+          {
+            momentum_op.get_constraints().distribute(vec_u);
+            vec_u.update_ghost_values();
+            momentum_op.get_constraints().distribute(vec_vorticity);
+            vec_vorticity.update_ghost_values();
+          }
+          //momentum_op.get_constraints().distribute(vec_u);
+          //vec_u.update_ghost_values();
           Vector<double> error_per_cell;
           Vector<double> norm_per_cell;
           exact_velocity.set_time(current_time);
           exact_pressure.set_time(current_time);
-
-          VectorTools::integrate_difference(mapping,
+          exact_rhs.set_time(current_time);
+          VectorTools::interpolate(mapping,
+                                            dof_handler_p,
+                                            exact_pressure,
+                                            vec_p_extrapolated);
+          
+          VectorTools::interpolate(mapping,
                                             dof_handler_u,
-                                            vec_u_old[0],
-                                            exact_velocity,
-                                            error_per_cell,
-                                            QGauss<dim>(fe_u.degree + 3),
-                                            VectorTools::L2_norm);
-          const double velocity_error =
-            VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
+                                            exact_rhs,
+                                            vec_u_rhs);
+          std::cout<<"mean value pressure:\t"<<vec_p_extrapolated.mean_value()<<std::endl;
+          if(std::abs(vec_p_extrapolated.mean_value()) > 1e-18)
+            vec_p.add(vec_p_extrapolated.mean_value());
+          //vec_p.add( vec_p_extrapolated.mean_value());
 
           VectorTools::integrate_difference(mapping,
                                             dof_handler_p,
-                                            vec_p_old[0],
+                                            vec_p,
                                             exact_pressure,
                                             error_per_cell,
                                             QGauss<dim>(fe_p.degree + 3),
                                             VectorTools::L2_norm);
           const double pressure_error =
+            VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
+
+          VectorTools::integrate_difference(mapping,
+                                            dof_handler_u,
+                                            vec_u,
+                                            exact_velocity,
+                                            error_per_cell,
+                                            QGauss<dim>(fe_u.degree + 5),
+                                            VectorTools::L2_norm);
+          const double velocity_error =
             VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
 
           vec_u_norm = 0.;
@@ -2062,7 +2472,8 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
           const double pressure_norm =
             VectorTools::compute_global_error(tria, norm_per_cell, VectorTools::L2_norm);
 
-
+          
+          pcout << "velocity error norm: "<<velocity_error<<"\n";
           pcout << "L2 error velocity/pressure: " << velocity_error / velocity_norm << " "
                 << pressure_error / pressure_norm << std::endl;
           pcout << std::endl;
@@ -2073,33 +2484,62 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
           flags.write_higher_order_cells = true;
           data_out.set_flags(flags);
 
-          data_out.add_data_vector(dof_handler_u, vec_u_old[0], "velocity");
+          data_out.add_data_vector(dof_handler_u, vec_u, "velocity");
           VectorTools::interpolate(mapping,
                                    dof_handler_u,
                                    exact_velocity,
                                    speed_extrapolated);
           data_out.add_data_vector(dof_handler_u, speed_extrapolated, "velocity_analytical");
-          data_out.add_data_vector(dof_handler_p, vec_p_old[0], "pressure");
-          VectorTools::interpolate(mapping,
+          data_out.add_data_vector(dof_handler_u, vec_u_rhs, "body_force");
+          //data_out.add_data_vector(dof_handler_u, vec_u_rhs, "velocity_rhs");
+          data_out.add_data_vector(dof_handler_curl, vec_vorticity_rhs, "vorticity_analytical");
+          data_out.add_data_vector(dof_handler_curl, vec_vorticity, "vorticity");
+          //data_out.add_data_vector(dof_handler_u, vec_u_rhs, "velocity_rhs");
+          data_out.add_data_vector(dof_handler_p, vec_p, "pressure");
+          //data_out.add_data_vector(error_per_cell, "error_velocity");
+          /*VectorTools::interpolate(mapping,
                                    dof_handler_p,
                                    exact_pressure,
-                                   vec_p_extrapolated);
+                                   vec_p_extrapolated);*/ 
+          //VectorTools::subtract_mean_value(vec_p_extrapolated);
           data_out.add_data_vector(dof_handler_p,
                                    vec_p_extrapolated,
                                    "pressure_analytical");
           Vector<double> mpi_owner(tria.n_active_cells());
           mpi_owner = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
           data_out.add_data_vector(mpi_owner, "owner");
-          data_out.build_patches(mapping, fe_u.degree, DataOut<dim>::curved_inner_cells);
+          data_out.build_patches(mapping, 0, DataOut<dim>::curved_inner_cells);
 
           const std::string filename =
-            "solution-L2-" + std::to_string(time_step_number) + ".vtu";
+            "solution-L2-NS_Dirichlet" + std::to_string(time_step_number) + ".vtu";
           // "solution-L2-" + std::to_string(n_refinements) + "_p_" +
           // std::to_string(degree) + ".vtu";
           data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
+          if(use_periodic_boundary)
+          {
+            vec_u.zero_out_ghost_values();
+            vec_vorticity.zero_out_ghost_values();
+          }
         }
+
+        for (unsigned int i = bdf.get_order() - 1; i != 0; --i)
+        {
+          std::swap(vec_u_old[i], vec_u_old[i - 1]);
+          std::swap(vec_p_old[i], vec_p_old[i - 1]);
+        }
+
+        vec_u_old[0].swap(vec_u);
+        vec_p_old[0].swap(vec_p);
     }
 
+    
+  //vec_u_old[0].update_ghost_values();
+  if(use_periodic_boundary)
+  {
+    momentum_op.get_constraints().distribute(vec_u_old[0]);
+    vec_u_old[0].update_ghost_values();
+  }
+  
   Vector<double> error_per_cell;
   Vector<double> norm_per_cell;
   exact_velocity.set_time(current_time);
@@ -2154,6 +2594,7 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
   pcout << "L2 error velocity/pressure: " << velocity_error / velocity_norm << " "
         << pressure_error / pressure_norm << std::endl;
   pcout << std::endl;
+
 }
 
 
@@ -2162,10 +2603,10 @@ main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-  /*for (unsigned int i = 2; i < 7; ++i)
-    do_test<2, double>(3, i);
+  for (unsigned int i = 5; i < 6; ++i)
+    do_test<2, double>(5, i);
 
-  for (unsigned int i = 1; i < 7; ++i)
-    do_test<2, double>(5, i);*/
-  do_test<2, double> (3, 5);
+  //for (unsigned int i = 6; i < 7; ++i)
+  //  do_test<2, double>(5, i);
+  //do_test<2, double> (3, 6);
 }
