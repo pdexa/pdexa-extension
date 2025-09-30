@@ -1,28 +1,16 @@
 
-#include <deal.II/base/mpi.h>
-
-#include <deal.II/lac/dynamic_sparsity_pattern.h>
-#include <deal.II/lac/precondition.h>
-#include <deal.II/lac/solver_cg.h>
-#include <deal.II/lac/solver_control.h>
-#include <deal.II/lac/solver_gmres.h>
-#include <deal.II/lac/trilinos_precondition.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
-#include <deal.II/lac/trilinos_sparsity_pattern.h>
+
+#include <deal.II/dofs/dof_handler.h>
 
 #include <deal.II/matrix_free/fe_evaluation.h>
 #include <deal.II/matrix_free/matrix_free.h>
 #include <deal.II/matrix_free/operators.h>
 #include <deal.II/matrix_free/tools.h>
 
-#include <deal.II/multigrid/mg_coarse.h>
-#include <deal.II/multigrid/mg_matrix.h>
-#include <deal.II/multigrid/mg_smoother.h>
-#include <deal.II/multigrid/mg_tools.h>
-#include <deal.II/multigrid/mg_transfer_global_coarsening.h>
-#include <deal.II/multigrid/mg_transfer_matrix_free.h>
-#include <deal.II/multigrid/multigrid.h>
+#include "evaluators.h"
 
+using namespace dealii;
 
 template <int dim, typename FEEval>
 struct CurlCompute
@@ -160,11 +148,22 @@ public:
          const DoFHandler<dim> &dof_handler_u,
          const DoFHandler<dim> &dof_handler_p,
          const number           time_step_in,
-         const unsigned int     bdf_order_in)
+         const unsigned int     bdf_order_in,
+         const bool             use_skew_symmetric_convective_formulation = true,
+         const number           penalty_divergence_in = 1.0,
+         const number           penalty_continuity_in = 1.0,
+         const bool             use_extrapolated_velocity = false,
+         const number           penalty_factor_const = 1.0
+         )
   {
     bdf_order = bdf_order_in;
     time_step = time_step_in;
     is_dg     = dof_handler_u.get_fe().n_dofs_per_vertex() == 0;
+    this->use_skew_symmetric_convective_formulation =
+      use_skew_symmetric_convective_formulation;
+    this->use_extrapolated_velocity = use_extrapolated_velocity;
+    this->penalty_divergence = penalty_divergence_in;
+    this->penalty_continuity = penalty_continuity_in;
 
     fe_degree_u                        = dof_handler_u.get_fe().degree;
     const unsigned int fe_degree_p     = dof_handler_p.get_fe().degree;
@@ -203,7 +202,7 @@ public:
 
 
     penalty_factor =
-      1.0 * (dof_handler_u.get_fe().degree + 1) * (dof_handler_u.get_fe().degree);
+      penalty_factor_const * (dof_handler_u.get_fe().degree + 1) * (dof_handler_u.get_fe().degree);
     {
       unsigned int n_cells =
         matrix_free.n_cell_batches() + matrix_free.n_ghost_cell_batches();
@@ -277,6 +276,49 @@ public:
     viscosity = viscosity_in;
   }
 
+  void set_body_force_factory(std::function<std::unique_ptr<Function<dim>>()>&& body_force_in)
+  {
+    body_force_factory = std::move(body_force_in);
+  }
+
+  std::function<std::unique_ptr<Function<dim>>()> get_body_force_factory()
+  {
+    return body_force_factory;
+  } 
+
+  void set_DirichletBC_velocity_factory(std::function<std::unique_ptr<Function<dim>>()>&& dirichlet_bc_velocity_in)
+  {
+    dirichletBC_velocity_factory = std::move(dirichlet_bc_velocity_in);
+  }
+
+  std::function<std::unique_ptr<Function<dim>>()> get_DirichletBC_velocity_factory()
+  {
+    return dirichletBC_velocity_factory;
+  }
+
+  void set_dirichletBC_pressure_factory(std::function<std::unique_ptr<Function<dim>>()>&& dirichlet_bc_pressure_in)
+  {
+    dirichletBC_pressure_factory = std::move(dirichlet_bc_pressure_in);
+  }
+
+  std::function<std::unique_ptr<Function<dim>>()> get_dirichletBC_pressure_factory()
+  {
+    return dirichletBC_pressure_factory;
+  }
+
+
+  virtual void
+  set_divergence_penalty(number penalty_divergence_in)
+  {
+    penalty_divergence = penalty_divergence_in;
+  }
+
+  virtual void
+  set_continuity_penalty(number penalty_continuity_in)
+  {
+    penalty_continuity = penalty_continuity_in;
+  }
+
   virtual void
   set_bdf_order(const unsigned int bdf_order_in)
   {
@@ -288,6 +330,19 @@ public:
   {
     time = time_in;
   }
+
+  virtual number
+  get_time()
+  {
+    return time;
+  }
+
+  virtual number
+  get_viscosity()
+  {
+    return viscosity ;
+  }
+
 
   virtual void
   vmult(VectorType &dst, const VectorType &src) const
@@ -375,7 +430,7 @@ public:
         system_matrix,
         [&](auto &phi) { do_cell_integral_local(phi); },
         [&](auto &phi_m, auto &phi_p) { do_face_integral_local(phi_m, phi_p); },
-        [&](auto &phi) { do_boundary_integral_local(phi); },
+        [&](auto &phi) { do_boundary_integral_local(phi);  },
         dof_no_v,
         quad_no_v,
         0);
@@ -474,6 +529,34 @@ public:
 
     max_vorticity = dealii::Utilities::MPI::max(dst.at(4), MPI_COMM_WORLD);
   };
+
+  void cacheFunctions()
+  {
+    if (body_force_factory)
+      {
+        rhs_cached = body_force_factory();
+        rhs_cached->set_time(time);
+      }
+    else 
+      AssertThrow(false,
+            dealii::ExcMessage("RHS factory empty at call site!"));
+    if (dirichletBC_velocity_factory)
+      {
+        velocity_bc_cached = dirichletBC_velocity_factory();
+        velocity_bc_cached->set_time(time);
+      }
+    else 
+      AssertThrow(false,
+            dealii::ExcMessage("Velocity BC factory empty at call site!"));
+    if (dirichletBC_pressure_factory)
+      {
+        pressure_bc_cached = dirichletBC_pressure_factory();
+        pressure_bc_cached->set_time(time);
+      }
+    else 
+      AssertThrow(false,
+            dealii::ExcMessage("Pressure BC factory empty at call site!"));
+  }
 
 private:
   number
@@ -813,8 +896,8 @@ private:
                                                                         true,
                                                                         dof_no_v,
                                                                         quad_no_v);
-    AnalyticalSolutionVelocity<dim>                    exact_velocity(u_x_max, viscosity);
-    exact_velocity.set_time(time);
+    auto velocity_bc = dirichletBC_velocity_factory();
+    velocity_bc->set_time(time);
 
     for (unsigned int face = range.first; face < range.second; ++face)
       {
@@ -855,7 +938,7 @@ private:
 
 
                 const auto g =
-                  evaluate_function(exact_velocity, integrator_inner.quadrature_point(q));
+                  evaluate_function((*velocity_bc), integrator_inner.quadrature_point(q));
                 const auto continuity_penalty_value =
                   2. * cont_pen * ((integrator_inner.get_value(q) - g) * normal) * normal;
 
@@ -918,8 +1001,8 @@ private:
   do_boundary_integral_local(
     FEFaceEvaluation<dim, -1, 0, n_components, Number> &integrator_inner) const
   {
-    AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
-    exact_velocity.set_time(time);
+    auto velocity_bc = dirichletBC_velocity_factory();  
+    velocity_bc->set_time(time);
 
     integrator_inner.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
 
@@ -954,7 +1037,7 @@ private:
 
 
             const auto g =
-              evaluate_function(exact_velocity, integrator_inner.quadrature_point(q));
+              evaluate_function((*velocity_bc), integrator_inner.quadrature_point(q));
             const auto continuity_penalty_value =
               2. * cont_pen * ((integrator_inner.get_value(q) - g) * normal) * normal;
 
@@ -1021,8 +1104,8 @@ private:
                                                                     quad_no_v);
     FEEvaluation<dim, -1, 0, 1, Number> integrator_p(matrix_free, dof_no_p, quad_no_v);
 
-    AnalyticalRHS<dim> rhs(u_x_max, viscosity);
-    rhs.set_time(time);
+    auto rhs = body_force_factory();
+    rhs ->set_time(time);
 
     for (unsigned int cell = range.first; cell < range.second; ++cell)
       {
@@ -1054,7 +1137,7 @@ private:
           {
             speeds_cells(cell, q) = integrator_speed.get_value(q);
 
-            const auto f = evaluate_function(rhs, integrator.quadrature_point(q));
+            const auto f = evaluate_function((*rhs), integrator.quadrature_point(q));
 
             // const auto p = integrator_p.get_value(q);
             const auto grad_p = integrator_p.get_gradient(q);
@@ -1173,16 +1256,16 @@ private:
                                                                dof_no_p,
                                                                quad_no_v);
 
-    AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
-    exact_velocity.set_time(time);
-    AnalyticalSolutionPressure<dim> exact_pressure(u_x_max, viscosity);
-    exact_pressure.set_time(time);
+    auto velocity_bc = dirichletBC_velocity_factory();
+    velocity_bc ->set_time(time);
+    auto pressure_bc = dirichletBC_pressure_factory();
+    pressure_bc ->set_time(time);
 
-    AnalyticalSolutionVelocity<dim> exact_velocity_m(u_x_max, viscosity);
-    exact_velocity_m.set_time(time - time_step);
+    auto velocity_bc_m = dirichletBC_velocity_factory();
+    velocity_bc_m ->set_time(time - time_step);
 
-    AnalyticalSolutionVelocity<dim> exact_velocity_m2(u_x_max, viscosity);
-    exact_velocity_m2.set_time(time - 2.0 * time_step);
+    auto velocity_bc_m2 = dirichletBC_velocity_factory();
+    velocity_bc_m2 ->set_time(time - 2.0 * time_step);
 
     for (unsigned int face = range.first; face < range.second; ++face)
       {
@@ -1204,17 +1287,17 @@ private:
                 const auto normal = integrator_inner.normal_vector(q);
 
                 const auto g =
-                  evaluate_function(exact_velocity, integrator_inner.quadrature_point(q));
+                  evaluate_function((*velocity_bc), integrator_inner.quadrature_point(q));
 
                 Tensor<1, dim, VectorizedArray<number>> speed;
 
                 if (use_extrapolated_velocity)
                   {
                     const auto u_plus_m =
-                      evaluate_function(exact_velocity_m,
+                      evaluate_function((*velocity_bc_m),
                                         integrator_inner.quadrature_point(q));
                     const auto u_plus_m2 =
-                      evaluate_function(exact_velocity_m2,
+                      evaluate_function((*velocity_bc_m2),
                                         integrator_inner.quadrature_point(q));
                     auto extrapolated_velocity = 2.0 * u_plus_m - u_plus_m2;
                     speed =
@@ -1263,12 +1346,12 @@ private:
                 const auto normal     = integrator_inner.normal_vector(q);
 
                 const auto grad_g =
-                  evaluate_tensor_function(exact_velocity,
+                  evaluate_tensor_function((*velocity_bc),
                                            integrator_inner.quadrature_point(q));
                 const auto h_u = make_vectorized_array(viscosity) * grad_g * normal;
 
                 const auto p_plus =
-                  evaluate_scalar_function(exact_pressure,
+                  evaluate_scalar_function((*pressure_bc),
                                            integrator_inner.quadrature_point(q));
                 const auto p_minus  = integrator_inner_p.get_value(q);
                 const auto pressure = (p_minus - p_plus) * normal;
@@ -1402,13 +1485,17 @@ private:
   MatrixFree<dim, number> matrix_free;
 
   number       penalty_factor;
+  number       penalty_divergence;
+  number       penalty_continuity;
   number       viscosity;
   number       time_step;
   number       time;
+  
   unsigned int bdf_order;
   unsigned int fe_degree_u;
   bool         is_dg;
-
+  bool         use_skew_symmetric_convective_formulation;
+  bool         use_extrapolated_velocity;
   dealii::AlignedVector<dealii::VectorizedArray<Number>>    array_penalty_parameter;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_cells;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_faces;
@@ -1417,411 +1504,14 @@ private:
     penalty_factor_divergence;
   mutable dealii::AlignedVector<dealii::VectorizedArray<Number>>
     penalty_factor_continuity;
-};
-
-
-template <int dim, typename number>
-class InverseMassPreconditioner
-{
-public:
-  using VectorType = LinearAlgebra::distributed::Vector<number>;
-  typedef InverseMassPreconditioner<dim, number> This;
-
-
-  InverseMassPreconditioner() = default;
-
-  void
-  reinit(const MatrixFree<dim, number> &matrix_free, number scaling_factor_in)
-  {
-    scaling_factor    = scaling_factor_in;
-    this->matrix_free = &matrix_free;
-  }
-
-  void
-  set_scaling_factor(number scaling_factor_in)
-  {
-    scaling_factor = scaling_factor_in;
-  }
-
-  void
-  vmult(VectorType &dst, const VectorType &src) const
-  {
-    dst.zero_out_ghost_values();
-
-    matrix_free->cell_loop(
-      &This::cell_loop_matrix_free_operator,
-      this,
-      dst,
-      src,
-      [&](const unsigned int start_range, const unsigned int end_range) {
-        for (unsigned int i = start_range; i < end_range; ++i)
-          dst.local_element(i) *= 0.;
-      },
-      [&](const unsigned int start_range, const unsigned int end_range) {
-        for (unsigned int i = start_range; i < end_range; ++i)
-          dst.local_element(i) *= scaling_factor;
-      },
-      dof_no_v);
-  }
-
-private:
-  void
-  cell_loop_matrix_free_operator(
-    const dealii::MatrixFree<dim, number> &,
-    VectorType                                  &dst,
-    const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &cell_range) const
-  {
-    FEEvaluation<dim, -1, 0, dim, number> integrator(*matrix_free,
-                                                     dof_no_v,
-                                                     quad_no_v_mass);
-
-    MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, number> inverse_mass(
-      integrator);
-
-    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
-      {
-        integrator.reinit(cell);
-        integrator.read_dof_values(src, 0);
-
-        inverse_mass.apply(integrator.begin_dof_values(), integrator.begin_dof_values());
-
-        integrator.set_dof_values(dst, 0);
-      }
-  }
-
-  const MatrixFree<dim, number> *matrix_free;
-  number                         scaling_factor;
-};
-
-
-
-template <typename VectorType>
-class MGCoarseAMG : public MGCoarseGridBase<VectorType>
-{
-private:
-public:
-  MGCoarseAMG(const TrilinosWrappers::PreconditionAMG &amg, const bool is_singular_in)
-  {
-    amg_preconditioner = &amg;
-    is_singular        = is_singular_in;
-  }
-
-  void
-  operator()(const unsigned int /*level*/,
-             VectorType       &dst,
-             const VectorType &src) const final
-  {
-    if constexpr (std::is_same_v<VectorType,
-                                 LinearAlgebra::distributed::Vector<TrilinosScalar>>)
-      {
-        if (is_singular)
-          {
-            VectorType r(src);
-            dealii::VectorTools::subtract_mean_value(r);
-            amg_preconditioner->vmult(dst, r);
-          }
-        else
-          amg_preconditioner->vmult(dst, src);
-      }
-    else
-      {
-        LinearAlgebra::distributed::Vector<TrilinosScalar> src_;
-        LinearAlgebra::distributed::Vector<TrilinosScalar> dst_;
-
-        src_ = src;
-        dst_ = dst;
-
-        if (is_singular)
-          dealii::VectorTools::subtract_mean_value(src_);
-        amg_preconditioner->vmult(dst_, src_);
-
-        dst = dst_;
-      }
-  }
-
-private:
-  const TrilinosWrappers::PreconditionAMG *amg_preconditioner;
-  bool                                     is_singular;
-};
-
-template <int dim, typename number_system, typename number = number_system>
-class MultigridPreconditionerVelocity
-{
-  using VectorType       = LinearAlgebra::distributed::Vector<number>;
-  using VectorTypeSystem = LinearAlgebra::distributed::Vector<number_system>;
-  using SystemMatrixType = MomentumOperator<dim, dim, number_system>;
-  using LevelMatrixType  = MomentumOperator<dim, dim, number>;
-
-  using SmootherPreconditionerType = DiagonalMatrix<VectorType>;
-  using SmootherType =
-    PreconditionChebyshev<LevelMatrixType, VectorType, SmootherPreconditionerType>;
-  using PreconditionerType =
-    PreconditionMG<dim, VectorType, MGTransferGlobalCoarsening<dim, VectorType>>;
-
-public:
-  MultigridPreconditionerVelocity(SystemMatrixType  &momentum_operator,
-                                  const unsigned int mapping_degree,
-                                  const number       time_step,
-                                  const unsigned int bdf_order)
-  {
-    const auto  mf          = momentum_operator.get_matrix_free();
-    const auto &dof_handler = mf.get_dof_handler(dof_no_v);
-
-    if (use_hmg_vel)
-      coarse_grid_triangulations =
-        MGTransferGlobalCoarseningTools::create_geometric_coarsening_sequence(
-          dof_handler.get_triangulation());
-    else
-      coarse_grid_triangulations.emplace_back(&(dof_handler.get_triangulation()),
-                                              [](auto *) {});
-    const unsigned int n_h_levels = coarse_grid_triangulations.size() - 1;
-
-    const std::vector<unsigned int> level_degrees =
-      use_pmg_vel ?
-        MGTransferGlobalCoarseningTools::create_polynomial_coarsening_sequence(
-          mf.get_dof_handler(dof_no_p).get_fe().degree,
-          MGTransferGlobalCoarseningTools::PolynomialCoarseningSequenceType::bisect) :
-        std::vector<unsigned int>{mf.get_dof_handler(dof_no_p).get_fe().degree};
-    const unsigned int n_p_levels = level_degrees.size();
-
-    const unsigned int minlevel = 0;
-    const unsigned int maxlevel =
-      use_cmg_vel ? n_h_levels + n_p_levels : n_h_levels + n_p_levels - 1;
-
-    dof_handlers_p.resize(minlevel, maxlevel);
-    dof_handlers_u.resize(minlevel, maxlevel);
-    mg_matrices.resize(minlevel, maxlevel);
-    transfers.resize(minlevel, maxlevel);
-
-    // h-MG with linear elements
-    for (unsigned int l = 0; l < n_h_levels; ++l)
-      {
-        auto &dof_handler_p = dof_handlers_p[l];
-        auto &dof_handler_u = dof_handlers_u[l];
-
-        if (use_cmg_vel)
-          {
-            const FE_Q<dim>     fe_p(level_degrees[0]);
-            const FESystem<dim> fe_u(FE_Q<dim>(level_degrees[0] + 1), dim);
-
-            dof_handler_p.reinit(*coarse_grid_triangulations[l]);
-            dof_handler_p.distribute_dofs(fe_p);
-            dof_handler_u.reinit(*coarse_grid_triangulations[l]);
-            dof_handler_u.distribute_dofs(fe_u);
-          }
-        else
-          {
-            const FE_DGQ<dim>   fe_p(level_degrees[0]);
-            const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[0] + 1), dim);
-
-            dof_handler_p.reinit(*coarse_grid_triangulations[l]);
-            dof_handler_p.distribute_dofs(fe_p);
-            dof_handler_u.reinit(*coarse_grid_triangulations[l]);
-            dof_handler_u.distribute_dofs(fe_u);
-          }
-      }
-    // p-MG
-    const unsigned int max_loop_it = use_cmg_vel ? maxlevel : maxlevel + 1;
-    for (unsigned int i = 0, l = n_h_levels; l < max_loop_it; ++l, ++i)
-      {
-        auto &dof_handler_p = dof_handlers_p[l];
-        auto &dof_handler_u = dof_handlers_u[l];
-
-        if (use_cmg_vel)
-          {
-            const FE_Q<dim>     fe_p(level_degrees[i]);
-            const FESystem<dim> fe_u(FE_Q<dim>(level_degrees[i] + 1), dim);
-
-            dof_handler_p.reinit(*coarse_grid_triangulations[n_h_levels]);
-            dof_handler_p.distribute_dofs(fe_p);
-            dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
-            dof_handler_u.distribute_dofs(fe_u);
-          }
-        else
-          {
-            const FE_DGQ<dim>   fe_p(level_degrees[i]);
-            const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[i] + 1), dim);
-
-            dof_handler_p.reinit(*coarse_grid_triangulations[n_h_levels]);
-            dof_handler_p.distribute_dofs(fe_p);
-            dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
-            dof_handler_u.distribute_dofs(fe_u);
-          }
-      }
-    // c-MG
-    if (use_cmg_vel)
-      {
-        const unsigned int l             = maxlevel;
-        auto              &dof_handler_p = dof_handlers_p[l];
-        auto              &dof_handler_u = dof_handlers_u[l];
-
-        const FE_DGQ<dim>   fe_p(level_degrees[level_degrees.size() - 1]);
-        const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[level_degrees.size() - 1] + 1),
-                                 dim);
-
-        dof_handler_p.reinit(*coarse_grid_triangulations[n_h_levels]);
-        dof_handler_p.distribute_dofs(fe_p);
-        dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
-        dof_handler_u.distribute_dofs(fe_u);
-      }
-
-    // init levels
-    for (unsigned int level = minlevel; level <= maxlevel; ++level)
-      {
-        mg_matrices[level].reinit(level < n_h_levels ?
-                                    MappingQGeneric<dim>(1) :
-                                    MappingQGeneric<dim>(mapping_degree),
-                                  dof_handlers_u[level],
-                                  dof_handlers_p[level],
-                                  time_step,
-                                  bdf_order);
-      }
-
-    // init transfer
-    for (unsigned int level = minlevel; level < maxlevel; ++level)
-      transfers[level + 1].reinit(dof_handlers_u[level + 1], dof_handlers_u[level]);
-
-    transfer = MGTransferGlobalCoarsening<dim, VectorType>(
-      transfers, [&](const auto l, auto &vec) {
-        mg_matrices[l].get_matrix_free().initialize_dof_vector(vec, dof_no_v);
-      });
-
-    // Setup smoother for every level
-    smoother_data.resize(minlevel, maxlevel);
-
-    for (unsigned int level = minlevel; level <= maxlevel; ++level)
-      {
-        if (level > 0)
-          {
-            smoother_data[level].smoothing_range     = 15.;
-            smoother_data[level].degree              = 5;
-            smoother_data[level].eig_cg_n_iterations = 10;
-          }
-        else
-          {
-            smoother_data[0].smoothing_range     = 1e-3;
-            smoother_data[0].degree              = numbers::invalid_unsigned_int;
-            smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
-          }
-
-        smoother_data[level].preconditioner =
-          std::make_shared<SmootherPreconditionerType>();
-        mg_matrices[level].compute_inverse_diagonal(
-          smoother_data[level].preconditioner->get_vector());
-      }
-
-    mg_smoother.initialize(mg_matrices, smoother_data);
-  }
-
-  void
-  update(number time, const VectorTypeSystem speed_extrapolated)
-  {
-    const unsigned int min_level = mg_matrices.min_level();
-    const unsigned int max_level = mg_matrices.max_level();
-
-    MGLevelObject<VectorType> speed_on_levels(min_level, max_level);
-    transfer.interpolate_to_mg(speed_on_levels, speed_extrapolated);
-    for (unsigned int level = min_level; level <= max_level; ++level)
-      {
-        mg_matrices[level].set_time(time);
-        VectorType dummy, dummy_p;
-        mg_matrices[level].initialize_dof_vector(dummy, dof_no_v);
-        mg_matrices[level].initialize_dof_vector(dummy_p, dof_no_p);
-        mg_matrices[level].set_viscosity(viscosity);
-
-        mg_matrices[level].rhs(dummy, dummy, speed_on_levels[level], dummy_p);
-      }
-
-    // Update smoother for every level
-    smoother_data.resize(min_level, max_level);
-
-    for (unsigned int level = min_level; level <= max_level; ++level)
-      {
-        if (level > 0)
-          {
-            smoother_data[level].smoothing_range     = 15.;
-            smoother_data[level].degree              = 5;
-            smoother_data[level].eig_cg_n_iterations = 10;
-          }
-        else
-          {
-            smoother_data[0].smoothing_range     = 1e-3;
-            smoother_data[0].degree              = numbers::invalid_unsigned_int;
-            smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
-          }
-
-        smoother_data[level].preconditioner =
-          std::make_shared<SmootherPreconditionerType>();
-        mg_matrices[level].compute_inverse_diagonal(
-          smoother_data[level].preconditioner->get_vector());
-      }
-
-    mg_smoother.initialize(mg_matrices, smoother_data);
-  }
-
-  unsigned int
-  solve(SystemMatrixType       &momentum_operator,
-        VectorTypeSystem       &vec_u,
-        const VectorTypeSystem &vec_u_rhs)
-  {
-    const unsigned int                            min_level = mg_matrices.min_level();
-    std::unique_ptr<MGCoarseGridBase<VectorType>> mg_coarse;
-
-    const auto       precond_point_jacobi = *smoother_data[min_level].preconditioner;
-    ReductionControl coarse_grid_solver_control(10000, 1e-20, 1e-3, false, false);
-    SolverGMRES<VectorType> coarse_grid_solver(coarse_grid_solver_control);
-
-    // Coarse grid solver
-    if (use_amg_as_coarse_grid_solver_vel)
-      {
-        mg_matrices[min_level].get_system_matrix(coarse_system_matrix);
-
-        TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
-        amg_data.elliptic = false;
-        amg_data.n_cycles = 2;
-
-        precondition_amg.initialize(coarse_system_matrix, amg_data);
-        mg_coarse = std::make_unique<MGCoarseAMG<VectorType>>(precondition_amg, false);
-      }
-    else
-      {
-        mg_coarse =
-          std::make_unique<MGCoarseGridIterativeSolver<VectorType,
-                                                       SolverGMRES<VectorType>,
-                                                       LevelMatrixType,
-                                                       decltype(precond_point_jacobi)>>(
-            coarse_grid_solver, mg_matrices[min_level], precond_point_jacobi);
-      }
-
-    // Set up levels and transfers
-    mg::Matrix<VectorType> mg_matrix(mg_matrices);
-    Multigrid<VectorType>  mg(mg_matrix, *mg_coarse, transfer, mg_smoother, mg_smoother);
-
-    PreconditionerType preconditioner(
-      momentum_operator.get_matrix_free().get_dof_handler(dof_no_v), mg, transfer);
-
-    SolverControl                 control(100000, 1e-12 * vec_u_rhs.l2_norm());
-    SolverGMRES<VectorTypeSystem> solver_gmres(control);
-
-    solver_gmres.solve(momentum_operator, vec_u, vec_u_rhs, preconditioner);
-    return control.last_step();
-  }
-
-private:
-  MGLevelObject<LevelMatrixType>                                    mg_matrices;
-  MGSmootherPrecondition<LevelMatrixType, SmootherType, VectorType> mg_smoother;
-  MGLevelObject<typename SmootherType::AdditionalData>              smoother_data;
-
-  MGLevelObject<DoFHandler<dim>>                     dof_handlers_p;
-  MGLevelObject<DoFHandler<dim>>                     dof_handlers_u;
-  MGLevelObject<MGTwoLevelTransfer<dim, VectorType>> transfers;
-  MGTransferGlobalCoarsening<dim, VectorType>        transfer;
-
-  std::vector<std::shared_ptr<const Triangulation<dim>>> coarse_grid_triangulations;
-
-  TrilinosWrappers::SparseMatrix    coarse_system_matrix;
-  TrilinosWrappers::PreconditionAMG precondition_amg;
+  
+  std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_velocity_factory;
+  std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_pressure_factory;
+  std::function<std::unique_ptr<Function<dim>>()>        body_force_factory;
+
+  std::unique_ptr<Function<dim>> velocity_bc_cached;
+  std::unique_ptr<Function<dim>> pressure_bc_cached;
+  std::unique_ptr<Function<dim>> rhs_cached;
 };
 
 
@@ -1839,11 +1529,14 @@ public:
   void
   reinit(const MatrixFree<dim, number> &matrix_free_in,
          const unsigned int             bdf_order_in,
-         const number                   time_step_in)
+         const number                   time_step_in,
+         const bool                     use_pressure_convective_upwind_flux = false)
   {
     bdf_order         = bdf_order_in;
     time_step         = time_step_in;
     this->matrix_free = &matrix_free_in;
+    this->use_pressure_convective_upwind_flux =
+      use_pressure_convective_upwind_flux;
     is_dg = matrix_free->get_dof_handler(dof_no_p).get_fe().n_dofs_per_vertex() == 0;
 
     const unsigned int fe_degree = matrix_free->get_dof_handler(dof_no_p).get_fe().degree;
@@ -2113,14 +1806,41 @@ public:
     return *matrix_free;
   }
 
+  void set_body_force_factory(std::function<std::unique_ptr<Function<dim>>()>&& body_force_in)
+  {
+    body_force_factory = std::move(body_force_in);
+  }
+
+  void set_DirichletBC_velocity_factory(std::function<std::unique_ptr<Function<dim>>()>&& dirichlet_bc_velocity_in)
+  {
+    dirichletBC_velocity_factory = std::move(dirichlet_bc_velocity_in);
+  }
+
+  void set_dirichletBC_pressure_factory(std::function<std::unique_ptr<Function<dim>>()>&& dirichlet_bc_pressure_in)
+  {
+    dirichletBC_pressure_factory = std::move(dirichlet_bc_pressure_in);
+  }
+
+  void set_viscosity(const number viscosity_in)
+  {
+    viscosity = viscosity_in;
+  }
+
 
 private:
   const MatrixFree<dim, number>                         *matrix_free;
   dealii::AlignedVector<dealii::VectorizedArray<number>> array_penalty_parameter;
   number                                                 time;
+  number                                                 viscosity;
   double                                                 time_step;
   unsigned int                                           bdf_order;
   bool                                                   is_dg;
+  bool                                                   use_pressure_convective_upwind_flux;
+  std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_velocity_factory;
+  std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_pressure_factory;
+  std::function<std::unique_ptr<Function<dim>>()>        body_force_factory;
+
+
 
   void
   local_apply_domain(const MatrixFree<dim, number>               &data,
@@ -2345,8 +2065,9 @@ private:
   {
     FEEvaluation<dim, -1, 0, 1, number> eval_p(data, 1, 1);
 
-    AnalyticalRHS<dim> rhs(u_x_max, viscosity);
-    rhs.set_time(time);
+    //AnalyticalRHS<dim> rhs(u_x_max, viscosity);
+    auto rhs = body_force_factory();
+    rhs->set_time(time);
 
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
@@ -2355,7 +2076,7 @@ private:
         // loop over quadrature points and compute the local volume flux
         for (const unsigned int q : eval_p.quadrature_point_indices())
           {
-            const auto f = evaluate_function(rhs, eval_p.quadrature_point(q));
+            const auto f = evaluate_function((*rhs), eval_p.quadrature_point(q));
             eval_p.submit_gradient(f, q);
           }
 
@@ -2376,8 +2097,8 @@ private:
     FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(data, false, 1, 1);
 
-    AnalyticalRHS<dim> rhs(u_x_max, viscosity);
-    rhs.set_time(time);
+    auto rhs = body_force_factory();
+    rhs->set_time(time);
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
@@ -2386,7 +2107,7 @@ private:
 
         for (const unsigned int q : eval_p_minus.quadrature_point_indices())
           {
-            const auto f      = evaluate_function(rhs, eval_p_minus.quadrature_point(q));
+            const auto f      = evaluate_function((*rhs), eval_p_minus.quadrature_point(q));
             const auto normal = eval_p_minus.normal_vector(q);
             const auto flux   = f * normal;
 
@@ -2408,12 +2129,12 @@ private:
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_vorticity(data, true, 0, 1);
 
-    AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
-    exact_velocity.set_time(time);
-    AnalyticalSolutionPressure<dim> exact_pressure(u_x_max, viscosity);
-    exact_pressure.set_time(time);
-    AnalyticalRHS<dim> rhs(u_x_max, viscosity);
-    rhs.set_time(time);
+    auto velocity_bc = dirichletBC_velocity_factory();
+    velocity_bc->set_time(time);
+    auto pressure_bc = dirichletBC_pressure_factory();
+    pressure_bc->set_time(time);
+    auto rhs = body_force_factory();
+    rhs->set_time(time);
 
     BDFTimeIntegratorConstants integration_constants(bdf_order);
 
@@ -2430,20 +2151,20 @@ private:
               {
                 const auto normal = eval_p_minus.normal_vector(q);
 
-                exact_velocity.set_time(time);
+                velocity_bc->set_time(time);
                 const auto g =
-                  evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
+                  evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
                 auto u_plus =
                   make_vectorized_array(integration_constants.get_gamma0() / time_step) *
                   g;
 
                 for (unsigned int i = 0; i < integration_constants.get_order(); ++i)
                   {
-                    exact_velocity.set_time(time - (i + 1) * time_step);
+                    velocity_bc->set_time(time - (i + 1) * time_step);
                     u_plus -=
                       make_vectorized_array(integration_constants.get_alpha(i) /
                                             time_step) *
-                      evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
+                      evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
                   }
                 const auto flux = (-u_plus) * normal;
 
@@ -2464,14 +2185,14 @@ private:
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
-                const auto f = evaluate_function(rhs, eval_p_minus.quadrature_point(q));
+                const auto f = evaluate_function((*rhs), eval_p_minus.quadrature_point(q));
 
                 const auto normal = eval_p_minus.normal_vector(q);
 
                 const auto flux = -f * normal;
 
                 const auto g_p =
-                  evaluate_scalar_function(exact_pressure,
+                  evaluate_scalar_function((*pressure_bc),
                                            eval_p_minus.quadrature_point(q));
 
                 const VectorizedArray<number> penalty_factor =
@@ -2602,8 +2323,8 @@ private:
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
 
-    AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
-    exact_velocity.set_time(time);
+    auto dirichlet_bc_velocity = dirichletBC_velocity_factory();
+    dirichlet_bc_velocity->set_time(time);
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
@@ -2620,9 +2341,9 @@ private:
               {
                 const auto normal = eval_p_minus.normal_vector(q);
 
-                exact_velocity.set_time(time);
+                dirichlet_bc_velocity->set_time(time);
                 const auto g =
-                  evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
+                  evaluate_function((*dirichlet_bc_velocity), eval_p_minus.quadrature_point(q));
 
                 if (use_pressure_convective_upwind_flux)
                   {
@@ -2662,9 +2383,9 @@ private:
               {
                 const auto normal = eval_p_minus.normal_vector(q);
 
-                exact_velocity.set_time(time);
+                dirichlet_bc_velocity->set_time(time);
                 const auto grad_u =
-                  evaluate_tensor_function(exact_velocity,
+                  evaluate_tensor_function((*dirichlet_bc_velocity),
                                            eval_p_minus.quadrature_point(q));
                 const auto u_plus          = eval_u_minus.get_value(q);
                 const auto convective_flux = (grad_u * u_plus) * normal;
@@ -2754,8 +2475,8 @@ private:
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
 
-    AnalyticalSolutionVelocity<dim> exact_velocity(u_x_max, viscosity);
-    exact_velocity.set_time(time);
+    auto velocity_bc = dirichletBC_velocity_factory();  
+    velocity_bc->set_time(time);
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
@@ -2770,9 +2491,9 @@ private:
               {
                 const auto normal = eval_p_minus.normal_vector(q);
 
-                exact_velocity.set_time(time);
+                velocity_bc->set_time(time);
                 const auto g =
-                  evaluate_function(exact_velocity, eval_p_minus.quadrature_point(q));
+                  evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
                 const auto u     = eval_u_minus.get_value(q);
                 const auto div_u = -(u - g) * normal;
 
@@ -2795,331 +2516,4 @@ private:
           }
       }
   }
-};
-
-template <typename VectorType, typename OperatorType>
-class MGCoarseCG : public MGCoarseGridBase<VectorType>
-{
-private:
-public:
-  MGCoarseCG(const OperatorType                      &operator_in,
-             const TrilinosWrappers::PreconditionAMG &amg,
-             const bool                               is_singular_in)
-  {
-    is_singular        = is_singular_in;
-    amg_preconditioner = &amg;
-    op                 = &operator_in;
-  }
-
-  void
-  operator()(const unsigned int /*level*/,
-             VectorType       &dst,
-             const VectorType &src) const final
-  {
-    ReductionControl coarse_grid_solver_control(10000, 1e-20, 1e-4, false, false);
-    SolverCG<LinearAlgebra::distributed::Vector<TrilinosScalar>> coarse_grid_solver(
-      coarse_grid_solver_control);
-
-    if constexpr (std::is_same_v<VectorType,
-                                 LinearAlgebra::distributed::Vector<TrilinosScalar>>)
-      {
-        if (is_singular)
-          {
-            VectorType r(src);
-            dealii::VectorTools::subtract_mean_value(r);
-            coarse_grid_solver.solve(*op, dst, r, *amg_preconditioner);
-          }
-        else
-          coarse_grid_solver.solve(*op, dst, src, *amg_preconditioner);
-      }
-    else
-      {
-        LinearAlgebra::distributed::Vector<TrilinosScalar> src_;
-        LinearAlgebra::distributed::Vector<TrilinosScalar> dst_;
-
-        src_ = src;
-        dst_ = dst;
-
-        if (is_singular)
-          dealii::VectorTools::subtract_mean_value(src_);
-        coarse_grid_solver.solve(*op, dst_, src_, *amg_preconditioner);
-
-        dst = dst_;
-      }
-  }
-
-private:
-  bool                                     is_singular;
-  const TrilinosWrappers::PreconditionAMG *amg_preconditioner;
-  const OperatorType                      *op;
-};
-
-template <int dim, typename number_operator, typename number = number_operator>
-class MultigridPreconditioner
-{
-  using VectorType       = LinearAlgebra::distributed::Vector<number>;
-  using VectorTypeSystem = LinearAlgebra::distributed::Vector<number_operator>;
-  using SystemMatrixType = PressureOperator<dim, number_operator>;
-  using LevelMatrixType  = PressureOperator<dim, number>;
-
-  using SmootherPreconditionerType = DiagonalMatrix<VectorType>;
-  using SmootherType =
-    PreconditionChebyshev<LevelMatrixType, VectorType, SmootherPreconditionerType>;
-  using PreconditionerType =
-    PreconditionMG<dim, VectorType, MGTransferGlobalCoarsening<dim, VectorType>>;
-
-public:
-  MultigridPreconditioner(SystemMatrixType  &pressure_operator,
-                          const unsigned int mapping_degree,
-                          const number       time_step,
-                          const unsigned int bdf_order)
-  {
-    const auto &dof_handler =
-      pressure_operator.get_matrix_free().get_dof_handler(dof_no_p);
-
-    if (use_hmg)
-      coarse_grid_triangulations =
-        MGTransferGlobalCoarseningTools::create_geometric_coarsening_sequence(
-          dof_handler.get_triangulation());
-    else
-      coarse_grid_triangulations.emplace_back(&(dof_handler.get_triangulation()),
-                                              [](auto *) {});
-    const unsigned int n_h_levels = coarse_grid_triangulations.size() - 1;
-
-    const std::vector<unsigned int> level_degrees =
-      use_pmg ?
-        MGTransferGlobalCoarseningTools::create_polynomial_coarsening_sequence(
-          dof_handler.get_fe().degree,
-          MGTransferGlobalCoarseningTools::PolynomialCoarseningSequenceType::bisect) :
-        std::vector<unsigned int>{dof_handler.get_fe().degree};
-    const unsigned int n_p_levels = level_degrees.size();
-
-    const unsigned int minlevel = 0;
-    const unsigned int maxlevel =
-      use_cmg ? n_h_levels + n_p_levels : n_h_levels + n_p_levels - 1;
-
-    dof_handlers.resize(minlevel, maxlevel);
-    dof_handlers_u.resize(minlevel, maxlevel);
-    mg_matrices.resize(minlevel, maxlevel);
-    mg_matrices_mf.resize(minlevel, maxlevel);
-    transfers.resize(minlevel, maxlevel);
-
-    // h-MG with linear elements
-    for (unsigned int l = 0; l < n_h_levels; ++l)
-      {
-        auto &dof_handler   = dof_handlers[l];
-        auto &dof_handler_u = dof_handlers_u[l];
-
-        if (use_cmg)
-          {
-            const FE_Q<dim>     fe(level_degrees[0]);
-            const FESystem<dim> fe_u(FE_Q<dim>(level_degrees[0] + 1), dim);
-
-            dof_handler.reinit(*coarse_grid_triangulations[l]);
-            dof_handler.distribute_dofs(fe);
-            dof_handler_u.reinit(*coarse_grid_triangulations[l]);
-            dof_handler_u.distribute_dofs(fe_u);
-          }
-        else
-          {
-            const FE_DGQ<dim>   fe(level_degrees[0]);
-            const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[0] + 1), dim);
-
-            dof_handler.reinit(*coarse_grid_triangulations[l]);
-            dof_handler.distribute_dofs(fe);
-            dof_handler_u.reinit(*coarse_grid_triangulations[l]);
-            dof_handler_u.distribute_dofs(fe_u);
-          }
-      }
-    // p-MG
-    const unsigned int max_loop_it = use_cmg ? maxlevel : maxlevel + 1;
-    for (unsigned int i = 0, l = n_h_levels; l < max_loop_it; ++l, ++i)
-      {
-        auto &dof_handler   = dof_handlers[l];
-        auto &dof_handler_u = dof_handlers_u[l];
-
-        if (use_cmg)
-          {
-            const FE_Q<dim>     fe(level_degrees[i]);
-            const FESystem<dim> fe_u(FE_Q<dim>(level_degrees[i] + 1), dim);
-
-            dof_handler.reinit(*coarse_grid_triangulations[n_h_levels]);
-            dof_handler.distribute_dofs(fe);
-            dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
-            dof_handler_u.distribute_dofs(fe_u);
-          }
-        else
-          {
-            const FE_DGQ<dim>   fe(level_degrees[i]);
-            const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[i] + 1), dim);
-
-            dof_handler.reinit(*coarse_grid_triangulations[n_h_levels]);
-            dof_handler.distribute_dofs(fe);
-            dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
-            dof_handler_u.distribute_dofs(fe_u);
-          }
-      }
-    // c-MG
-    if (use_cmg)
-      {
-        const unsigned int l             = maxlevel;
-        auto              &dof_handler   = dof_handlers[l];
-        auto              &dof_handler_u = dof_handlers_u[l];
-
-        const FE_DGQ<dim>   fe(level_degrees[level_degrees.size() - 1]);
-        const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[level_degrees.size() - 1] + 1),
-                                 dim);
-
-
-        dof_handler.reinit(*coarse_grid_triangulations[n_h_levels]);
-        dof_handler.distribute_dofs(fe);
-        dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
-        dof_handler_u.distribute_dofs(fe_u);
-      }
-
-    // init levels
-    for (unsigned int level = minlevel; level <= maxlevel; ++level)
-      {
-        const unsigned int fe_degree_u     = dof_handlers_u[level].get_fe().degree;
-        const unsigned int fe_degree_p     = dof_handlers[level].get_fe().degree;
-        Quadrature<1>      quadrature      = QGauss<1>(fe_degree_u + 2);
-        Quadrature<1>      quadrature_mass = QGauss<1>(fe_degree_u + 1);
-        Quadrature<1>      quadrature_p    = QGauss<1>(fe_degree_p + 1);
-
-
-        typename MatrixFree<dim, number>::AdditionalData data;
-        data.mapping_update_flags = (update_gradients | update_JxW_values |
-                                     update_quadrature_points | update_values);
-        data.mapping_update_flags_inner_faces =
-          (update_gradients | update_JxW_values | update_normal_vectors |
-           update_quadrature_points);
-        data.mapping_update_flags_boundary_faces =
-          (update_gradients | update_JxW_values | update_normal_vectors |
-           update_quadrature_points);
-        // data.mg_level = level;
-        AffineConstraints<double> dummy;
-        dummy.close();
-
-        mg_matrices_mf[level].reinit(
-          level < n_h_levels ? MappingQGeneric<dim>(1) :
-                               MappingQGeneric<dim>(mapping_degree),
-          std::vector<const DoFHandler<dim> *>{&dof_handlers_u[level],
-                                               &dof_handlers[level]},
-          std::vector<const AffineConstraints<double> *>{&dummy, &dummy},
-          std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
-          data);
-
-        mg_matrices[level].reinit(mg_matrices_mf[level], bdf_order, time_step);
-      }
-
-    // init transfer
-    for (unsigned int level = minlevel; level < maxlevel; ++level)
-      transfers[level + 1].reinit(dof_handlers[level + 1], dof_handlers[level]);
-
-    transfer = MGTransferGlobalCoarsening<dim, VectorType>(
-      transfers, [&](const auto l, auto &vec) {
-        mg_matrices[l].get_matrix_free().initialize_dof_vector(vec, dof_no_p);
-      });
-
-    // Setup smoother for every level
-    smoother_data.resize(minlevel, maxlevel);
-
-    for (unsigned int level = minlevel; level <= maxlevel; ++level)
-      {
-        if (level > 0)
-          {
-            smoother_data[level].smoothing_range     = 20.;
-            smoother_data[level].degree              = 5;
-            smoother_data[level].eig_cg_n_iterations = 10;
-          }
-        else
-          {
-            smoother_data[0].smoothing_range     = 1e-3;
-            smoother_data[0].degree              = numbers::invalid_unsigned_int;
-            smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
-          }
-        smoother_data[level].preconditioner =
-          std::make_shared<SmootherPreconditionerType>();
-        mg_matrices[level].compute_inverse_diagonal(
-          smoother_data[level].preconditioner->get_vector());
-      }
-
-    mg_smoother.initialize(mg_matrices, smoother_data);
-
-    // Setup corase grid AMG
-    mg_matrices[minlevel].get_system_matrix(coarse_system_matrix);
-    TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
-
-    if (!use_neumann_boundary)
-      {
-        amg_data.constant_modes =
-          DoFTools::extract_constant_modes(dof_handlers[minlevel], ComponentMask());
-      }
-
-    if (use_amg_as_coarse_grid_solver)
-      {
-        amg_data.smoother_sweeps = 1;
-        amg_data.n_cycles        = 2;
-        amg_data.smoother_type   = "ILU";
-      }
-    else
-      {
-        amg_data.elliptic              = true;
-        amg_data.higher_order_elements = false;
-        amg_data.w_cycle               = false;
-        amg_data.aggregation_threshold = 0.2;
-        amg_data.smoother_sweeps       = 5;
-        amg_data.n_cycles              = 1;
-        amg_data.smoother_type         = "Chebyshev";
-      }
-
-
-    precondition_amg.initialize(coarse_system_matrix, amg_data);
-  }
-
-  unsigned int
-  solve(SystemMatrixType       &pressure_operator,
-        VectorTypeSystem       &vec_p,
-        const VectorTypeSystem &vec_p_rhs)
-  {
-    // Coarse grid solver
-    std::unique_ptr<MGCoarseGridBase<VectorType>> mg_coarse;
-    if (use_amg_as_coarse_grid_solver)
-      mg_coarse = std::make_unique<MGCoarseAMG<VectorType>>(precondition_amg,
-                                                            !use_neumann_boundary);
-    else
-      mg_coarse =
-        std::make_unique<MGCoarseCG<VectorType, TrilinosWrappers::SparseMatrix>>(
-          coarse_system_matrix, precondition_amg, !use_neumann_boundary);
-
-
-    // Setup levels and transfers
-    mg::Matrix<VectorType> mg_matrix(mg_matrices);
-    Multigrid<VectorType>  mg(mg_matrix, *mg_coarse, transfer, mg_smoother, mg_smoother);
-
-    PreconditionerType preconditioner(
-      pressure_operator.get_matrix_free().get_dof_handler(dof_no_p), mg, transfer);
-
-    SolverControl              control(100000, 1e-12 * vec_p_rhs.l2_norm());
-    SolverCG<VectorTypeSystem> solver_cg(control);
-
-    solver_cg.solve(pressure_operator, vec_p, vec_p_rhs, preconditioner);
-    return control.last_step();
-  }
-
-private:
-  MGLevelObject<LevelMatrixType>                                    mg_matrices;
-  MGLevelObject<MatrixFree<dim, number>>                            mg_matrices_mf;
-  MGSmootherPrecondition<LevelMatrixType, SmootherType, VectorType> mg_smoother;
-  MGLevelObject<typename SmootherType::AdditionalData>              smoother_data;
-
-  MGLevelObject<DoFHandler<dim>>                     dof_handlers;
-  MGLevelObject<DoFHandler<dim>>                     dof_handlers_u;
-  MGLevelObject<MGTwoLevelTransfer<dim, VectorType>> transfers;
-  MGTransferGlobalCoarsening<dim, VectorType>        transfer;
-
-  std::vector<std::shared_ptr<const Triangulation<dim>>> coarse_grid_triangulations;
-
-  TrilinosWrappers::SparseMatrix    coarse_system_matrix;
-  TrilinosWrappers::PreconditionAMG precondition_amg;
 };

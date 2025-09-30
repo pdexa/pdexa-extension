@@ -9,7 +9,6 @@
 #include <deal.II/distributed/tria.h>
 
 #include <deal.II/dofs/dof_handler.h>
-#include <deal.II/dofs/dof_tools.h>
 
 #include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
@@ -23,14 +22,14 @@
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/grid/manifold_lib.h>
 
-#include <deal.II/lac/affine_constraints.h>
-
-#include <deal.II/matrix_free/fe_evaluation.h>
-#include <deal.II/matrix_free/matrix_free.h>
 
 #include <deal.II/numerics/data_out.h>
-#include <deal.II/numerics/matrix_creator.h>
 #include <deal.II/numerics/vector_tools.h>
+
+#include "consistent_splitting_solver.h"
+#include "preconditioners.h"
+#include "evaluators.h"
+
 
 #include <fstream>
 
@@ -44,19 +43,19 @@ const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = true;
 const bool use_leray_projection                      = true;
 
-const bool use_amg                       = false;
-const bool use_hmg                       = true;
-const bool use_pmg                       = true;
-const bool use_cmg                       = true;
-const bool use_pointjacobi_pressure      = false;
+const bool use_amg                  = false;
+const bool use_hmg                  = true;
+const bool use_pmg                  = true;
+const bool use_cmg                  = true;
+const bool use_pointjacobi_pressure = false;
 const bool use_amg_as_coarse_grid_solver = false;
 
-const bool use_velocity_point_jacobi         = false;
-const bool use_inverse_mass_velocity         = false;
-const bool use_mg_velocity                   = true;
-const bool use_cmg_vel                       = true;
-const bool use_pmg_vel                       = true;
-const bool use_hmg_vel                       = true;
+const bool use_velocity_point_jacobi = false;
+const bool use_inverse_mass_velocity = false;
+const bool use_mg_velocity           = true;
+const bool use_cmg_vel               = true;
+const bool use_pmg_vel               = true;
+const bool use_hmg_vel               = true;
 const bool use_amg_as_coarse_grid_solver_vel = false;
 
 const double penalty_divergence = 1.0;
@@ -151,70 +150,6 @@ private:
 };
 
 
-template <int dim, typename Number, int n_components = dim>
-Tensor<1, n_components, VectorizedArray<Number>>
-evaluate_function(const Function<dim>                       &function,
-                  const Point<dim, VectorizedArray<Number>> &p_vectorized)
-{
-  AssertDimension(function.n_components, n_components);
-  Tensor<1, n_components, VectorizedArray<Number>> result;
-  for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
-    {
-      Point<dim> p;
-      for (unsigned int d = 0; d < dim; ++d)
-        p[d] = p_vectorized[d][v];
-      for (unsigned int d = 0; d < n_components; ++d)
-        result[d][v] = function.value(p, d);
-    }
-  return result;
-}
-
-
-
-template <int dim, typename Number>
-VectorizedArray<Number>
-evaluate_scalar_function(const Function<dim>                       &function,
-                         const Point<dim, VectorizedArray<Number>> &p_vectorized)
-{
-  AssertDimension(function.n_components, 1);
-  VectorizedArray<Number> result;
-  for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
-    {
-      Point<dim> p;
-      for (unsigned int d = 0; d < dim; ++d)
-        p[d] = p_vectorized[d][v];
-      result[v] = function.value(p);
-    }
-  return result;
-}
-
-
-template <int dim, typename number, int n_components = dim>
-Tensor<2, n_components, VectorizedArray<number>>
-evaluate_tensor_function(const Function<dim>                       &function,
-                         const Point<dim, VectorizedArray<number>> &p_vectorized)
-{
-  Tensor<2, n_components, VectorizedArray<number>> result;
-  for (unsigned int v = 0; v < VectorizedArray<number>::size(); ++v)
-    {
-      Point<dim> p;
-      for (unsigned int d = 0; d < dim; ++d)
-        p[d] = p_vectorized[d][v];
-      for (unsigned int d = 0; d < n_components; ++d)
-        {
-          auto func_eval = function.gradient(p, d);
-          for (unsigned int e = 0; e < dim; ++e)
-            result[d][e][v] = func_eval[e];
-        }
-    }
-  return result;
-}
-
-
-#include "consistent_splitting_solver.h"
-
-
-
 template <int dim, typename Number>
 void
 do_test(const unsigned int fe_degree,
@@ -284,6 +219,15 @@ do_test(const unsigned int fe_degree,
   const unsigned int bdf_order_p = 2;
 
   MomentumOperator<dim, dim, Number> momentum_op;
+  momentum_op.set_body_force_factory([=]() {
+    return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
+  });
+  momentum_op.set_dirichletBC_pressure_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionPressure<dim>>(u_x_max, viscosity);
+  });
+  momentum_op.set_DirichletBC_velocity_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionVelocity<dim>>(u_x_max, viscosity);
+  });
   // set up operator
   momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order);
 
@@ -312,8 +256,8 @@ do_test(const unsigned int fe_degree,
   InverseMassPreconditioner<dim, Number> inverse_mass;
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
 
-  MultigridPreconditionerVelocity<dim, Number, float> preconditioner_velocity(
-    momentum_op, mapping.get_degree(), time_step, bdf_order);
+  MultigridPreconditionerVelocity<dim, Number, Number> preconditioner_velocity(
+    momentum_op, mapping.get_degree(), viscosity, time_step, bdf_order, use_hmg_vel, use_cmg_vel, use_pmg_vel);
 
   DiagonalMatrix<LinearAlgebra::distributed::Vector<Number>>
     preconditioner_velocity_pointjacobi;
@@ -323,7 +267,17 @@ do_test(const unsigned int fe_degree,
 
   PressureOperator<dim, Number> pressure_op;
   pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step);
+  pressure_op.set_body_force_factory([=]() {
+    return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
+  });
   pressure_op.set_time_step(time_step);
+  pressure_op.set_viscosity(viscosity);
+  pressure_op.set_dirichletBC_pressure_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionPressure<dim>>(u_x_max, viscosity);
+  });
+  pressure_op.set_DirichletBC_velocity_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionVelocity<dim>>(u_x_max, viscosity);
+  });
 
   TrilinosWrappers::SparseMatrix pressure_system_matrix;
   if (use_amg)
@@ -341,7 +295,12 @@ do_test(const unsigned int fe_degree,
   MultigridPreconditioner<dim, Number, Number> precondition_hmg(pressure_op,
                                                                 mapping.get_degree(),
                                                                 time_step,
-                                                                bdf_order);
+                                                                bdf_order,
+                                                                use_hmg,
+                                                                use_cmg,
+                                                                use_pmg,   
+                                                                use_amg_as_coarse_grid_solver,
+                                                                use_neumann_boundary);
 
   Number current_time = 0;
 
@@ -475,7 +434,7 @@ do_test(const unsigned int fe_degree,
       unsigned int n_iterations_vel;
       if (use_mg_velocity)
         {
-          n_iterations_vel = preconditioner_velocity.solve(momentum_op, vec_u, vec_u_rhs);
+          n_iterations_vel = preconditioner_velocity.solve(momentum_op, vec_u, vec_u_rhs, use_amg_as_coarse_grid_solver_vel);
         }
       else if (use_inverse_mass_velocity)
         {

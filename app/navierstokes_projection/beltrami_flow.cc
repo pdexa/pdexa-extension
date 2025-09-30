@@ -2,14 +2,12 @@
 #include <deal.II/base/conditional_ostream.h>
 #include <deal.II/base/logstream.h>
 #include <deal.II/base/mpi.h>
-#include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/timer.h>
 
 #include <deal.II/distributed/fully_distributed_tria.h>
 #include <deal.II/distributed/tria.h>
 
 #include <deal.II/dofs/dof_handler.h>
-#include <deal.II/dofs/dof_tools.h>
 
 #include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
@@ -23,13 +21,15 @@
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/grid/manifold_lib.h>
 
-#include <deal.II/lac/affine_constraints.h>
-
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/matrix_creator.h>
 #include <deal.II/numerics/vector_tools.h>
 
 #include <fstream>
+
+#include "preconditioners.h"
+#include "evaluators.h"
+#include "consistent_splitting_solver.h"
 
 using namespace dealii;
 
@@ -37,7 +37,6 @@ using namespace dealii;
 const bool use_extrapolated_velocity                 = false;
 const bool use_pressure_convective_upwind_flux       = false;
 const bool use_neumann_boundary                      = false;
-const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = true;
 const bool use_leray_projection                      = true;
 
@@ -163,68 +162,8 @@ private:
 };
 
 
-template <int dim, typename Number, int n_components = dim>
-Tensor<1, n_components, VectorizedArray<Number>>
-evaluate_function(const Function<dim>                       &function,
-                  const Point<dim, VectorizedArray<Number>> &p_vectorized)
-{
-  AssertDimension(function.n_components, n_components);
-  Tensor<1, n_components, VectorizedArray<Number>> result;
-  for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
-    {
-      Point<dim> p;
-      for (unsigned int d = 0; d < dim; ++d)
-        p[d] = p_vectorized[d][v];
-      for (unsigned int d = 0; d < n_components; ++d)
-        result[d][v] = function.value(p, d);
-    }
-  return result;
-}
 
 
-
-template <int dim, typename Number>
-VectorizedArray<Number>
-evaluate_scalar_function(const Function<dim>                       &function,
-                         const Point<dim, VectorizedArray<Number>> &p_vectorized)
-{
-  AssertDimension(function.n_components, 1);
-  VectorizedArray<Number> result;
-  for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
-    {
-      Point<dim> p;
-      for (unsigned int d = 0; d < dim; ++d)
-        p[d] = p_vectorized[d][v];
-      result[v] = function.value(p);
-    }
-  return result;
-}
-
-
-template <int dim, typename number, int n_components = dim>
-Tensor<2, n_components, VectorizedArray<number>>
-evaluate_tensor_function(const Function<dim>                       &function,
-                         const Point<dim, VectorizedArray<number>> &p_vectorized)
-{
-  Tensor<2, n_components, VectorizedArray<number>> result;
-  for (unsigned int v = 0; v < VectorizedArray<number>::size(); ++v)
-    {
-      Point<dim> p;
-      for (unsigned int d = 0; d < dim; ++d)
-        p[d] = p_vectorized[d][v];
-      for (unsigned int d = 0; d < n_components; ++d)
-        {
-          auto func_eval = function.gradient(p, d);
-          for (unsigned int e = 0; e < dim; ++e)
-            result[d][e][v] = func_eval[e];
-        }
-    }
-  return result;
-}
-
-
-
-#include "consistent_splitting_solver.h"
 
 
 
@@ -291,11 +230,22 @@ do_test(const unsigned int fe_degree,
   const unsigned int bdf_order_p = 2;
 
   MomentumOperator<dim, dim, Number> momentum_op;
+  momentum_op.set_body_force_factory([=]() {
+    return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
+  });
+  momentum_op.set_dirichletBC_pressure_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionPressure<dim>>(u_x_max, viscosity);
+  });
+  momentum_op.set_DirichletBC_velocity_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionVelocity<dim>>(u_x_max, viscosity);
+  });
   // set up operator
-  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order);
-
-  momentum_op.set_viscosity(viscosity);
   momentum_op.set_time(0.0);
+  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order, use_skew_symmetric_convective_formulation,
+                    penalty_divergence, penalty_continuity, use_extrapolated_velocity, 10);
+  
+  momentum_op.set_viscosity(viscosity);
+  
 
   LinearAlgebra::distributed::Vector<Number> vec_u, vec_u_deriv, vec_u_rhs, vec_p,
     vec_u_norm, speed_extrapolated, vec_vorticity, vec_p_rhs, vec_p_rhs_n, vec_p_norm,
@@ -320,7 +270,7 @@ do_test(const unsigned int fe_degree,
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
 
   MultigridPreconditionerVelocity<dim, Number, Number> preconditioner_velocity(
-    momentum_op, mapping.get_degree(), time_step, bdf_order);
+    momentum_op, mapping.get_degree(), viscosity, time_step, bdf_order, use_hmg_vel, use_cmg_vel, use_pmg_vel);
 
   DiagonalMatrix<LinearAlgebra::distributed::Vector<Number>>
     preconditioner_velocity_pointjacobi;
@@ -330,7 +280,17 @@ do_test(const unsigned int fe_degree,
 
   PressureOperator<dim, Number> pressure_op;
   pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step);
+  pressure_op.set_body_force_factory([=]() {
+    return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
+  });
   pressure_op.set_time_step(time_step);
+  pressure_op.set_viscosity(viscosity);
+  pressure_op.set_dirichletBC_pressure_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionPressure<dim>>(u_x_max, viscosity);
+  });
+  pressure_op.set_DirichletBC_velocity_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionVelocity<dim>>(u_x_max, viscosity);
+  });
 
   TrilinosWrappers::SparseMatrix pressure_system_matrix;
   if (use_amg)
@@ -348,7 +308,12 @@ do_test(const unsigned int fe_degree,
   MultigridPreconditioner<dim, Number, Number> precondition_hmg(pressure_op,
                                                                mapping.get_degree(),
                                                                time_step,
-                                                               bdf_order);
+                                                               bdf_order,
+                                                               use_hmg,
+                                                               use_cmg,
+                                                               use_pmg,   
+                                                               use_amg_as_coarse_grid_solver,
+                                                               use_neumann_boundary);
 
   Number current_time = 0;
 
@@ -373,7 +338,7 @@ do_test(const unsigned int fe_degree,
   }
 
   const Number       end_time         = 1.0;
-  const unsigned int output_interval  = 500;
+  const unsigned int output_interval  = 1;
   unsigned int       time_step_number = 0;
 
   const bool write_output = true;
@@ -485,15 +450,12 @@ do_test(const unsigned int fe_degree,
 
       IterationNumberControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
-      /*solver_mom.connect_eigenvalues_slot([&](const std::vector<std::complex<double>> &eigenvalues){  for (unsigned int j = 0; j < eigenvalues.size(); ++j)
-    {
-      pcout << ' ' << eigenvalues.at(j);
-    } pcout << std::endl; });*/
+
       vec_u.swap(speed_extrapolated); // = 0.;
       unsigned int n_iterations_vel;
       if (use_mg_velocity)
         {
-          n_iterations_vel = preconditioner_velocity.solve(momentum_op, vec_u, vec_u_rhs);
+          n_iterations_vel = preconditioner_velocity.solve(momentum_op, vec_u, vec_u_rhs, use_amg_as_coarse_grid_solver_vel);
         }
       else if (use_inverse_mass_velocity)
         {
@@ -513,6 +475,7 @@ do_test(const unsigned int fe_degree,
         }
       else
         {
+          pcout<<"momentum solver without preconditioner"<<std::endl;
           solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
           n_iterations_vel = control_mom.last_step();
         }
@@ -529,8 +492,6 @@ do_test(const unsigned int fe_degree,
         }
 
       vec_u_old[0].swap(vec_u);
-
-
 
       if (write_output && time_step_number % output_interval == 0)
         {
