@@ -152,7 +152,6 @@ public:
          const bool             use_skew_symmetric_convective_formulation = true,
          const number           penalty_divergence_in = 1.0,
          const number           penalty_continuity_in = 1.0,
-         const bool             use_extrapolated_velocity = false,
          const number           penalty_factor_const = 1.0
          )
   {
@@ -161,7 +160,6 @@ public:
     is_dg     = dof_handler_u.get_fe().n_dofs_per_vertex() == 0;
     this->use_skew_symmetric_convective_formulation =
       use_skew_symmetric_convective_formulation;
-    this->use_extrapolated_velocity = use_extrapolated_velocity;
     this->penalty_divergence = penalty_divergence_in;
     this->penalty_continuity = penalty_continuity_in;
 
@@ -1291,24 +1289,9 @@ private:
 
                 Tensor<1, dim, VectorizedArray<number>> speed;
 
-                if (use_extrapolated_velocity)
-                  {
-                    const auto u_plus_m =
-                      evaluate_function((*velocity_bc_m),
-                                        integrator_inner.quadrature_point(q));
-                    const auto u_plus_m2 =
-                      evaluate_function((*velocity_bc_m2),
-                                        integrator_inner.quadrature_point(q));
-                    auto extrapolated_velocity = 2.0 * u_plus_m - u_plus_m2;
-                    speed =
-                      0.5 * (integrator_speed_inner.get_value(q) + extrapolated_velocity);
-                  }
-                else
-                  {
-                    speed = make_vectorized_array<number>(0.5) *
+                speed = make_vectorized_array<number>(0.5) *
                             (integrator_speed_inner.get_value(q) + g);
-                  }
-
+                  
                 speeds_faces(face, q)   = speed;
                 const auto speed_normal = speed * normal;
 
@@ -1495,7 +1478,6 @@ private:
   unsigned int fe_degree_u;
   bool         is_dg;
   bool         use_skew_symmetric_convective_formulation;
-  bool         use_extrapolated_velocity;
   dealii::AlignedVector<dealii::VectorizedArray<Number>>    array_penalty_parameter;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_cells;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_faces;
@@ -1529,14 +1511,11 @@ public:
   void
   reinit(const MatrixFree<dim, number> &matrix_free_in,
          const unsigned int             bdf_order_in,
-         const number                   time_step_in,
-         const bool                     use_pressure_convective_upwind_flux = false)
+         const number                   time_step_in)
   {
     bdf_order         = bdf_order_in;
     time_step         = time_step_in;
     this->matrix_free = &matrix_free_in;
-    this->use_pressure_convective_upwind_flux =
-      use_pressure_convective_upwind_flux;
     is_dg = matrix_free->get_dof_handler(dof_no_p).get_fe().n_dofs_per_vertex() == 0;
 
     const unsigned int fe_degree = matrix_free->get_dof_handler(dof_no_p).get_fe().degree;
@@ -1835,7 +1814,6 @@ private:
   double                                                 time_step;
   unsigned int                                           bdf_order;
   bool                                                   is_dg;
-  bool                                                   use_pressure_convective_upwind_flux;
   std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_velocity_factory;
   std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_pressure_factory;
   std::function<std::unique_ptr<Function<dim>>()>        body_force_factory;
@@ -2270,46 +2248,19 @@ private:
         for (const unsigned int q : eval_p_minus.quadrature_point_indices())
           {
             const auto normal = eval_p_minus.normal_vector(q);
+            const auto gradu_u_minus =
+              eval_u_minus.get_gradient(q) * eval_u_minus.get_value(q);
+            const auto gradu_u_plus =
+              eval_u_plus.get_gradient(q) * eval_u_plus.get_value(q);
+            const auto convective_flux =
+              number(0.5) * (gradu_u_minus + gradu_u_plus) * normal;
 
-            if (use_pressure_convective_upwind_flux)
-              {
-                const auto u_minus      = eval_u_minus.get_value(q);
-                const auto u_plus       = eval_u_plus.get_value(q);
-                const auto u_minus_grad = eval_u_minus.get_gradient(q);
-                const auto u_plus_grad  = eval_u_plus.get_gradient(q);
-                const auto value_flux =
-                  0.5 * (u_minus_grad + u_plus_grad) * 0.5 * (u_minus + u_plus);
-
-                eval_p_minus.submit_value(value_flux * normal, q);
-                eval_p_plus.submit_value(-value_flux * normal, q);
-
-
-                const auto grad_flux = 0.5 * (u_minus - u_plus);
-                eval_p_minus.submit_gradient(grad_flux * (u_minus * normal), q);
-                eval_p_plus.submit_gradient(grad_flux * (u_plus * normal), q);
-              }
-            else
-              {
-                const auto gradu_u_minus =
-                  eval_u_minus.get_gradient(q) * eval_u_minus.get_value(q);
-                const auto gradu_u_plus =
-                  eval_u_plus.get_gradient(q) * eval_u_plus.get_value(q);
-                const auto convective_flux =
-                  number(0.5) * (gradu_u_minus + gradu_u_plus) * normal;
-
-                eval_p_minus.submit_value(convective_flux, q);
-                eval_p_plus.submit_value(-convective_flux, q);
-                eval_p_minus.submit_gradient({}, q);
-                eval_p_plus.submit_gradient({}, q);
-              }
+            eval_p_minus.submit_value(convective_flux, q);
+            eval_p_plus.submit_value(-convective_flux, q);
           }
 
-        eval_p_minus.integrate_scatter(EvaluationFlags::values |
-                                         EvaluationFlags::gradients,
-                                       dst);
-        eval_p_plus.integrate_scatter(EvaluationFlags::values |
-                                        EvaluationFlags::gradients,
-                                      dst);
+        eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+        eval_p_plus.integrate_scatter(EvaluationFlags::values, dst);
       }
   }
 
@@ -2344,33 +2295,16 @@ private:
                 dirichlet_bc_velocity->set_time(time);
                 const auto g =
                   evaluate_function((*dirichlet_bc_velocity), eval_p_minus.quadrature_point(q));
+                  
+                  const auto u      = eval_u_minus.get_value(q);
+                  const auto grad_u = eval_u_minus.get_gradient(q);
 
-                if (use_pressure_convective_upwind_flux)
-                  {
-                    const auto u_minus      = eval_u_minus.get_value(q);
-                    const auto u_minus_grad = eval_u_minus.get_gradient(q);
+                  const auto convective_value_flux = (grad_u * (g - u)) * normal;
 
-                    const auto grad_flux  = (u_minus - g) * (u_minus * normal);
-                    const auto value_flux = -u_minus_grad * (u_minus - g);
-
-                    eval_p_minus.submit_value(value_flux * normal, q);
-                    eval_p_minus.submit_gradient(grad_flux, q);
-                  }
-                else
-                  {
-                    const auto u      = eval_u_minus.get_value(q);
-                    const auto grad_u = eval_u_minus.get_gradient(q);
-
-                    const auto convective_value_flux = (grad_u * (g - u)) * normal;
-
-                    eval_p_minus.submit_value(convective_value_flux, q);
-                    eval_p_minus.submit_gradient({}, q);
-                  }
+                  eval_p_minus.submit_value(convective_value_flux, q);
               }
 
-            eval_p_minus.integrate_scatter(EvaluationFlags::values |
-                                             EvaluationFlags::gradients,
-                                           dst);
+            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
           }
         else
           {

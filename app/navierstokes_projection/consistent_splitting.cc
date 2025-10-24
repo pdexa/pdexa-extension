@@ -32,8 +32,6 @@
 using namespace dealii;
 
 
-const bool use_extrapolated_velocity                 = false;
-const bool use_pressure_convective_upwind_flux       = false;
 const bool use_neumann_boundary                      = true;
 const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = true;
