@@ -37,20 +37,22 @@ const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = true;
 const bool use_leray_projection                      = true;
 
-const bool use_amg                       = false;
+// Always use MG as preconditioner for the pressure
+// const bool use_amg                       = false;
 const bool use_hmg                       = true;
 const bool use_pmg                       = false;
 const bool use_cmg                       = false;
-const bool use_pointjacobi_pressure      = false;
+// const bool use_pointjacobi_pressure      = false;
 const bool use_amg_as_coarse_grid_solver = false;
 
-const bool use_velocity_point_jacobi         = false;
-const bool use_inverse_mass_velocity         = true;
-const bool use_mg_velocity                   = false;
-const bool use_cmg_vel                       = false;
-const bool use_pmg_vel                       = false;
-const bool use_hmg_vel                       = false;
-const bool use_amg_as_coarse_grid_solver_vel = false;
+// Always uses inverse mass, no need to set these variables
+// const bool use_velocity_point_jacobi         = false;
+// const bool use_inverse_mass_velocity         = true;
+// const bool use_mg_velocity                   = false;
+// const bool use_cmg_vel                       = false;
+// const bool use_pmg_vel                       = false;
+// const bool use_hmg_vel                       = false;
+// const bool use_amg_as_coarse_grid_solver_vel = false;
 
 const double penalty_divergence = 1.0;
 const double penalty_continuity = 1.0;
