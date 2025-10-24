@@ -57,6 +57,7 @@ const bool use_amg_as_coarse_grid_solver_vel = false;
 const double penalty_divergence = 1.0;
 const double penalty_continuity = 1.0;
 
+const double upwind_factor = 1.0;
 
 const double viscosity = 0.1;
 const double u_x_max   = 1.0;
@@ -240,7 +241,7 @@ do_test(const unsigned int fe_degree,
   });
   // set up operator
   momentum_op.set_time(0.0);
-  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order, use_skew_symmetric_convective_formulation, use_divergence_formulation, 1.0,
+  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order, use_skew_symmetric_convective_formulation, use_divergence_formulation, upwind_factor,
                     penalty_divergence, penalty_continuity, 10);
   
   momentum_op.set_viscosity(viscosity);
