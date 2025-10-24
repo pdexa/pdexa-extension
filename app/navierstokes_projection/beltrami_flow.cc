@@ -446,7 +446,8 @@ do_test(const unsigned int fe_degree,
       if (use_mg_velocity)
         preconditioner_velocity.update(current_time, speed_extrapolated);
 
-      IterationNumberControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
+      // IterationNumberControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
+      ReductionControl control_mom(10000, 1e-12, 1e-6);
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
 
       vec_u.swap(speed_extrapolated); // = 0.;
