@@ -41,17 +41,17 @@ const bool use_leray_projection                      = true;
 const bool use_amg                       = false;
 const bool use_hmg                       = true;
 const bool use_pmg                       = true;
-const bool use_cmg                       = true;
+const bool use_cmg                       = false;
 const bool use_pointjacobi_pressure      = false;
-const bool use_amg_as_coarse_grid_solver = true;
+const bool use_amg_as_coarse_grid_solver = false;
 
 const bool use_velocity_point_jacobi         = false;
-const bool use_inverse_mass_velocity         = false;
-const bool use_mg_velocity                   = true;
-const bool use_cmg_vel                       = true;
-const bool use_pmg_vel                       = true;
-const bool use_hmg_vel                       = true;
-const bool use_amg_as_coarse_grid_solver_vel = true;
+const bool use_inverse_mass_velocity         = true;
+const bool use_mg_velocity                   = false;
+const bool use_cmg_vel                       = false;
+const bool use_pmg_vel                       = false;
+const bool use_hmg_vel                       = false;
+const bool use_amg_as_coarse_grid_solver_vel = false;
 
 const double penalty_divergence = 1.0;
 const double penalty_continuity = 1.0;
@@ -166,7 +166,7 @@ do_test(const unsigned int fe_degree,
     MPI_COMM_WORLD, Triangulation<dim>::limit_level_difference_at_vertices);
 
   pcout << "Setup tria" << std::endl;
-  GridGenerator::subdivided_hyper_cube(tria, 4, -L * numbers::PI, L * numbers::PI);
+  GridGenerator::subdivided_hyper_cube(tria, 1, -L * numbers::PI, L * numbers::PI);
   pcout << "Setup boundary" << std::endl;
 
   const bool periodic_boundary = true;
@@ -271,9 +271,12 @@ do_test(const unsigned int fe_degree,
   InverseMassPreconditioner<dim, Number> inverse_mass;
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
 
-  MultigridPreconditionerVelocity<dim, Number, Number> preconditioner_velocity(
-    momentum_op, mapping.get_degree(), viscosity, time_step, bdf_order, use_hmg_vel, use_cmg_vel, use_pmg_vel);
-
+  std::unique_ptr<MultigridPreconditionerVelocity<dim, Number, Number>> preconditioner_velocity;
+  if(use_mg_velocity)
+  {
+    preconditioner_velocity = std::make_unique<MultigridPreconditionerVelocity<dim, Number, Number>>(momentum_op, mapping.get_degree(), viscosity, time_step, bdf_order, use_hmg_vel, use_cmg_vel, use_pmg_vel);
+  }
+  
   DiagonalMatrix<LinearAlgebra::distributed::Vector<Number>>
     preconditioner_velocity_pointjacobi;
   DiagonalMatrix<LinearAlgebra::distributed::Vector<Number>>
@@ -307,7 +310,7 @@ do_test(const unsigned int fe_degree,
   if (use_amg)
     precondition_amg.initialize(pressure_system_matrix, amg_data);
 
-  MultigridPreconditioner<dim, Number, Number> precondition_hmg(pressure_op,
+  MultigridPreconditioner<dim, Number, float> precondition_hmg(pressure_op,
                                                                 mapping.get_degree(),
                                                                 time_step,
                                                                 bdf_order,
@@ -327,6 +330,7 @@ do_test(const unsigned int fe_degree,
   exact_pressure.set_time(current_time);
   VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
 
+  Number max_dissipation = 0.;
   {
     Number energy;
     Number enstrophy;
@@ -337,6 +341,7 @@ do_test(const unsigned int fe_degree,
       vec_u_old[0], energy, enstrophy, dissipation, max_vorticity);
     pcout << "Energy, enstrophy, dissipation, max vorticity at t=0: " << energy << " "
           << enstrophy << " " << dissipation << " " << max_vorticity << std::endl;
+    max_dissipation = std::max(max_dissipation, dissipation);
   }
 
   const Number       end_time         = 20.0;
@@ -449,7 +454,7 @@ do_test(const unsigned int fe_degree,
       vec_u_rhs = 0.;
       momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, vec_p);
       if (use_mg_velocity)
-        preconditioner_velocity.update(current_time, speed_extrapolated);
+        preconditioner_velocity->update(current_time, speed_extrapolated);
 
       ReductionControl control_mom(10000, 1e-12, 1e-6);
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
@@ -457,7 +462,7 @@ do_test(const unsigned int fe_degree,
       unsigned int n_iterations_vel;
       if (use_mg_velocity)
         {
-          n_iterations_vel = preconditioner_velocity.solve(momentum_op, vec_u, vec_u_rhs, use_amg_as_coarse_grid_solver_vel);
+          n_iterations_vel = preconditioner_velocity->solve(momentum_op, vec_u, vec_u_rhs, use_amg_as_coarse_grid_solver_vel);
         }
       else if (use_inverse_mass_velocity)
         {
@@ -512,6 +517,7 @@ do_test(const unsigned int fe_degree,
             pcout << "Energy, enstrophy, dissipation, max vorticity at t=" << current_time
                   << ": " << energy << " " << enstrophy << " " << dissipation << " "
                   << max_vorticity << std::endl;
+            max_dissipation = std::max(max_dissipation, dissipation);
           }
 
           Vector<double> error_per_cell;
@@ -610,8 +616,10 @@ do_test(const unsigned int fe_degree,
     pcout << "Energy, enstrophy, dissipation, max vorticity at t=" << current_time << ": "
           << energy << " " << enstrophy << " " << dissipation << " " << max_vorticity
           << std::endl;
+    max_dissipation = std::max(max_dissipation, dissipation);
   }
 
+  pcout << "Max dissipation is: " << max_dissipation << std::endl;
   const double loop_time = time_loop.wall_time();
   pcout << "Time loop time: " << loop_time << std::endl;
   pcout << std::endl;
