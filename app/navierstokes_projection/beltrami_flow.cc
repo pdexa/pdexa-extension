@@ -36,6 +36,7 @@ using namespace dealii;
 
 const bool use_neumann_boundary                      = false;
 const bool use_skew_symmetric_convective_formulation = true;
+const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
 
 const bool use_amg                       = false;
@@ -239,7 +240,7 @@ do_test(const unsigned int fe_degree,
   });
   // set up operator
   momentum_op.set_time(0.0);
-  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order, use_skew_symmetric_convective_formulation,
+  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order, use_skew_symmetric_convective_formulation, use_divergence_formulation, 1.0,
                     penalty_divergence, penalty_continuity, 10);
   
   momentum_op.set_viscosity(viscosity);
