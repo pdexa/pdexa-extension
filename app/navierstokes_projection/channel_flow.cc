@@ -375,7 +375,7 @@ do_test(const unsigned int fe_degree,
       unsigned int iteration_count;
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
-      SolverControl control(100000, 1e-12 * vec_p_rhs.l2_norm());
+      ReductionControl control(10000, 1e-12, 1e-6);
       SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
       // vec_p = 0.;
       if (use_amg)
@@ -426,7 +426,7 @@ do_test(const unsigned int fe_degree,
       if (use_mg_velocity)
         preconditioner_velocity.update(current_time, speed_extrapolated);
 
-      SolverControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
+      ReductionControl control_mom(10000, 1e-12, 1e-6);
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
       vec_u.swap(speed_extrapolated); // = 0.;
       unsigned int n_iterations_vel;

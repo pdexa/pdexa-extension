@@ -401,7 +401,7 @@ public:
     std::unique_ptr<MGCoarseGridBase<VectorType>> mg_coarse;
 
     const auto       precond_point_jacobi = *smoother_data[min_level].preconditioner;
-    ReductionControl coarse_grid_solver_control(10000, 1e-20, 1e-4, false, false);
+    ReductionControl coarse_grid_solver_control(10000, 1e-12, 1e-4, false, false);
     SolverGMRES<VectorType> coarse_grid_solver(coarse_grid_solver_control);
 
     // Coarse grid solver
@@ -433,7 +433,7 @@ public:
     PreconditionerType preconditioner(
       momentum_operator.get_matrix_free().get_dof_handler(dof_no_v), mg, transfer);
 
-    SolverControl                 control(100000, 1e-12 * vec_u_rhs.l2_norm());
+    ReductionControl control(10000, 1e-12, 1e-6);
     SolverGMRES<VectorTypeSystem> solver_gmres(control);
 
     solver_gmres.solve(momentum_operator, vec_u, vec_u_rhs, preconditioner);
@@ -481,7 +481,7 @@ public:
              VectorType       &dst,
              const VectorType &src) const final
   {
-    ReductionControl coarse_grid_solver_control(10000, 1e-20, 1e-4, false, false);
+    ReductionControl coarse_grid_solver_control(10000, 1e-12, 1e-3, false, false);
     SolverCG<LinearAlgebra::distributed::Vector<TrilinosScalar>> coarse_grid_solver(
       coarse_grid_solver_control);
 
@@ -776,7 +776,7 @@ public:
     PreconditionerType preconditioner(
       pressure_operator.get_matrix_free().get_dof_handler(dof_no_p), mg, transfer);
 
-    SolverControl              control(100000, 1e-12 * vec_p_rhs.l2_norm());
+    ReductionControl control(10000, 1e-12, 1e-6);
     SolverCG<VectorTypeSystem> solver_cg(control);
 
     solver_cg.solve(pressure_operator, vec_p, vec_p_rhs, preconditioner);

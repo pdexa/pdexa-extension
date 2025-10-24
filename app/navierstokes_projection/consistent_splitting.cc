@@ -361,7 +361,7 @@ do_test(const unsigned int fe_degree,
       vec_u_rhs = 0.;
       momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, vec_p);
 
-      SolverControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
+      ReductionControl control_mom(10000, 1e-12, 1e-6);
       SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData gmres_data;
       gmres_data.max_basis_size        = 100;
       gmres_data.right_preconditioning = true;

@@ -152,8 +152,7 @@ public:
          const bool             use_skew_symmetric_convective_formulation = true,
          const number           penalty_divergence_in = 1.0,
          const number           penalty_continuity_in = 1.0,
-         const number           penalty_factor_const = 1.0
-         )
+         const number           penalty_factor_const = 1.0)
   {
     bdf_order = bdf_order_in;
     time_step = time_step_in;
