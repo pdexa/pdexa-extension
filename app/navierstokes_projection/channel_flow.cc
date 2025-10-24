@@ -37,7 +37,6 @@ using namespace dealii;
 
 
 const bool use_neumann_boundary                      = true;
-const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = true;
 const bool use_leray_projection                      = true;
 
