@@ -2283,14 +2283,7 @@ private:
                   make_vectorized_array(integration_constants.get_gamma0() / time_step) *
                   g;
 
-                for (unsigned int i = 0; i < integration_constants.get_order(); ++i)
-                  {
-                    velocity_bc->set_time(time - (i + 1) * time_step);
-                    u_plus -=
-                      make_vectorized_array(integration_constants.get_alpha(i) /
-                                            time_step) *
-                      evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
-                  }
+                
                 const auto flux = (-u_plus) * normal;
 
                 Tensor<1, dim, VectorizedArray<number>> curl_omega =
@@ -2429,26 +2422,10 @@ private:
         if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
           {
             eval_p_minus.reinit(face);
-            eval_u_minus.reinit(face);
-
-            eval_u_minus.gather_evaluate(src,
-                                         EvaluationFlags::values |
-                                           EvaluationFlags::gradients);
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
-                const auto normal = eval_p_minus.normal_vector(q);
-
-                dirichlet_bc_velocity->set_time(time);
-                const auto g =
-                  evaluate_function((*dirichlet_bc_velocity), eval_p_minus.quadrature_point(q));
-                  
-                  const auto u      = eval_u_minus.get_value(q);
-                  const auto grad_u = eval_u_minus.get_gradient(q);
-
-                  const auto convective_value_flux = (grad_u * (g - u)) * normal;
-
-                  eval_p_minus.submit_value(convective_value_flux, q);
+                eval_p_minus.submit_value({}, q);
               }
 
             eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
@@ -2458,16 +2435,16 @@ private:
             eval_p_minus.reinit(face);
             eval_u_minus.reinit(face);
 
-            eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
+            eval_u_minus.gather_evaluate(src, EvaluationFlags::values | EvaluationFlags::gradients);
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
                 const auto normal = eval_p_minus.normal_vector(q);
 
                 dirichlet_bc_velocity->set_time(time);
-                const auto grad_u =
-                  evaluate_tensor_function((*dirichlet_bc_velocity),
-                                           eval_p_minus.quadrature_point(q));
+                const auto grad_u = eval_u_minus.get_gradient(q);
+                  // evaluate_tensor_function((*dirichlet_bc_velocity),
+                  //                         eval_p_minus.quadrature_point(q));
                 const auto u_plus          = eval_u_minus.get_value(q);
                 const auto convective_flux = (grad_u * u_plus) * normal;
 
@@ -2493,17 +2470,17 @@ private:
         eval_p.reinit(cell);
         eval_u.reinit(cell);
 
-        eval_u.gather_evaluate(src, EvaluationFlags::gradients);
+        eval_u.gather_evaluate(src, EvaluationFlags::values);
 
         // loop over quadrature points and compute the local volume flux
         for (const unsigned int q : eval_p.quadrature_point_indices())
           {
-            const auto div_u = eval_u.get_divergence(q);
-            eval_p.submit_value(div_u, q);
+            const auto u = - eval_u.get_value(q);
+            eval_p.submit_gradient(u, q);
           }
 
         // multiply by nabla v^h(x) and sum
-        eval_p.integrate_scatter(EvaluationFlags::values, dst);
+        eval_p.integrate_scatter(EvaluationFlags::gradients, dst);
       }
   }
 
@@ -2535,10 +2512,10 @@ private:
           {
             const auto normal = eval_p_minus.normal_vector(q);
             const auto div_factor =
-              -0.5 * (eval_u_minus.get_value(q) - eval_u_plus.get_value(q)) * normal;
+              0.5 * (eval_u_minus.get_value(q) + eval_u_plus.get_value(q)) * normal;
 
             eval_p_minus.submit_value(div_factor, q);
-            eval_p_plus.submit_value(div_factor, q);
+            eval_p_plus.submit_value(-div_factor, q);
           }
 
         eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
@@ -2564,21 +2541,10 @@ private:
         if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
           {
             eval_p_minus.reinit(face);
-            eval_u_minus.reinit(face);
-
-            eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
-                const auto normal = eval_p_minus.normal_vector(q);
-
-                velocity_bc->set_time(time);
-                const auto g =
-                  evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
-                const auto u     = eval_u_minus.get_value(q);
-                const auto div_u = -(u - g) * normal;
-
-                eval_p_minus.submit_value(div_u, q);
+                eval_p_minus.submit_value({}, q);
               }
 
             eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
@@ -2588,9 +2554,12 @@ private:
             eval_p_minus.reinit(face);
             eval_u_minus.reinit(face);
 
+            eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
+
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
-                eval_p_minus.submit_value({}, q);
+                const auto value_flux = eval_u_minus.get_value(q) * eval_u_minus.normal_vector(q);
+                eval_p_minus.submit_value(value_flux, q);
               }
 
             eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
