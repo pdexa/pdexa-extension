@@ -255,7 +255,7 @@ do_test(const unsigned int fe_degree,
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
 
   PressureOperator<dim, double> pressure_op;
-  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step);
+  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, use_leray_projection);
   pressure_op.set_body_force_factory([=]() {
     return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
   });
@@ -319,12 +319,12 @@ do_test(const unsigned int fe_degree,
           }
       pressure_op.set_time(current_time);
 
-      for (unsigned int i = 0; i < bdf.get_order(); ++i) //TODO: this changed: bdf_p
+      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
         {
           pressure_op.set_time(current_time - (i + 1) * time_step);
           vec_p_rhs_n = 0.;
           pressure_op.compute_convective_rhs(vec_p_rhs_n, vec_u_old[i]);
-          vec_p_rhs.add(bdf.get_beta(i), vec_p_rhs_n); //bdf_p
+          vec_p_rhs.add(bdf_p.get_beta(i), vec_p_rhs_n);
         }
 
       speed_extrapolated = 0.;

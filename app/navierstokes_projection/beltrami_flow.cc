@@ -279,7 +279,7 @@ do_test(const unsigned int fe_degree,
 
 
   PressureOperator<dim, Number> pressure_op;
-  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step);
+  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, use_leray_projection);
   pressure_op.set_body_force_factory([=]() {
     return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
   });

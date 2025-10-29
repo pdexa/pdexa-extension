@@ -1658,12 +1658,14 @@ public:
   void
   reinit(const MatrixFree<dim, number> &matrix_free_in,
          const unsigned int             bdf_order_in,
-         const number                   time_step_in)
+         const number                   time_step_in,
+         const bool                     use_leary_projection_in)
   {
     bdf_order         = bdf_order_in;
     time_step         = time_step_in;
     this->matrix_free = &matrix_free_in;
     is_dg = matrix_free->get_dof_handler(dof_no_p).get_fe().n_dofs_per_vertex() == 0;
+    use_leary_projection = use_leary_projection_in;
 
     const unsigned int fe_degree = matrix_free->get_dof_handler(dof_no_p).get_fe().degree;
     const double       penalty_factor = 1.0 * (fe_degree + 1) * (fe_degree);
@@ -1961,6 +1963,7 @@ private:
   double                                                 time_step;
   unsigned int                                           bdf_order;
   bool                                                   is_dg;
+  bool                                                   use_leary_projection;
   std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_velocity_factory;
   std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_pressure_factory;
   std::function<std::unique_ptr<Function<dim>>()>        body_force_factory;
@@ -2282,7 +2285,16 @@ private:
                 auto u_plus =
                   make_vectorized_array(integration_constants.get_gamma0() / time_step) *
                   g;
-
+                
+                if(!use_leary_projection)
+                  for (unsigned int i = 0; i < integration_constants.get_order(); ++i)
+                    {
+                      velocity_bc->set_time(time - (i + 1) * time_step);
+                      u_plus -=
+                        make_vectorized_array(integration_constants.get_alpha(i) /
+                                              time_step) *
+                        evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
+                    }
                 
                 const auto flux = (-u_plus) * normal;
 
