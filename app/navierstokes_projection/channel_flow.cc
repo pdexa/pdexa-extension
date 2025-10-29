@@ -353,12 +353,12 @@ do_test(const unsigned int fe_degree,
           }
       pressure_op.set_time(current_time);
 
-      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
+      for (unsigned int i = 0; i < bdf.get_order(); ++i)
         {
           pressure_op.set_time(current_time - (i + 1) * time_step);
           vec_p_rhs_n = 0.;
           pressure_op.compute_convective_rhs(vec_p_rhs_n, vec_u_old[i]);
-          vec_p_rhs.add(bdf_p.get_beta(i), vec_p_rhs_n);
+          vec_p_rhs.add(bdf.get_beta(i), vec_p_rhs_n);
         }
 
       speed_extrapolated = 0.;
