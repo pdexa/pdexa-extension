@@ -2354,8 +2354,8 @@ private:
                           const VectorType                            &src,
                           const std::pair<unsigned int, unsigned int> &cell_range) const
   {
-    FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, 1, 1);
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 1);
+    FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, 1, 0);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 0);
 
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
@@ -2385,10 +2385,10 @@ private:
   {
     if (!is_dg)
       return;
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 0);
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 0);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 0);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, 0, 0);
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
@@ -2429,8 +2429,8 @@ private:
     const VectorType                            &src,
     const std::pair<unsigned int, unsigned int> &face_range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 0);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 0);
 
     auto dirichlet_bc_velocity = dirichletBC_velocity_factory();
     dirichlet_bc_velocity->set_time(time);
