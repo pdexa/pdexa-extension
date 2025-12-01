@@ -61,6 +61,10 @@ const double penalty_continuity = 1.0;
 const double viscosity = 0.025;
 const double u_x_max   = 1.;
 
+
+const double a  = 2.0;
+const bool stationary = true;
+
 template <int dim>
 class AnalyticalSolutionVelocity : public dealii::Function<dim>
 {
@@ -72,38 +76,35 @@ public:
   {}
 
   double
-  value(const dealii::Point<dim> &p, const unsigned int component = 0) const final
+  value(const Point<dim> &p, const unsigned int component = 0) const final
   {
-    const double t      = this->get_time();
-    const double pi     = dealii::numbers::PI;
-    double       result = 0.0;
-    if (component == 0)
-      result = -std::sin(2. * pi * p[1]);
-    else if (component == 1)
-      result = std::sin(2. * pi * p[0]);
+    const double t  = this->get_time();
+    const double pi = numbers::PI;
 
-    result *= std::exp(-4. * viscosity * pi * pi * t);
+    const double g_u =
+      stationary ? 1. : std::exp(-2. * a * a * pi * pi * viscosity * t);
+
+    double result = 0.0;
+    if (component == 0)
+      result = -std::cos(a * pi * p[0]) * std::sin(a * pi * p[1]) * g_u;
+    else if (component == 1)
+      result = std::sin(a * pi * p[0]) * std::cos(a * pi * p[1]) * g_u;
+    else if (component == 2)
+      result = 0.;
+
+    // taylor-green vortex initial condition in 3d
+    if constexpr (dim == 3)
+      result *= std::sin(a * pi * p[2]);
+
     return result;
   }
 
   dealii::Tensor<1, dim, double>
   gradient(const dealii::Point<dim> &p, const unsigned int component = 0) const final
   {
-    const double                   t  = this->get_time();
-    const double                   pi = dealii::numbers::PI;
-    dealii::Tensor<1, dim, double> result;
-    if (component == 0)
-      {
-        result[0] = 0.;
-        result[1] = -2. * pi * std::cos(2. * pi * p[1]);
-      }
-    else if (component == 1)
-      {
-        result[0] = 2. * pi * std::cos(2. * pi * p[0]);
-        result[1] = 0.;
-      }
-    result *= std::exp(-4. * viscosity * pi * pi * t);
-    return result;
+    (void)p;
+    (void)component;
+    DEAL_II_NOT_IMPLEMENTED();
   }
 
 private:
@@ -123,13 +124,17 @@ public:
   {}
 
   double
-  value(const dealii::Point<dim> &p, const unsigned int /*component*/) const final
+  value(const Point<dim> &p, const unsigned int) const final
   {
     const double t  = this->get_time();
-    const double pi = dealii::numbers::PI;
+    const double pi = numbers::PI;
 
-    const double result = -std::cos(2. * pi * p[0]) * std::cos(2. * pi * p[1]) *
-                          std::exp(-8. * viscosity * pi * pi * t);
+    const double g_p =
+      stationary ? 1. : std::exp(-4. * a * a * pi * pi * viscosity * t);
+
+    const double result =
+      -0.25 * (std::cos(2. * a * pi * p[0]) + std::cos(2. * a * pi * p[1])) *
+      g_p;
 
     return result;
   }
@@ -151,12 +156,53 @@ public:
   {}
 
   double
-  value(const dealii::Point<dim> &p, const unsigned int component = 0) const final
+  value(const Point<dim> &p, const unsigned int component = 0) const final
   {
-    (void)p;
-    (void)component;
-    double result = 0.0;
-    return result;
+    const double pi = numbers::PI;
+    if (stationary)
+      {
+        const double prefactor = 2. * a * a * pi * pi * viscosity;
+
+        double result = 0.0;
+        if (component == 0)
+          result =
+            -prefactor * std::cos(a * pi * p[0]) * std::sin(a * pi * p[1]);
+        else if (component == 1)
+          result =
+            prefactor * std::sin(a * pi * p[0]) * std::cos(a * pi * p[1]);
+        if (false)
+          {
+            if (component == 0)
+              result += 0.5 * a * pi * std::sin(2. * a * pi * p[0]);
+            else if (component == 1)
+              result += 0.5 * a * pi * std::sin(2. * a * pi * p[1]);
+          }
+
+        return result;
+      }
+    else
+      {
+        if (true)
+          return 0;
+        else if (false)
+          {
+            const double t      = this->get_time();
+            double       result = 0.0;
+            if (component == 0)
+              result = (a * pi * exp(-4 * a * a * viscosity * t * pi * pi) *
+                        sin(2 * pi * a * p[0])) /
+                       2;
+            else if (component == 1)
+              result = (a * pi * exp(-4 * a * a * viscosity * t * pi * pi) *
+                        sin(2 * pi * a * p[1])) /
+                       2;
+            return result;
+          }
+        else
+          AssertThrow(false, ExcMessage("Unknown equation type!"));
+
+        return 0;
+      }
   }
 
 private:
@@ -182,7 +228,9 @@ do_test(const unsigned int fe_degree,
   parallel::distributed::Triangulation<dim> tria(MPI_COMM_WORLD);
 
   double L = 1.;
-  GridGenerator::hyper_cube(tria, -L / 2., L / 2.);
+  (void) L;
+  //GridGenerator::hyper_cube(tria, -L / 2., L / 2.);
+  GridGenerator::hyper_cube(tria, 0., 1.);
 
   if (use_neumann_boundary)
     {
@@ -210,8 +258,8 @@ do_test(const unsigned int fe_degree,
   // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
 
-  unsigned int bdf_order   = 4;
-  unsigned int bdf_order_p = 3;
+  unsigned int bdf_order   = 2;
+  unsigned int bdf_order_p = 2;
 
   BDFTimeIntegratorConstants bdf(bdf_order);
   BDFTimeIntegratorConstants bdf_p(bdf_order_p);
@@ -299,7 +347,7 @@ do_test(const unsigned int fe_degree,
   unsigned int time_step_number  = bdf.get_order() - 1;
   unsigned int n_performed_steps = 0;
 
-  const bool write_output = false;
+  const bool write_output = true;
   while (current_time <= end_time)
     {
       current_time += time_step;
@@ -328,8 +376,8 @@ do_test(const unsigned int fe_degree,
         }
 
       speed_extrapolated = 0.;
-      for (unsigned int i = 0; i < bdf_p.get_order(); ++i) 
-        speed_extrapolated.add(bdf_p.get_beta(i), vec_u_old[i]); 
+      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
+        speed_extrapolated.add(bdf_p.get_beta(i), vec_u_old[i]);
 
       pressure_op.set_time(current_time);
       vec_p_rhs_n   = 0.;
@@ -465,7 +513,7 @@ do_test(const unsigned int fe_degree,
           data_out.build_patches(mapping, fe_u.degree, DataOut<dim>::curved_inner_cells);
 
           const std::string filename =
-            "solution-L2-" + std::to_string(time_step_number) + ".vtu";
+            "solution-L2-weak_divergence" + std::to_string(time_step_number) + ".vtu";
           // "solution-L2-" + std::to_string(n_refinements) + "_p_" +
           // std::to_string(degree) + ".vtu";
           data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
@@ -538,13 +586,15 @@ main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-   // for (unsigned int i = 1; i < 7; ++i)
+   //for (unsigned int i = 1; i < 7; ++i)
    //  do_test<2, double>(3, i, 14);
+    do_test<2, double>(7, 3, 14);
 
+   
   // for (unsigned int i = 1; i < 7; ++i)
   //   do_test<2, double>(5, i, 14);
 
-  for (unsigned int i = 1; i < 15; ++i)
-    do_test<2, double>(5, 4, i);
-  // do_test<2, double>(5, 4, 14);
+  //for (unsigned int i = 1; i < 15; ++i)
+  //  do_test<2, double>(5, 4, i);
+  // do_test<2, double>(3, 5, 10);
 }

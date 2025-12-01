@@ -36,11 +36,9 @@
 using namespace dealii;
 
 
-const bool use_extrapolated_velocity                 = false;
-const bool use_pressure_convective_upwind_flux       = false;
 const bool use_neumann_boundary                      = true;
-const bool use_analytical_curl                       = false;
 const bool use_skew_symmetric_convective_formulation = true;
+const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
 
 const bool use_amg                  = false;
@@ -61,6 +59,7 @@ const bool use_amg_as_coarse_grid_solver_vel = false;
 const double penalty_divergence = 1.0;
 const double penalty_continuity = 1.0;
 
+const double upwind_factor = 1.0;
 
 const double viscosity = 1e-3;
 const double u_x_max   = 1.5;
@@ -229,7 +228,7 @@ do_test(const unsigned int fe_degree,
     return std::make_unique<AnalyticalSolutionVelocity<dim>>(u_x_max, viscosity);
   });
   // set up operator
-  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order);
+  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order, use_skew_symmetric_convective_formulation, use_divergence_formulation, upwind_factor);
 
   momentum_op.set_viscosity(viscosity);
   momentum_op.set_time(0.0);
@@ -266,7 +265,7 @@ do_test(const unsigned int fe_degree,
 
 
   PressureOperator<dim, Number> pressure_op;
-  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step);
+  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, use_leray_projection);
   pressure_op.set_body_force_factory([=]() {
     return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
   });
@@ -354,12 +353,12 @@ do_test(const unsigned int fe_degree,
           }
       pressure_op.set_time(current_time);
 
-      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
+      for (unsigned int i = 0; i < bdf.get_order(); ++i)
         {
           pressure_op.set_time(current_time - (i + 1) * time_step);
           vec_p_rhs_n = 0.;
           pressure_op.compute_convective_rhs(vec_p_rhs_n, vec_u_old[i]);
-          vec_p_rhs.add(bdf_p.get_beta(i), vec_p_rhs_n);
+          vec_p_rhs.add(bdf.get_beta(i), vec_p_rhs_n);
         }
 
       speed_extrapolated = 0.;
@@ -377,7 +376,7 @@ do_test(const unsigned int fe_degree,
       unsigned int iteration_count;
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
-      SolverControl control(100000, 1e-12 * vec_p_rhs.l2_norm());
+      ReductionControl control(10000, 1e-12, 1e-6);
       SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
       // vec_p = 0.;
       if (use_amg)
@@ -428,7 +427,7 @@ do_test(const unsigned int fe_degree,
       if (use_mg_velocity)
         preconditioner_velocity.update(current_time, speed_extrapolated);
 
-      SolverControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
+      ReductionControl control_mom(10000, 1e-12, 1e-6);
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
       vec_u.swap(speed_extrapolated); // = 0.;
       unsigned int n_iterations_vel;

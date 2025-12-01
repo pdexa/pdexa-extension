@@ -356,12 +356,18 @@ public:
     for (unsigned int level = min_level; level <= max_level; ++level)
       {
         mg_matrices[level].set_time(time);
-        VectorType dummy, dummy_p;
+
+        VectorType dummy, dummy2, dummy_p;
         mg_matrices[level].initialize_dof_vector(dummy, dof_no_v);
+        mg_matrices[level].initialize_dof_vector(dummy2, dof_no_v);
         mg_matrices[level].initialize_dof_vector(dummy_p, dof_no_p);
+        dummy   = 0.;
+        dummy2  = 0.;
+        dummy_p = 0.;
+
         mg_matrices[level].set_viscosity(viscosity);
 
-        mg_matrices[level].rhs(dummy, dummy, speed_on_levels[level], dummy_p);
+        mg_matrices[level].rhs(dummy, dummy2, speed_on_levels[level], dummy_p);
       }
 
     // Update smoother for every level
@@ -401,7 +407,7 @@ public:
     std::unique_ptr<MGCoarseGridBase<VectorType>> mg_coarse;
 
     const auto       precond_point_jacobi = *smoother_data[min_level].preconditioner;
-    ReductionControl coarse_grid_solver_control(10000, 1e-20, 1e-4, false, false);
+    ReductionControl coarse_grid_solver_control(10000, 1e-12, 1e-4, false, false);
     SolverGMRES<VectorType> coarse_grid_solver(coarse_grid_solver_control);
 
     // Coarse grid solver
@@ -433,7 +439,7 @@ public:
     PreconditionerType preconditioner(
       momentum_operator.get_matrix_free().get_dof_handler(dof_no_v), mg, transfer);
 
-    SolverControl                 control(100000, 1e-12 * vec_u_rhs.l2_norm());
+    ReductionControl control(10000, 1e-12, 1e-6);
     SolverGMRES<VectorTypeSystem> solver_gmres(control);
 
     solver_gmres.solve(momentum_operator, vec_u, vec_u_rhs, preconditioner);
@@ -481,7 +487,7 @@ public:
              VectorType       &dst,
              const VectorType &src) const final
   {
-    ReductionControl coarse_grid_solver_control(10000, 1e-20, 1e-4, false, false);
+    ReductionControl coarse_grid_solver_control(10000, 1e-12, 1e-3, false, false);
     SolverCG<LinearAlgebra::distributed::Vector<TrilinosScalar>> coarse_grid_solver(
       coarse_grid_solver_control);
 
@@ -685,7 +691,7 @@ public:
           std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
           data);
 
-        mg_matrices[level].reinit(mg_matrices_mf[level], bdf_order, time_step);
+        mg_matrices[level].reinit(mg_matrices_mf[level], bdf_order, time_step, pressure_operator.get_use_leray_projection());
       }
 
     // init transfer
@@ -776,7 +782,7 @@ public:
     PreconditionerType preconditioner(
       pressure_operator.get_matrix_free().get_dof_handler(dof_no_p), mg, transfer);
 
-    SolverControl              control(100000, 1e-12 * vec_p_rhs.l2_norm());
+    ReductionControl control(10000, 1e-12, 1e-6);
     SolverCG<VectorTypeSystem> solver_cg(control);
 
     solver_cg.solve(pressure_operator, vec_p, vec_p_rhs, preconditioner);
