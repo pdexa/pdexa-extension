@@ -1,7 +1,7 @@
 # PDExa Extension
 
 This repository contains extensions to Deal.II/Ginkgo/... that are necessary
-for the PDExa project.
+for the PDExa project, as well as example applications.
 
 ## Deal.II Extensions
 
