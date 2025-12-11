@@ -1,5 +1,5 @@
 target_sources(
-        ext
+        pdexa-ext
         PRIVATE
         dummy.cpp
 )
