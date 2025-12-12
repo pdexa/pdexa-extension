@@ -1,5 +1,7 @@
 message(STATUS "Enabling package GTest")
 
+find_package(GTest)
+
 if(NOT GTest_FOUND)
   message(STATUS "Fetching external GTest")
   fetchcontent_declare(
