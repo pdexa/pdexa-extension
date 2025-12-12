@@ -1,5 +1,5 @@
 target_sources(
-        pdexa-ext
+        ext
         PRIVATE
         dummy.cpp
 )
@@ -22,5 +22,5 @@ target_sources(
         ${header_files}
 )
 
-target_link_libraries(pdexa-ext Ginkgo::ginkgo Kokkos::kokkos)  # can't use PUBLIC because of deal.ii
-deal_ii_setup_target(pdexa-ext)
+target_link_libraries(ext Ginkgo::ginkgo Kokkos::kokkos)  # can't use PUBLIC because of deal.ii
+deal_ii_setup_target(ext)
