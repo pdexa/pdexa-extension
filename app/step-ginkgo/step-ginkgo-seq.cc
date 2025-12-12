@@ -14,7 +14,7 @@
  * ---------------------------------------------------------------------
  *
  * Author: Marcel Koch, KIT, 2023 - 2025
- *         Martin Kronbichler, Ruhr University Boc
+ *         Martin Kronbichler, Ruhr University Bochum, 2024
  */
 
 // @sect3{Include files}
