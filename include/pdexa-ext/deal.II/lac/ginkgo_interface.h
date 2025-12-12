@@ -31,21 +31,22 @@ namespace detail {
 template<typename ValueType, typename MemorySpace>
 std::unique_ptr<gko::matrix::Dense<ValueType>> create_vector(const std::shared_ptr<const gko::Executor>& exec,
                                                              ArrayView<ValueType, MemorySpace>& array) {
-  std::shared_ptr<const gko::Executor> array_exec =
-    gko::ext::kokkos::create_executor(typename MemorySpace::kokkos_space::execution_space{});
+  Assert(gko::ext::kokkos::detail::check_compatibility<typename MemorySpace::kokkos_space>(exec),
+         ExcMessage("Incompatible Ginkgo Executor."));
 
   gko::dim<2> size = {static_cast<gko::size_type>(array.size()), 1};
-  return gko::matrix::Dense<ValueType>::create(exec, size, gko::make_array_view(array_exec, size[0], array.data()), 1);
+  return gko::matrix::Dense<ValueType>::create(exec, size, gko::make_array_view(exec, size[0], array.data()), 1);
 }
 
 template<typename ValueType, typename MemorySpace>
 std::unique_ptr<const gko::matrix::Dense<ValueType>>
 create_const_vector(const std::shared_ptr<const gko::Executor>& exec, const ArrayView<const ValueType, MemorySpace>& array) {
-  std::shared_ptr<const gko::Executor> array_exec =
-    gko::ext::kokkos::create_executor(typename MemorySpace::kokkos_space::execution_space{});
+  Assert(gko::ext::kokkos::detail::check_compatibility<typename MemorySpace::kokkos_space>(exec),
+         ExcMessage("Incompatible Ginkgo Executor."));
 
   gko::dim<2> size = {static_cast<gko::size_type>(array.size()), 1};
-  return gko::matrix::Dense<ValueType>::create_const(exec, size, gko::make_const_array_view(array_exec, size[0], array.data()), 1);
+  return gko::matrix::Dense<ValueType>::create_const(exec, size,
+                                                     gko::make_const_array_view(exec, size[0], array.data()), 1);
 }
 } // namespace detail
 
