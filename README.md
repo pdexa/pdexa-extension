@@ -16,3 +16,5 @@ It provides:
 
 The vector mappings are implemented without any copy operation.
 The Ginkgo vectors will access the same memory as the deal.II vectors.
+
+See the examples in `app/step-ginkgo` for more details on the integrations.
