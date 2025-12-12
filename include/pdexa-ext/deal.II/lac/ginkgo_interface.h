@@ -27,7 +27,7 @@
 
 namespace dealii {
 namespace GinkgoInterface {
-
+namespace detail {
 template<typename ValueType, typename MemorySpace>
 std::unique_ptr<gko::matrix::Dense<ValueType>> create_vector(const std::shared_ptr<const gko::Executor>& exec,
                                                              ArrayView<ValueType, MemorySpace>& array) {
@@ -39,22 +39,15 @@ std::unique_ptr<gko::matrix::Dense<ValueType>> create_vector(const std::shared_p
 }
 
 template<typename ValueType, typename MemorySpace>
-std::unique_ptr<gko::matrix::Dense<ValueType>> create_vector(ArrayView<ValueType, MemorySpace>& array) {
-  std::shared_ptr<const gko::Executor> exec =
-    gko::ext::kokkos::create_executor(typename MemorySpace::kokkos_space::execution_space{});
-  return create_vector(std::move(exec), array);
-}
-
-template<typename ValueType, typename MemorySpace>
-std::unique_ptr<const gko::matrix::Dense<std::decay_t<ValueType>>>
-create_vector(const std::shared_ptr<const gko::Executor>& exec, const ArrayView<ValueType, MemorySpace>& array) {
+std::unique_ptr<const gko::matrix::Dense<ValueType>>
+create_const_vector(const std::shared_ptr<const gko::Executor>& exec, const ArrayView<const ValueType, MemorySpace>& array) {
   std::shared_ptr<const gko::Executor> array_exec =
     gko::ext::kokkos::create_executor(typename MemorySpace::kokkos_space::execution_space{});
 
   gko::dim<2> size = {static_cast<gko::size_type>(array.size()), 1};
-  return gko::matrix::Dense<std::decay_t<ValueType>>::create_const(
-    exec, size, gko::make_const_array_view(array_exec, size[0], array.data()), 1);
+  return gko::matrix::Dense<ValueType>::create_const(exec, size, gko::make_const_array_view(array_exec, size[0], array.data()), 1);
 }
+} // namespace detail
 
 template<typename ValueType, typename MemorySpace>
 std::unique_ptr<gko::matrix::Dense<ValueType>>
@@ -62,7 +55,8 @@ create_vector(const std::shared_ptr<const gko::Executor>& exec,
               LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
   Assert(v.locally_owned_size() == v.size(),
          ExcMessage(" distributed vectors are only supported in the GinkgoInterface::MPI namespace "));
-  return GinkgoInterface::create_vector(exec, ArrayView<ValueType, MemorySpace>{v.begin(), v.locally_owned_size()});
+  auto view = ArrayView<ValueType, MemorySpace>{v.begin(), v.locally_owned_size()};
+  return detail::create_vector(exec, view);
 }
 
 template<typename ValueType, typename MemorySpace>
@@ -71,8 +65,8 @@ create_vector(const std::shared_ptr<const gko::Executor>& exec,
               const LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
   Assert(v.locally_owned_size() == v.size(),
          ExcMessage(" distributed vectors are only supported in the GinkgoInterface::MPI namespace "));
-  return GinkgoInterface::create_vector(exec,
-                                        ArrayView<const ValueType, MemorySpace>{v.begin(), v.locally_owned_size()});
+  auto view = ArrayView<const ValueType, MemorySpace>{v.begin(), v.locally_owned_size()};
+  return detail::create_const_vector(exec, view);
 }
 
 namespace MPI {
@@ -81,9 +75,9 @@ std::unique_ptr<gko::experimental::distributed::Vector<ValueType>>
 create_vector(const std::shared_ptr<const gko::Executor>& exec,
               LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
   Assert(!v.has_ghost_elements(), ExcMessage(" Vectors with ghost elements are not supported "));
+  auto view = ArrayView<ValueType, MemorySpace>{v.begin(), v.locally_owned_size()};
   return gko::experimental::distributed::Vector<ValueType>::create(
-    exec, v.get_mpi_communicator(), gko::dim<2>{v.size(), 1},
-    GinkgoInterface::create_vector(exec, ArrayView<ValueType, MemorySpace>{v.begin(), v.locally_owned_size()}));
+    exec, v.get_mpi_communicator(), gko::dim<2>{v.size(), 1}, detail::create_vector(exec, view));
 }
 
 template<typename ValueType, typename MemorySpace>
@@ -91,9 +85,9 @@ std::unique_ptr<const gko::experimental::distributed::Vector<ValueType>>
 create_vector(const std::shared_ptr<const gko::Executor>& exec,
               const LinearAlgebra::distributed::Vector<ValueType, MemorySpace>& v) {
   Assert(!v.has_ghost_elements(), ExcMessage(" Vectors with ghost elements are not supported "));
+  auto view = ArrayView<const ValueType, MemorySpace>{v.begin(), v.locally_owned_size()};
   return gko::experimental::distributed::Vector<ValueType>::create_const(
-    exec, v.get_mpi_communicator(), gko::dim<2>{v.size(), 1},
-    GinkgoInterface::create_vector(exec, ArrayView<const ValueType, MemorySpace>{v.begin(), v.locally_owned_size()}));
+    exec, v.get_mpi_communicator(), gko::dim<2>{v.size(), 1}, detail::create_const_vector(exec, view));
 }
 } // namespace MPI
 
@@ -178,12 +172,12 @@ struct dist_tag {};
 
 template<typename... Args>
 auto create_vector_dispatch(seq_tag, Args&&... args) {
-  return create_vector(std::forward<Args>(args)...);
+  return GinkgoInterface::create_vector(std::forward<Args>(args)...);
 }
 
 template<typename... Args>
 auto create_vector_dispatch(dist_tag, Args&&... args) {
-  return MPI::create_vector(std::forward<Args>(args)...);
+  return GinkgoInterface::MPI::create_vector(std::forward<Args>(args)...);
 }
 
 template<typename DomainValueType,
