@@ -5,11 +5,16 @@ for the PDExa project, as well as example applications.
 
 ## Deal.II Extensions
 
-### Ginkgo Wrappers
+### Ginkgo Interface
 
-Wrappers for the following Ginkgo types are available:
+The interface presents a lightweight approach to make use Ginkgo solvers and preconditioners in deal.II.
+It provides:
 
-- `matrix::Dense` aka Vector, this is subject of change due to ongoing deal.ii interface discussions
-- Sparse matrix classes: `Csr, Coo, Ell, Hybrid, Sellp`
-- Iterative Solver: `(F)Cg, Bicgstab, Cgs, (F)Gmres, Ir`
-- Preconditioner: `Jacobi`
+- mappings from deal.II `LinearAlgebra::distributed::Vector` to Ginkgo `Dense` and `distributed::Vector` vectors,
+- mappings from deal.II `SparseMatrix` to Ginkgo's sparse matrix types,
+- mappings from Ginkgo's `LinOp` and `LinOpFactory` to deal.II `LinearOperator`.
+
+The vector mappings are implemented without any copy operation.
+The Ginkgo vectors will access the same memory as the deal.II vectors.
+
+See the examples in `app/step-ginkgo` for more details on the integrations.

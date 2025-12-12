@@ -1,6 +1,6 @@
 message(STATUS "Enabling package GTest")
 
-find_package(GTest QUIET)
+find_package(GTest)
 
 if(NOT GTest_FOUND)
   message(STATUS "Fetching external GTest")
@@ -13,4 +13,6 @@ if(NOT GTest_FOUND)
   set(gtest_force_shared_crt ON CACHE INTERNAL "")
   set(INSTALL_GTEST OFF CACHE INTERNAL "")
   fetchcontent_makeavailable(googletest)
+
+  set(GTest_FOUND ON CACHE INTERNAL "")
 endif()

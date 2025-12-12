@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+# deal.ii seems to mess with this policy, so just set it to OLD always
+cmake_policy(SET CMP0074 OLD)
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(Ginkgo 1.10)
+find_dependency(Kokkos 4.1)
+find_dependency(deal.II)
+
+include ( "${CMAKE_CURRENT_LIST_DIR}/pdexa-targets.cmake" )
