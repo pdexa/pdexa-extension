@@ -14,6 +14,8 @@
  *
  * Authors: Wolfgang Bangerth, Texas A&M University, 2009, 2010
  *          Timo Heister, University of Goettingen, 2009, 2010
+ *          Marcel Koch, Karlsruhe Institute of Technology, 2024 - 2025
+ *          Richard Schussnig, Ruhr University Bochum, 2024
  */
 
 #include <deal.II/base/function.h>
