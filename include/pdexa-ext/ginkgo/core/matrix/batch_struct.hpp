@@ -99,9 +99,16 @@ struct uniform_batch {
   using value_type = ValueType;
   using entry_type = batch_item<ValueType>;
 
+  // Suppress false positive warning
+#ifdef __NVCC_DIAG_PRAGMA_SUPPORT__
+#pragma nv_diag_suppress 554
+#endif
   operator uniform_batch<const ValueType>() const {
     return {values, num_batch_items, stride, num_rows, num_cols};
   }
+#ifdef __NVCC_DIAG_PRAGMA_SUPPORT__
+#pragma nv_diag_default 554
+#endif
 
   ValueType* values;
   size_type num_batch_items;

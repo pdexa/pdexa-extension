@@ -49,9 +49,15 @@ struct uniform_batch {
   int32 num_rows;
   int32 num_rhs;
 
+#ifdef __NVCC_DIAG_PRAGMA_SUPPORT__
+#pragma nv_diag_suppress 554
+#endif
   operator uniform_batch<const ValueType>() const {
     return {values, num_batch_items, stride, num_rows, num_rhs};
   }
+#ifdef __NVCC_DIAG_PRAGMA_SUPPORT__
+#pragma nv_diag_default 554
+#endif
 
   [[nodiscard]] size_type get_single_item_num_nnz() const { return static_cast<size_type>(stride * num_rows); }
 };
