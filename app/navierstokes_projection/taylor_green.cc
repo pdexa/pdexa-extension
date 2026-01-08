@@ -42,7 +42,7 @@ const bool use_leray_projection                      = true;
 const bool use_amg                       = false;
 const bool use_hmg                       = true;
 const bool use_pmg                       = true;
-const bool use_cmg                       = false;
+const bool use_cmg                       = true;
 const bool use_pointjacobi_pressure      = false;
 const bool use_amg_as_coarse_grid_solver = false;
 

@@ -1667,6 +1667,16 @@ public:
     is_dg = matrix_free->get_dof_handler(dof_no_p).get_fe().n_dofs_per_vertex() == 0;
     use_leray_projection = use_leray_projection_in;
 
+    constrained_indices.clear();
+
+    if (!is_dg)
+      for (auto i : matrix_free->get_constrained_dofs(dof_no_p))
+      {
+       std::cout << i << std::endl;
+        constrained_indices.push_back(i);
+
+      }
+
     const unsigned int fe_degree = matrix_free->get_dof_handler(dof_no_p).get_fe().degree;
     const double       penalty_factor = 1.0 * (fe_degree + 1) * (fe_degree);
     {
@@ -1746,6 +1756,7 @@ public:
   void
   vmult(VectorType &dst, const VectorType &src) const
   {
+    if(is_dg)
     matrix_free->loop(&PressureOperator::local_apply_domain,
                       &PressureOperator::local_apply_inner_face,
                       &PressureOperator::local_apply_boundary_face,
@@ -1755,6 +1766,18 @@ public:
                       true,
                       MatrixFree<dim, number>::DataAccessOnFaces::gradients,
                       MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+
+    else
+    {
+      matrix_free->cell_loop(&PressureOperator::local_apply_domain,
+        this,
+        dst,
+        src,
+        true);
+      for (unsigned int i = 0; i < constrained_indices.size(); ++i)
+        dst.local_element(constrained_indices[i]) = 0.0;
+//          src.local_element(constrained_indices[i]); //TODO: is 0????
+    }
   }
 
   void
@@ -1871,16 +1894,29 @@ public:
         quad_no_p,
         0);
     else
-      MatrixFreeTools::compute_matrix<dim, -1, 0, 1, number, VectorizedArray<number>>(
-        *matrix_free,
-        AffineConstraints<number>(),
-        system_matrix,
-        [&](auto &phi) { local_apply_domain_matrix_based(phi); },
-        {},
-        [&](auto &phi) { local_apply_boundary_face_matrix_based(phi); },
-        dof_no_p,
-        quad_no_p,
-        0);
+      {
+        AffineConstraints<number> local_constraints;
+        local_constraints.clear();
+        local_constraints.reinit(dof_handler.locally_owned_dofs(),
+                          DoFTools::extract_locally_relevant_dofs(dof_handler));
+        DoFTools::make_hanging_node_constraints(dof_handler, local_constraints);
+        VectorTools::interpolate_boundary_values(
+          dof_handler, 1, Functions::ZeroFunction<dim, number>(), local_constraints);
+        local_constraints.close();
+
+        MatrixFreeTools::compute_matrix<dim, -1, 0, 1, number, VectorizedArray<number>>(
+          *matrix_free,
+          local_constraints,
+          system_matrix,
+          [&](auto &phi) { local_apply_domain_matrix_based(phi); },
+          {},
+          {}, //[&](auto &phi) { local_apply_boundary_face_matrix_based(phi); },
+          dof_no_p,
+          quad_no_p,
+          0);
+      }
+
+      system_matrix.compress(dealii::VectorOperation::add);
   }
 
   void
@@ -1906,7 +1942,7 @@ public:
         diagonal_vector,
         [&](auto &phi) { local_apply_domain_matrix_based(phi); },
         {},
-        [&](auto &phi) { local_apply_boundary_face_matrix_based(phi); },
+        {}, //[&](auto &phi) { local_apply_boundary_face_matrix_based(phi); },
         dof_no_p,
         quad_no_p,
         0);
@@ -1973,7 +2009,7 @@ private:
   std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_velocity_factory;
   std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_pressure_factory;
   std::function<std::unique_ptr<Function<dim>>()>        body_force_factory;
-
+  std::vector<unsigned int>                              constrained_indices;
 
 
   void

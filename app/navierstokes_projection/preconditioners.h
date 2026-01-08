@@ -679,15 +679,26 @@ public:
           (update_gradients | update_JxW_values | update_normal_vectors |
            update_quadrature_points);
         // data.mg_level = level;
-        AffineConstraints<double> dummy;
+        AffineConstraints<number> dummy;
         dummy.close();
+        AffineConstraints<number> constraints;
+        constraints.clear();
+        if(!(dof_handlers[level].get_fe().n_dofs_per_vertex() == 0))
+        {
+          constraints.reinit(dof_handler.locally_owned_dofs(),
+                            DoFTools::extract_locally_relevant_dofs(dof_handler));
+          DoFTools::make_hanging_node_constraints(dof_handler, constraints);
+          VectorTools::interpolate_boundary_values(
+            dof_handler, 1, Functions::ZeroFunction<dim, number>(), constraints);
+        }
+        constraints.close();
 
         mg_matrices_mf[level].reinit(
           level < n_h_levels ? MappingQGeneric<dim>(1) :
                                MappingQGeneric<dim>(mapping_degree),
           std::vector<const DoFHandler<dim> *>{&dof_handlers_u[level],
                                                &dof_handlers[level]},
-          std::vector<const AffineConstraints<double> *>{&dummy, &dummy},
+          std::vector<const AffineConstraints<number> *>{&dummy, &constraints},
           std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
           data);
 
