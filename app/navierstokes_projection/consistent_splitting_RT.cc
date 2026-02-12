@@ -1013,7 +1013,7 @@ private:
                 //integrator_inner.submit_gradient(make_vectorized_array<number>(viscosity) * 0.5  * outer_product(-u_inner, normal), q);
               }
           }
-        else if (matrix_free.get_boundary_id(face) == 1) //might need changes
+        else if (matrix_free.get_boundary_id(face) == 1) 
           {
             //std::cout<<"neumann bc\n";
             // Nothing to do
@@ -1324,8 +1324,9 @@ private:
 
                 integrator_inner.submit_normal_derivative(
                   Tensor<1, dim, VectorizedArray<number>>(), q);
-                integrator_inner.submit_value(h_u + pressure, q);
-              }
+                integrator_inner.submit_value(h_u, q); //since we have the average flux
+                //integrator_inner.submit_value(h_u + pressure, q);
+              }   
           }
 
         integrator_inner.integrate_scatter(EvaluationFlags::values |
@@ -2402,12 +2403,6 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
       
       //momentum_op.compute_laplacian(vec_laplacian_u, vec_u);
 
-      /*vec_vorticity_rhs = 0.;
-      exact_curl.set_time(current_time);
-      VectorTools::interpolate(mapping,
-                               dof_handler_curl,
-                               exact_curl,
-                               vec_vorticity_rhs);*/
       
       pressure_op.compute_rhs(vec_p_rhs, vec_u, vec_vorticity, vec_u_deriv);
       if (!use_neumann_boundary && !use_pure_neummann_boundary)
@@ -2420,7 +2415,13 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
       
       if (write_output)
         pcout << "Pressure solver: " << control.last_step() << " iterations" << std::endl;
-
+      
+      vec_vorticity_rhs = 0.;
+      exact_curl.set_time(current_time);
+      VectorTools::interpolate(mapping,
+                               dof_handler_curl,
+                               exact_curl,
+                               vec_vorticity_rhs);
 
       if (write_output)
         {    
@@ -2544,6 +2545,10 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
             vec_u.zero_out_ghost_values();
             vec_vorticity.zero_out_ghost_values();
           }
+          if(!use_neumann_boundary && !use_pure_neummann_boundary)
+          {
+            VectorTools::subtract_mean_value(vec_p);
+          }
         }
 
         for (unsigned int i = bdf.get_order() - 1; i != 0; --i)
@@ -2554,6 +2559,15 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
 
         vec_u_old[0].swap(vec_u);
         vec_p_old[0].swap(vec_p);
+        if(write_output && time_step_number % vtk_output_interval == 0)
+        {
+          pcout<<"relative norms u and p:\t"<<vec_u_diff.l2_norm()/vec_u_old[1].l2_norm()<<
+              "\t"<<vec_p_diff.l2_norm()/vec_p_old[1].l2_norm()<<"\n";
+          pcout<<"\n";
+        }
+        if(vec_u_diff.l2_norm() / vec_u_old[1].l2_norm() < 1e-9 &&
+          vec_p_diff.l2_norm() / vec_p_old[1].l2_norm() < 1e-9)
+            break;
     }
 
     
@@ -2582,14 +2596,26 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
     VectorTools::compute_global_error(tria,
                                       error_per_cell,
                                       VectorTools::L2_norm); // H1_seminorm);
+  
+  VectorTools::interpolate(mapping,
+                            dof_handler_p,
+                            exact_pressure,
+                            vec_p_extrapolated);
+          
+    pcout<<std::setprecision(12);
+    pcout<<"viscosity: "<<viscosity<<"\n";
+  if(std::abs(vec_p_extrapolated.mean_value() - vec_p_old[0].mean_value()) > 1e-16 && 
+     std::abs(vec_p_extrapolated.mean_value()) > 1e-18)
+    vec_p_old[0].add(vec_p_extrapolated.mean_value());
+          
+    VectorTools::integrate_difference(mapping,
+                                      dof_handler_p,
+                                      vec_p_old[0],
+                                      exact_pressure,
+                                      error_per_cell,
+                                      QGauss<dim>(fe_p.degree + 3),
+                                      VectorTools::L2_norm);
 
-  VectorTools::integrate_difference(mapping,
-                                    dof_handler_p,
-                                    vec_p_old[0],
-                                    exact_pressure,
-                                    error_per_cell,
-                                    QGauss<dim>(fe_p.degree + 3),
-                                    VectorTools::L2_norm);
   const double pressure_error =
     VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
 
