@@ -19,7 +19,7 @@
 #include <deal.II/multigrid/multigrid.h>
 
 
-//#include "consistent_splitting_solver.h"
+// #include "consistent_splitting_solver.h"
 
 using namespace dealii;
 
@@ -41,13 +41,16 @@ public:
   InverseMassPreconditioner() = default;
 
   void
-  reinit(const MatrixFree<dim, number> &matrix_free, number scaling_factor_in, const unsigned int dof_no_v = 0, 
-            const unsigned int quad_no_v = 0, const unsigned int quad_no_v_mass = 1)
+  reinit(const MatrixFree<dim, number> &matrix_free,
+         number                         scaling_factor_in,
+         const unsigned int             dof_no_v       = 0,
+         const unsigned int             quad_no_v      = 0,
+         const unsigned int             quad_no_v_mass = 1)
   {
-    scaling_factor    = scaling_factor_in;
-    this->matrix_free = &matrix_free;
-    this->dof_no_v    = dof_no_v;
-    this->quad_no_v   = quad_no_v;
+    scaling_factor       = scaling_factor_in;
+    this->matrix_free    = &matrix_free;
+    this->dof_no_v       = dof_no_v;
+    this->quad_no_v      = quad_no_v;
     this->quad_no_v_mass = quad_no_v_mass;
   }
 
@@ -62,20 +65,7 @@ public:
   {
     dst.zero_out_ghost_values();
 
-    matrix_free->cell_loop(
-      &This::cell_loop_matrix_free_operator,
-      this,
-      dst,
-      src,
-      [&](const unsigned int start_range, const unsigned int end_range) {
-        for (unsigned int i = start_range; i < end_range; ++i)
-          dst.local_element(i) *= 0.;
-      },
-      [&](const unsigned int start_range, const unsigned int end_range) {
-        for (unsigned int i = start_range; i < end_range; ++i)
-          dst.local_element(i) *= scaling_factor;
-      },
-      dof_no_v);
+    matrix_free->cell_loop(&This::cell_loop_matrix_free_operator, this, dst, src);
   }
 
 private:
@@ -99,6 +89,8 @@ private:
         integrator.read_dof_values(src, 0);
 
         inverse_mass.apply(integrator.begin_dof_values(), integrator.begin_dof_values());
+        for (unsigned int i = 0; i < integrator.dofs_per_cell; ++i)
+          integrator.begin_dof_values()[i] *= scaling_factor;
 
         integrator.set_dof_values(dst, 0);
       }
@@ -106,9 +98,9 @@ private:
 
   const MatrixFree<dim, number> *matrix_free;
   number                         scaling_factor;
-  unsigned int                  dof_no_v;
-  unsigned int                 quad_no_v;
-  unsigned int                 quad_no_v_mass;
+  unsigned int                   dof_no_v;
+  unsigned int                   quad_no_v;
+  unsigned int                   quad_no_v_mass;
 };
 
 
@@ -118,10 +110,13 @@ class MGCoarseAMG : public MGCoarseGridBase<VectorType>
 {
 private:
 public:
-  MGCoarseAMG(const TrilinosWrappers::PreconditionAMG &amg, const bool is_singular_in)
+  MGCoarseAMG(const std::vector<unsigned int>         &constrained_dofs,
+              const TrilinosWrappers::PreconditionAMG &amg,
+              const bool                               is_singular_in)
   {
-    amg_preconditioner = &amg;
-    is_singular        = is_singular_in;
+    this->constrained_dofs = constrained_dofs;
+    amg_preconditioner     = &amg;
+    is_singular            = is_singular_in;
   }
 
   void
@@ -135,8 +130,9 @@ public:
         if (is_singular)
           {
             VectorType r(src);
-            dealii::VectorTools::subtract_mean_value(r);
+            make_zero_mean(constrained_dofs, r);
             amg_preconditioner->vmult(dst, r);
+            make_zero_mean(constrained_dofs, dst);
           }
         else
           amg_preconditioner->vmult(dst, src);
@@ -158,8 +154,31 @@ public:
   }
 
 private:
+  template <typename Number>
+  void
+  make_zero_mean(const std::vector<unsigned int>                    &constrained_dofs,
+                 dealii::LinearAlgebra::distributed::Vector<Number> &vec) const
+  {
+    // set constrained entries to zero
+    for (const unsigned int index : constrained_dofs)
+      vec.local_element(index) = 0.;
+
+    // rescale mean value computed among all vector entries to the vector size
+    // without constraints
+    const unsigned int n_unconstrained_dofs =
+      vec.locally_owned_size() - constrained_dofs.size();
+    vec.add(
+      -vec.mean_value() * vec.size() /
+      dealii::Utilities::MPI::sum(n_unconstrained_dofs, vec.get_mpi_communicator()));
+
+    // set constrained entries to zero again, this should now have zero mean
+    for (const unsigned int index : constrained_dofs)
+      vec.local_element(index) = 0.;
+  }
+
   const TrilinosWrappers::PreconditionAMG *amg_preconditioner;
   bool                                     is_singular;
+  std::vector<unsigned int>                constrained_dofs;
 };
 
 template <int dim, typename number_system, typename number = number_system>
@@ -190,9 +209,9 @@ public:
   {
     const auto  mf          = momentum_operator.get_matrix_free();
     const auto &dof_handler = mf.get_dof_handler(dof_no_v);
-    this->dof_no_v      = dof_no_v;
-    this->dof_no_p      = dof_no_p;
-    this->viscosity    = viscosity;
+    this->dof_no_v          = dof_no_v;
+    this->dof_no_p          = dof_no_p;
+    this->viscosity         = viscosity;
 
     if (use_hmg_vel)
       coarse_grid_triangulations =
@@ -304,9 +323,12 @@ public:
                                   bdf_order);
         mg_matrices[level].set_viscosity(viscosity);
         mg_matrices[level].set_time(momentum_operator.get_time());
-        mg_matrices[level].set_body_force_factory(momentum_operator.get_body_force_factory());
-        mg_matrices[level].set_DirichletBC_velocity_factory(momentum_operator.get_DirichletBC_velocity_factory());
-        mg_matrices[level].set_dirichletBC_pressure_factory(momentum_operator.get_dirichletBC_pressure_factory());
+        mg_matrices[level].set_body_force_factory(
+          momentum_operator.get_body_force_factory());
+        mg_matrices[level].set_DirichletBC_velocity_factory(
+          momentum_operator.get_DirichletBC_velocity_factory());
+        mg_matrices[level].set_dirichletBC_pressure_factory(
+          momentum_operator.get_dirichletBC_pressure_factory());
       }
 
     // init transfer
@@ -320,29 +342,6 @@ public:
 
     // Setup smoother for every level
     smoother_data.resize(minlevel, maxlevel);
-
-    for (unsigned int level = minlevel; level <= maxlevel; ++level)
-      {
-        if (level > 0)
-          {
-            smoother_data[level].smoothing_range     = 15.;
-            smoother_data[level].degree              = 5;
-            smoother_data[level].eig_cg_n_iterations = 10;
-          }
-        else
-          {
-            smoother_data[0].smoothing_range     = 1e-3;
-            smoother_data[0].degree              = numbers::invalid_unsigned_int;
-            smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
-          }
-
-        smoother_data[level].preconditioner =
-          std::make_shared<SmootherPreconditionerType>();
-        mg_matrices[level].compute_inverse_diagonal(
-          smoother_data[level].preconditioner->get_vector());
-      }
-
-    mg_smoother.initialize(mg_matrices, smoother_data);
   }
 
   void
@@ -414,7 +413,9 @@ public:
         amg_data.n_cycles = 2;
 
         precondition_amg.initialize(coarse_system_matrix, amg_data);
-        mg_coarse = std::make_unique<MGCoarseAMG<VectorType>>(precondition_amg, false);
+        mg_coarse = std::make_unique<MGCoarseAMG<VectorType>>(std::vector<unsigned int>(),
+                                                              precondition_amg,
+                                                              false);
       }
     else
       {
@@ -541,16 +542,16 @@ public:
                           const unsigned int bdf_order,
                           const bool         use_hmg,
                           const bool         use_cmg,
-                          const bool         use_pmg,   
+                          const bool         use_pmg,
                           const bool         use_amg_as_coarse_grid_solver,
-                          const bool         use_Neumann_boundary,  
+                          const bool         use_Neumann_boundary,
                           const unsigned int dof_no_p = 1)
   {
     const auto &dof_handler =
       pressure_operator.get_matrix_free().get_dof_handler(dof_no_p);
-    
-    this->dof_no_p = dof_no_p;
-    this->use_neumann_boundary = use_Neumann_boundary;
+
+    this->dof_no_p                      = dof_no_p;
+    this->use_neumann_boundary          = use_Neumann_boundary;
     this->use_amg_as_coarse_grid_solver = use_amg_as_coarse_grid_solver;
 
     if (use_hmg)
@@ -653,6 +654,7 @@ public:
         dof_handler_u.distribute_dofs(fe_u);
       }
 
+    std::vector<AffineConstraints<double>> level_constraints(maxlevel + 1);
     // init levels
     for (unsigned int level = minlevel; level <= maxlevel; ++level)
       {
@@ -673,15 +675,44 @@ public:
           (update_gradients | update_JxW_values | update_normal_vectors |
            update_quadrature_points);
         // data.mg_level = level;
+
+        // periodicity constraints
         AffineConstraints<double> dummy;
-        dummy.close();
+        level_constraints[level].reinit(dof_handlers[level].locally_owned_dofs(),
+                                        DoFTools::extract_locally_relevant_dofs(
+                                          dof_handlers[level]));
+        dealii::ndarray<unsigned int, dim, 2> periodic_ids;
+        for (unsigned int d = 0; d < dim; ++d)
+          for (unsigned int e = 0; e < 2; ++e)
+            periodic_ids[d][e] = numbers::invalid_unsigned_int;
+        {
+          for (const auto &cell : dof_handlers[level].cell_iterators_on_level(0))
+            for (unsigned int d = 0; d < dim; ++d)
+              if (cell->at_boundary(2 * d) && cell->has_periodic_neighbor(2 * d))
+                {
+                  periodic_ids[d][0] = cell->face(2 * d)->boundary_id();
+                  periodic_ids[d][1] = cell->periodic_neighbor(2 * d)
+                                         ->face(cell->periodic_neighbor_face_no(2 * d))
+                                         ->boundary_id();
+                }
+          for (unsigned int d = 0; d < dim; ++d)
+            if (periodic_ids[d][0] != numbers::invalid_unsigned_int)
+              dealii::DoFTools::make_periodicity_constraints(dof_handlers[level],
+                                                             periodic_ids[d][0],
+                                                             periodic_ids[d][1],
+                                                             d,
+                                                             level_constraints[level]);
+        }
+
+        level_constraints[level].close();
 
         mg_matrices_mf[level].reinit(
           level < n_h_levels ? MappingQGeneric<dim>(1) :
                                MappingQGeneric<dim>(mapping_degree),
           std::vector<const DoFHandler<dim> *>{&dof_handlers_u[level],
                                                &dof_handlers[level]},
-          std::vector<const AffineConstraints<double> *>{&dummy, &dummy},
+          std::vector<const AffineConstraints<double> *>{&dummy,
+                                                         &level_constraints[level]},
           std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
           data);
 
@@ -690,14 +721,17 @@ public:
 
     // init transfer
     for (unsigned int level = minlevel; level < maxlevel; ++level)
-      transfers[level + 1].reinit(dof_handlers[level + 1], dof_handlers[level]);
+      transfers[level + 1].reinit(dof_handlers[level + 1],
+                                  dof_handlers[level],
+                                  level_constraints[level + 1],
+                                  level_constraints[level]);
 
     transfer = MGTransferGlobalCoarsening<dim, VectorType>(
       transfers, [&](const auto l, auto &vec) {
         mg_matrices[l].get_matrix_free().initialize_dof_vector(vec, dof_no_p);
       });
 
-    // Setup smoother for every level
+    // Set up smoother for every level
     smoother_data.resize(minlevel, maxlevel);
 
     for (unsigned int level = minlevel; level <= maxlevel; ++level)
@@ -722,8 +756,9 @@ public:
 
     mg_smoother.initialize(mg_matrices, smoother_data);
 
-    // Setup corase grid AMG
-    mg_matrices[minlevel].get_system_matrix(coarse_system_matrix);
+    // Setup coarse grid AMG
+    mg_matrices[minlevel].get_system_matrix(level_constraints[minlevel],
+                                            coarse_system_matrix);
     TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
 
     if (!use_neumann_boundary)
@@ -761,8 +796,10 @@ public:
     // Coarse grid solver
     std::unique_ptr<MGCoarseGridBase<VectorType>> mg_coarse;
     if (use_amg_as_coarse_grid_solver)
-      mg_coarse = std::make_unique<MGCoarseAMG<VectorType>>(precondition_amg,
-                                                            !use_neumann_boundary);
+      mg_coarse = std::make_unique<MGCoarseAMG<VectorType>>(
+        mg_matrices[0].get_matrix_free().get_constrained_dofs(dof_no_p),
+        precondition_amg,
+        !use_neumann_boundary);
     else
       mg_coarse =
         std::make_unique<MGCoarseCG<VectorType, TrilinosWrappers::SparseMatrix>>(
@@ -799,7 +836,539 @@ private:
   TrilinosWrappers::SparseMatrix    coarse_system_matrix;
   TrilinosWrappers::PreconditionAMG precondition_amg;
 
-  bool use_amg_as_coarse_grid_solver;
-  bool use_neumann_boundary;
+  bool         use_amg_as_coarse_grid_solver;
+  bool         use_neumann_boundary;
   unsigned int dof_no_p;
 };
+
+
+
+namespace BlockJacobi
+{
+  void
+  extract_real_eigenvalues(LAPACKFullMatrix<double> &A,
+                           std::vector<double>      &eigenvalues,
+                           FullMatrix<double>       &eigenvectors)
+  {
+    A.compute_eigenvalues(true, false);
+    FullMatrix<std::complex<double>> eig_vectors = A.get_right_eigenvectors();
+
+    eigenvalues.resize(A.n());
+    eigenvectors.reinit(A.n(), A.n());
+    unsigned int real_eigenvalue_index = numbers::invalid_unsigned_int;
+    unsigned int j                     = 0;
+    for (unsigned int i = 0; i < A.n();)
+      if (i + 1 < A.n() && std::abs(A.eigenvalue(i).imag()) > 1e-12)
+        {
+          AssertThrow(
+            std::abs(A.eigenvalue(i).imag() + A.eigenvalue(i + 1).imag()) < 1e-12 &&
+              std::abs(A.eigenvalue(i).real() - A.eigenvalue(i + 1).real()) < 1e-12,
+            ExcInternalError("Eigenvalues do not come in complex-conjugate pairs"));
+          eigenvalues[j]     = A.eigenvalue(i).real();
+          eigenvalues[j + 1] = A.eigenvalue(i).imag();
+          for (unsigned int k = 0; k < A.n(); ++k)
+            {
+              eigenvectors(k, j)     = eig_vectors(k, i).real();
+              eigenvectors(k, j + 1) = eig_vectors(k, i).imag();
+            }
+          j += 2;
+          i += 2;
+        }
+      else
+        {
+          AssertThrow(std::abs(A.eigenvalue(i).imag()) <= 1e-12, ExcInternalError());
+          AssertThrow(real_eigenvalue_index == numbers::invalid_unsigned_int,
+                      ExcInternalError("Expected single real eigenvalue"));
+          real_eigenvalue_index = i;
+          ++i;
+        }
+    if (real_eigenvalue_index != numbers::invalid_unsigned_int)
+      {
+        AssertThrow(j + 1 == A.n(), ExcInternalError());
+        eigenvalues[j] = A.eigenvalue(real_eigenvalue_index).real();
+        for (unsigned int k = 0; k < A.n(); ++k)
+          eigenvectors(k, j) = eig_vectors(k, real_eigenvalue_index).real();
+      }
+    // std::cout << "eigvals: " << eigenvalues[0] << " " << eigenvalues[1] <<
+    // std::endl;
+  }
+
+  template <int n_components, int dim, int fe_degree, typename Number = double>
+  class CellwisePreconditionerFDM
+  {
+  public:
+    static constexpr unsigned int n = fe_degree + 1;
+    using vcomplex                  = std::complex<VectorizedArray<Number>>;
+
+    CellwisePreconditionerFDM()
+    {
+      for (unsigned int i2 = 0; i2 < 2; ++i2)
+        for (unsigned int i1 = 0; i1 < 2; ++i1)
+          for (unsigned int i0 = 0; i0 < 2; ++i0)
+            for (unsigned int j2 = 0, j = 0; j2 < (dim > 2 ? 2 : 1); ++j2)
+              for (unsigned int j1 = 0; j1 < (dim > 1 ? 2 : 1); ++j1)
+                for (unsigned int j0 = 0; j0 < 2; ++j0, ++j)
+                  offsets[i2][i1][i0][j] = (i2 * j2 * n + i1 * j1) * n + i0 * j0;
+
+      for (unsigned int d = 0; d < dim; ++d)
+        previous_blend_factor[d] = -1.0;
+    }
+
+    void
+    reinit(const std::array<FullMatrix<double>, 2>       &eigenvectors,
+           const std::array<FullMatrix<double>, 2>       &inverse_eigenvectors,
+           const std::array<std::vector<double>, 2>      &eigenvalues,
+           const VectorizedArray<Number>                  inv_jacobian_determinant,
+           const Tensor<1, dim, VectorizedArray<Number>> &average_velocity,
+           const double                                   inv_dt)
+    {
+      Tensor<1, dim, VectorizedArray<Number>> blend_factor_eig;
+      for (unsigned int d = 0; d < dim; ++d)
+        for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
+          if (average_velocity[d][v] < 0.0)
+            blend_factor_eig[d][v] = 1.0;
+          else
+            blend_factor_eig[d][v] = 0.0;
+
+      constexpr int                          n_half = (n + 1) / 2;
+      dealii::ndarray<vcomplex, dim, n_half> tmp_eig;
+      for (unsigned int i0 = 0; i0 < n / 2; ++i0)
+        {
+          const vcomplex eig0(eigenvalues[0][2 * i0], eigenvalues[0][2 * i0 + 1]);
+          const vcomplex eig1(eigenvalues[1][2 * i0], eigenvalues[1][2 * i0 + 1]);
+          for (unsigned int d = 0; d < dim; ++d)
+            {
+              tmp_eig[d][i0] = average_velocity[d] * ((1.0 - blend_factor_eig[d]) * eig0 +
+                                                      blend_factor_eig[d] * eig1);
+            }
+        }
+      if constexpr (n % 2 == 1)
+        {
+          for (unsigned int d = 0; d < dim; ++d)
+            tmp_eig[d][n_half - 1] =
+              average_velocity[d] * ((1.0 - blend_factor_eig[d]) * eigenvalues[0][n - 1] +
+                                     blend_factor_eig[d] * eigenvalues[1][n - 1]);
+        }
+      for (unsigned int i2 = 0, c = 0; i2 < (dim > 2 ? n_half : 1); ++i2)
+        for (unsigned int i1 = 0; i1 < (dim > 1 ? n_half : 1); ++i1)
+          {
+            std::array<vcomplex, 4> diagonal_element_yz;
+            if constexpr (dim == 2)
+              {
+                diagonal_element_yz[0] = tmp_eig[1][i1];
+                diagonal_element_yz[1] = conj(tmp_eig[1][i1]);
+              }
+            else if constexpr (dim == 3)
+              {
+                diagonal_element_yz[0] = tmp_eig[2][i2] + tmp_eig[1][i1];
+                diagonal_element_yz[1] = tmp_eig[2][i2] + conj(tmp_eig[1][i1]);
+                diagonal_element_yz[2] = conj(diagonal_element_yz[1]);
+                diagonal_element_yz[3] = conj(diagonal_element_yz[0]);
+              }
+            for (unsigned int i0 = 0; i0 < n_half; ++i0, ++c)
+              {
+                const vcomplex val0 =
+                  tmp_eig[0][i0] + make_vectorized_array<Number>(inv_dt);
+                const vcomplex val1 = conj(val0);
+                for (unsigned int d = 0; d < (1 << (dim - 1)); ++d)
+                  {
+                    inverse_eigenvalues_for_cell[c][2 * d] =
+                      Utilities::fixed_power<dim>(0.5) * inv_jacobian_determinant /
+                      (val0 + diagonal_element_yz[d]);
+                    inverse_eigenvalues_for_cell[c][2 * d + 1] =
+                      Utilities::fixed_power<dim>(0.5) * inv_jacobian_determinant /
+                      (val1 + diagonal_element_yz[d]);
+                  }
+              }
+          }
+      // std::cout << "eigvals cell: " << std::endl;
+      // for (unsigned int i = 0; i < 4; ++i)
+      //   std::cout << inverse_eigenvalues_for_cell[0][i] << std::endl;
+      // std::cout << "dst" << std::endl;
+
+      if ((blend_factor_eig - previous_blend_factor).norm_square().sum() > 0)
+        for (unsigned int d = 0; d < dim; ++d)
+          {
+            for (unsigned int i = 0; i < n; ++i)
+              for (unsigned int j = 0; j < n; ++j)
+                {
+                  this->eigenvectors[d][j * n + i] =
+                    (1.0 - blend_factor_eig[d]) * eigenvectors[0](j, i) +
+                    blend_factor_eig[d] * eigenvectors[1](j, i);
+                  this->inverse_eigenvectors[d][j * n + i] =
+                    (1.0 - blend_factor_eig[d]) * inverse_eigenvectors[0](j, i) +
+                    blend_factor_eig[d] * inverse_eigenvectors[1](j, i);
+                }
+          }
+      previous_blend_factor = blend_factor_eig;
+    }
+
+    void
+    vmult(Vector<Number> &dst, const Vector<Number> &src) const
+    {
+      constexpr unsigned int n_lanes = VectorizedArray<Number>::size();
+      AssertDimension(n_lanes * data_array.size(), dst.size());
+      AssertDimension(n_lanes * data_array.size(), src.size());
+      apply(reinterpret_cast<const VectorizedArray<Number> *>(src.begin()),
+            reinterpret_cast<VectorizedArray<Number> *>(dst.begin()));
+    }
+
+    void
+    apply(const VectorizedArray<Number> *src, VectorizedArray<Number> *dst) const
+    {
+      constexpr unsigned int n_dofs = Utilities::pow(n, dim);
+      AssertDimension(n_dofs, data_array.size());
+
+      for (unsigned int comp = 0; comp < n_components; ++comp)
+        {
+          using Eval = internal::EvaluatorTensorProduct<internal::evaluate_general,
+                                                        dim,
+                                                        n,
+                                                        n,
+                                                        VectorizedArray<Number>,
+                                                        VectorizedArray<Number>>;
+          // apply V^{-1} M^{-1}
+          Eval::template apply<0, false, false>(inverse_eigenvectors[0].data(),
+                                                src + n_dofs * comp,
+                                                data_array.data());
+          if constexpr (dim > 1)
+            Eval::template apply<1, false, false>(inverse_eigenvectors[1].data(),
+                                                  data_array.data(),
+                                                  data_array.data());
+          if constexpr (dim > 2)
+            Eval::template apply<2, false, false>(inverse_eigenvectors[2].data(),
+                                                  data_array.data(),
+                                                  data_array.data());
+
+          constexpr int n_half  = (n + 1) / 2;
+          constexpr int n_pairs = Utilities::pow(2, dim);
+
+          for (unsigned int i2 = 0, c = 0; i2 < (dim > 2 ? n_half : 1); ++i2)
+            for (unsigned int i1 = 0; i1 < (dim > 1 ? n_half : 1); ++i1)
+              for (unsigned int i0 = 0; i0 < n_half; ++i0, ++c)
+                {
+                  const unsigned int i = 2 * ((i2 * n + i1) * n + i0);
+                  const std::array<unsigned int, n_pairs> &my_offsets =
+                    offsets[n % 2 == 0 || i2 + 1 < n_half][n % 2 == 0 || i1 + 1 < n_half]
+                           [n % 2 == 0 || i0 + 1 < n_half];
+                  std::array<vcomplex, n_pairs> data_i;
+                  for (unsigned int d = 0; d < n_pairs; ++d)
+                    {
+                      const unsigned int j = my_offsets[d] + i;
+                      AssertIndexRange(j, n_dofs);
+                      data_i[d] = vcomplex(data_array[j], -data_array[j]);
+                    }
+                  apply_complex_inverse(data_i, inverse_eigenvalues_for_cell[c]);
+                  for (unsigned int d = 0; d < n_pairs; ++d)
+                    data_array[my_offsets[d] + i] = data_i[d].real();
+                }
+
+          // apply V
+          if constexpr (dim > 1)
+            Eval::template apply<1, false, false>(eigenvectors[1].data(),
+                                                  data_array.data(),
+                                                  data_array.data());
+          if constexpr (dim > 2)
+            Eval::template apply<2, false, false>(eigenvectors[2].data(),
+                                                  data_array.data(),
+                                                  data_array.data());
+          Eval::template apply<0, false, false>(eigenvectors[0].data(),
+                                                data_array.data(),
+                                                dst + comp * n_dofs);
+        }
+    }
+
+  private:
+    void
+    apply_complex_inverse(
+      std::array<vcomplex, Utilities::pow(2, dim)>      &data_i,
+      const std::array<vcomplex, Utilities::pow(2, dim)> inverse_eigenvalues_i) const
+    {
+      for (unsigned int d = 0; d < Utilities::pow(2, dim - 1); ++d)
+        {
+          const vcomplex tmp0 = data_i[d * 2];
+          const vcomplex tmp1 = data_i[d * 2 + 1];
+          data_i[d * 2] = vcomplex(tmp0.real() + tmp1.imag(), tmp0.imag() - tmp1.real());
+          data_i[d * 2 + 1] =
+            vcomplex(tmp0.real() - tmp1.imag(), tmp0.imag() + tmp1.real());
+        }
+      for (unsigned int d = 0; d < (dim == 3 ? 2 : 1); ++d)
+        for (unsigned int e = 0; e < 2; ++e)
+          {
+            const vcomplex tmp0 = data_i[d * 4 + e];
+            const vcomplex tmp1 = data_i[d * 4 + 2 + e];
+            data_i[d * 4 + e] =
+              vcomplex(tmp0.real() + tmp1.imag(), tmp0.imag() - tmp1.real());
+            data_i[d * 4 + 2 + e] =
+              vcomplex(tmp0.real() - tmp1.imag(), tmp0.imag() + tmp1.real());
+          }
+      if constexpr (dim == 3)
+        for (unsigned int d = 0; d < Utilities::pow(2, dim - 1); ++d)
+          {
+            const vcomplex tmp0 = data_i[d];
+            const vcomplex tmp1 = data_i[d + 4];
+            data_i[d] = vcomplex(tmp0.real() + tmp1.imag(), tmp0.imag() - tmp1.real());
+            data_i[d + 4] =
+              vcomplex(tmp0.real() - tmp1.imag(), tmp0.imag() + tmp1.real());
+          }
+
+      for (unsigned int d = 0; d < Utilities::pow(2, dim); ++d)
+        data_i[d] *= inverse_eigenvalues_i[d];
+
+      for (unsigned int d = 0; d < Utilities::pow(2, dim - 1); ++d)
+        {
+          const vcomplex tmp0 = data_i[d * 2];
+          const vcomplex tmp1 = data_i[d * 2 + 1];
+          data_i[d * 2] = vcomplex(tmp0.real() + tmp1.real(), tmp0.imag() + tmp1.imag());
+          data_i[d * 2 + 1] =
+            vcomplex(tmp1.imag() - tmp0.imag(), tmp0.real() - tmp1.real());
+        }
+      for (unsigned int d = 0; d < (dim == 3 ? 2 : 1); ++d)
+        for (unsigned int e = 0; e < 2; ++e)
+          {
+            const vcomplex tmp0 = data_i[d * 4 + e];
+            const vcomplex tmp1 = data_i[d * 4 + 2 + e];
+            data_i[d * 4 + e] =
+              vcomplex(tmp0.real() + tmp1.real(), tmp0.imag() + tmp1.imag());
+            data_i[d * 4 + 2 + e] =
+              vcomplex(tmp1.imag() - tmp0.imag(), tmp0.real() - tmp1.real());
+          }
+      if constexpr (dim == 3)
+        for (unsigned int d = 0; d < Utilities::pow(2, dim - 1); ++d)
+          {
+            const vcomplex tmp0 = data_i[d];
+            const vcomplex tmp1 = data_i[d + 4];
+            data_i[d] = vcomplex(tmp0.real() + tmp1.real(), tmp0.imag() + tmp1.imag());
+            data_i[d + 4] =
+              vcomplex(tmp1.imag() - tmp0.imag(), tmp0.real() - tmp1.real());
+          }
+    }
+
+    dealii::ndarray<VectorizedArray<Number>, dim, n * n> eigenvectors;
+    dealii::ndarray<VectorizedArray<Number>, dim, n * n> inverse_eigenvectors;
+    dealii::ndarray<vcomplex, Utilities::pow((n + 1) / 2, dim), Utilities::pow(2, dim)>
+      inverse_eigenvalues_for_cell;
+    mutable dealii::ndarray<VectorizedArray<Number>, Utilities::pow(n, dim)> data_array;
+
+    dealii::ndarray<unsigned int, 2, 2, 2, Utilities::pow(2, dim)> offsets;
+
+    Tensor<1, dim, VectorizedArray<Number>> previous_blend_factor;
+  };
+
+
+
+  template <typename VectorType>
+  class MyVectorMemory : public VectorMemory<VectorType>
+  {
+  public:
+    MyVectorMemory()
+      : first_unused(vectors.end())
+    {}
+
+    virtual VectorType *
+    alloc() override
+    {
+      if (first_unused == vectors.end())
+        {
+          vectors.push_back(VectorType());
+          return &vectors.back();
+        }
+      else
+        {
+          VectorType *return_value = &(*first_unused);
+          ++first_unused;
+          return return_value;
+        }
+    }
+
+    virtual void
+    free(const VectorType *const vector) override
+    {
+      typename std::list<VectorType>::iterator it = vectors.begin();
+      while (&*it != vector)
+        ++it;
+
+      Assert(it != first_unused && vector == &*it, ExcInternalError());
+      vectors.splice(first_unused, vectors, it);
+      --first_unused;
+    }
+
+  private:
+    std::list<VectorType>                    vectors;
+    typename std::list<VectorType>::iterator first_unused;
+  };
+
+
+
+  template <int dim, typename Number>
+  class PreconditionerMomentum
+  {
+  public:
+    static constexpr bool do_batched_solver = false;
+    using VectorType                        = LinearAlgebra::distributed::Vector<Number>;
+    PreconditionerMomentum(const MatrixFree<dim, Number> &matrix_free,
+                           const unsigned int             velocity_dof_handler_in_mf,
+                           const unsigned int             batched_solver_iterations)
+      : matrix_free(matrix_free)
+      , dof_index_velocity(velocity_dof_handler_in_mf)
+      , batched_solver_iterations(batched_solver_iterations)
+    {
+      const double flux_alpha = 0.5;
+      scaled_cell_velocity.resize_fast(matrix_free.n_cell_batches());
+      const FiniteElement<dim> &fe =
+        matrix_free.get_dof_handler(dof_index_velocity).get_fe();
+      const unsigned int n = fe.degree + 1;
+
+      QGauss<1>               gauss_quad(fe.degree + 1);
+      QGaussLobatto<1>        lobatto_quad(gauss_quad.size());
+      FE_DGQArbitraryNodes<1> fe_1d(do_batched_solver ?
+                                      static_cast<Quadrature<1> &>(gauss_quad) :
+                                      static_cast<Quadrature<1> &>(lobatto_quad));
+      for (unsigned int c = 0; c < 2; ++c)
+        {
+          LAPACKFullMatrix<double> deriv_matrix(n, n);
+          LAPACKFullMatrix<double> mass_matrix(n, n);
+          for (unsigned int q = 0; q < n; ++q)
+            {
+              for (unsigned int i = 0; i < n; ++i)
+                for (unsigned int j = 0; j < n; ++j)
+                  {
+                    const Point<1> point = gauss_quad.point(q);
+                    deriv_matrix(i, j) -= fe_1d.shape_grad(i, point)[0] *
+                                          fe_1d.shape_value(j, point) *
+                                          gauss_quad.weight(q);
+                    mass_matrix(i, j) += fe_1d.shape_value(i, point) *
+                                         fe_1d.shape_value(j, point) *
+                                         gauss_quad.weight(q);
+                  }
+            }
+          const double sign_advection = (c == 0) ? 1.0 : -1.0;
+          for (unsigned int i = 0; i < n; ++i)
+            for (unsigned int j = 0; j < n; ++j)
+              deriv_matrix(i, j) += -fe_1d.shape_value(i, Point<1>()) *
+                                      fe_1d.shape_value(j, Point<1>()) *
+                                      (0.5 - flux_alpha * 0.5 * sign_advection) +
+                                    fe_1d.shape_value(i, Point<1>(1.0)) *
+                                      fe_1d.shape_value(j, Point<1>(1.0)) *
+                                      (0.5 + flux_alpha * 0.5 * sign_advection);
+
+          mass_matrix.set_property(LAPACKSupport::symmetric);
+          mass_matrix.compute_cholesky_factorization();
+          mass_matrix.solve(deriv_matrix);
+
+          extract_real_eigenvalues(deriv_matrix, eigenvalues[c], eigenvectors[c]);
+
+          auto tmp = eigenvectors[c];
+          tmp.gauss_jordan();
+          mass_matrix.invert();
+          inverse_eigenvectors[c].reinit(n, n);
+          for (unsigned int i = 0; i < n; ++i)
+            for (unsigned int j = 0; j < n; ++j)
+              {
+                double sum = 0;
+                for (unsigned int k = 0; k < n; ++k)
+                  sum += mass_matrix(k, j) * tmp(i, k);
+                inverse_eigenvectors[c](i, j) = sum;
+              }
+        }
+    }
+
+    void
+    reinit(const VectorType &velocity, const Number inverse_dt)
+    {
+      FEEvaluation<dim, -1, 0, dim, Number> evaluator(matrix_free, dof_index_velocity);
+      for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
+        {
+          evaluator.reinit(cell);
+          evaluator.gather_evaluate(velocity, EvaluationFlags::values);
+          Tensor<1, dim, VectorizedArray<Number>> integrated_velocity;
+          VectorizedArray<Number>                 volume = 0;
+          for (const unsigned int q : evaluator.quadrature_point_indices())
+            {
+              volume += evaluator.JxW(q);
+              integrated_velocity += transpose(evaluator.inverse_jacobian(q)) *
+                                     evaluator.get_value(q) * evaluator.JxW(q);
+            }
+          scaled_cell_velocity[cell] = integrated_velocity / volume;
+        }
+      this->inverse_dt = inverse_dt;
+    }
+
+    void
+    vmult(LinearAlgebra::distributed::Vector<Number>       &dst,
+          const LinearAlgebra::distributed::Vector<Number> &src) const
+    {
+      const unsigned int degree =
+        matrix_free.get_dof_handler(dof_index_velocity).get_fe().degree;
+      if (degree == 1)
+        do_vmult<1>(dst, src);
+      else if (degree == 2)
+        do_vmult<2>(dst, src);
+      else if (degree == 3)
+        do_vmult<3>(dst, src);
+      else if (degree == 4)
+        do_vmult<4>(dst, src);
+      else if (degree == 5)
+        do_vmult<5>(dst, src);
+      else if (degree == 6)
+        do_vmult<6>(dst, src);
+      else if (degree == 7)
+        do_vmult<7>(dst, src);
+      else if (degree == 8)
+        do_vmult<8>(dst, src);
+      else if (degree == 9)
+        do_vmult<9>(dst, src);
+      else
+        AssertThrow(false,
+                    ExcNotImplemented("Degree " + std::to_string(degree) +
+                                      " not instantiated"));
+    }
+
+    template <int degree>
+    void
+    do_vmult(LinearAlgebra::distributed::Vector<Number>       &dst,
+             const LinearAlgebra::distributed::Vector<Number> &src) const
+    {
+      FEEvaluation<dim, degree, degree + 1, dim, Number> eval(matrix_free);
+      MyVectorMemory<Vector<Number>>                     memory;
+      Vector<Number> local_src(eval.dofs_per_cell * VectorizedArray<Number>::size());
+      Vector<Number> local_dst(local_src);
+
+      IterationNumberControl control(batched_solver_iterations, 1e-18, false, false);
+      typename SolverGMRES<Vector<Number>>::AdditionalData gmres_data;
+      gmres_data.right_preconditioning = true;
+      gmres_data.orthogonalization_strategy =
+        LinearAlgebra::OrthogonalizationStrategy::classical_gram_schmidt;
+      gmres_data.max_basis_size = batched_solver_iterations;
+      gmres_data.batched_mode   = true;
+      SolverGMRES<Vector<Number>> gmres(control, memory, gmres_data);
+      CellwisePreconditionerFDM<dim, dim, degree, Number> cell_fdm;
+
+      for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
+        {
+          eval.reinit(cell);
+          eval.read_dof_values(src);
+          cell_fdm.reinit(eigenvectors,
+                          inverse_eigenvectors,
+                          eigenvalues,
+                          determinant(eval.inverse_jacobian(0)),
+                          scaled_cell_velocity[cell],
+                          inverse_dt);
+
+          cell_fdm.apply(eval.begin_dof_values(), eval.begin_dof_values());
+
+          eval.set_dof_values(dst);
+        }
+    }
+
+  private:
+    const MatrixFree<dim, Number>     &matrix_free;
+    const unsigned int                 dof_index_velocity;
+    const unsigned int                 batched_solver_iterations;
+    Number                             inverse_dt;
+    std::array<FullMatrix<double>, 2>  eigenvectors, inverse_eigenvectors;
+    std::array<std::vector<double>, 2> eigenvalues;
+    AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> scaled_cell_velocity;
+  };
+
+} // namespace BlockJacobi
