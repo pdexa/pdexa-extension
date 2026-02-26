@@ -401,6 +401,38 @@ public:
       }
   }
 
+  void
+  compute_divergence(VectorType &dst, const VectorType &velocity) const
+  {
+    this->matrix_free.loop(&MomentumOperator::local_divergence_domain,
+                      &MomentumOperator::local_divergence_inner_face,
+                      &MomentumOperator::local_divergence_boundary_face,
+                      this,
+                      dst,
+                      velocity,
+                      true,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+  }
+
+
+  void
+  apply_leray_correction(VectorType &dst, const VectorType &src) const
+  {
+    this->matrix_free.cell_loop(
+      &MomentumOperator::local_apply_leray_correction, this, dst, src, true);
+
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free, 0, 1);
+    MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, number> mass_inv(eval_u);
+    for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
+      {
+        eval_u.reinit(cell);
+        eval_u.read_dof_values(dst);
+        mass_inv.apply(eval_u.begin_dof_values(), eval_u.begin_dof_values());
+        eval_u.set_dof_values(dst);
+      }
+  }
+
 
   const MatrixFree<dim, number> &
   get_matrix_free() const
@@ -1527,6 +1559,146 @@ private:
           }
 
         eval_u.integrate_scatter(dealii::EvaluationFlags::values, dst);
+      }
+  }
+
+
+  void
+  local_apply_leray_correction(const MatrixFree<dim, number>         &data,
+                         VectorType                                  &dst,
+                         const VectorType                            &src,
+                         const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 1);
+    FEEvaluation<dim, -1, 0, 1, number> eval_p(data, 1, 1);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        eval_u.reinit(cell);
+        eval_p.reinit(cell);
+
+        eval_p.gather_evaluate(src, EvaluationFlags::gradients);
+
+        for (unsigned int q = 0; q < eval_u.n_q_points; ++q)
+          {
+            eval_u.submit_value(eval_p.get_gradient(q), q);
+          }
+
+        eval_u.integrate_scatter(dealii::EvaluationFlags::values, dst);
+      }
+  }
+
+  void
+  local_divergence_domain(const MatrixFree<dim, number>               &data,
+                          VectorType                                  &dst,
+                          const VectorType                            &src,
+                          const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, 1, 1);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 1);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        eval_p.reinit(cell);
+        eval_u.reinit(cell);
+
+        eval_u.gather_evaluate(src, EvaluationFlags::values);
+
+        // loop over quadrature points and compute the local volume flux
+        for (const unsigned int q : eval_p.quadrature_point_indices())
+          {
+            const auto u = - eval_u.get_value(q);
+            eval_p.submit_gradient(u, q);
+          }
+
+        // multiply by nabla v^h(x) and sum
+        eval_p.integrate_scatter(EvaluationFlags::gradients, dst);
+      }
+  }
+
+  void
+  local_divergence_inner_face(
+    const MatrixFree<dim, number>               &data,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &face_range) const
+  {
+    if (!is_dg)
+      return;
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, 0, 1);
+
+    for (unsigned int face = face_range.first; face < face_range.second; face++)
+      {
+        eval_p_minus.reinit(face);
+        eval_p_plus.reinit(face);
+        eval_u_minus.reinit(face);
+        eval_u_plus.reinit(face);
+
+        eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
+        eval_u_plus.gather_evaluate(src, EvaluationFlags::values);
+
+        for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+          {
+            const auto normal = eval_p_minus.normal_vector(q);
+            const auto div_factor =
+              0.5 * (eval_u_minus.get_value(q) + eval_u_plus.get_value(q)) * normal;
+
+            eval_p_minus.submit_value(div_factor, q);
+            eval_p_plus.submit_value(-div_factor, q);
+          }
+
+        eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+        eval_p_plus.integrate_scatter(EvaluationFlags::values, dst);
+      }
+  }
+
+  void
+  local_divergence_boundary_face(
+    const MatrixFree<dim, number>               &data,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &face_range) const
+  {
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
+
+    auto velocity_bc = dirichletBC_velocity_factory();  
+    velocity_bc->set_time(time);
+
+    for (unsigned int face = face_range.first; face < face_range.second; face++)
+      {
+        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
+          {
+            eval_p_minus.reinit(face);
+
+            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+              {
+                const auto g =
+                  evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
+                const auto g_n =  g * eval_p_minus.normal_vector(q);
+                eval_p_minus.submit_value(g_n, q);
+              }
+
+            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+          }
+        else
+          {
+            eval_p_minus.reinit(face);
+            eval_u_minus.reinit(face);
+
+            eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
+
+            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+              {
+                const auto value_flux = eval_u_minus.get_value(q) * eval_u_minus.normal_vector(q);
+                eval_p_minus.submit_value(value_flux, q);
+              }
+
+            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+          }
       }
   }
 
