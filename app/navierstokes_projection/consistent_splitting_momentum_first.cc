@@ -395,7 +395,7 @@ do_test(const unsigned int fe_degree,
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
 
-      vec_p = 0.;
+      vec_p.swap(pressure_extrapolated); // = 0.;
       const unsigned int iteration_count =
         precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs);
       if (!use_neumann_boundary)

@@ -250,8 +250,12 @@ do_test(const unsigned int fe_degree,
   momentum_op.initialize_dof_vector(vec_div_u, dof_no_p);
 
   std::vector<LinearAlgebra::distributed::Vector<double>> vec_u_old(bdf_order);
+  std::vector<LinearAlgebra::distributed::Vector<double>> vec_p_old(bdf_order);
   for (auto &vec : vec_u_old)
     momentum_op.initialize_dof_vector(vec, dof_no_v);
+
+  for (auto &vec : vec_p_old)
+    momentum_op.initialize_dof_vector(vec, dof_no_p);
 
   InverseMassPreconditioner<dim, Number> inverse_mass;
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
@@ -293,6 +297,13 @@ do_test(const unsigned int fe_degree,
                                exact_velocity,
                                vec_u_old[bdf_order - 1 - i]);
 
+
+      exact_pressure.set_time(current_time);
+      VectorTools::interpolate(mapping,
+                              dof_handler_p,
+                              exact_pressure,
+                              vec_p_old[bdf_order - 1 - i]);
+
       current_time += time_step;
     }
 
@@ -310,6 +321,7 @@ do_test(const unsigned int fe_degree,
       momentum_op.set_time(current_time);
 
       // Pressure step
+      vec_p = 0.;
       vec_p_rhs = 0.;
       if (use_leray_projection)
         for (unsigned int i = 0; i < bdf.get_order(); ++i)
@@ -327,6 +339,7 @@ do_test(const unsigned int fe_degree,
           vec_p_rhs_n = 0.;
           pressure_op.compute_convective_rhs(vec_p_rhs_n, vec_u_old[i]);
           vec_p_rhs.add(bdf_c.get_beta(i), vec_p_rhs_n);
+          vec_p.add(bdf_c.get_beta(i), vec_p_old[i]);
         }
 
       speed_extrapolated = 0.;
@@ -388,9 +401,11 @@ do_test(const unsigned int fe_degree,
       for (unsigned int i = bdf.get_order() - 1; i != 0; --i)
         {
           std::swap(vec_u_old[i], vec_u_old[i - 1]);
+          std::swap(vec_p_old[i], vec_p_old[i - 1]);
         }
 
       vec_u_old[0].swap(vec_u);
+      vec_p_old[0].swap(vec_p);
 
       if (write_output)
         {
@@ -411,7 +426,7 @@ do_test(const unsigned int fe_degree,
 
           VectorTools::integrate_difference(mapping,
                                             dof_handler_p,
-                                            vec_p,
+                                            vec_p_old[0],
                                             exact_pressure,
                                             error_per_cell,
                                             QGauss<dim>(fe_p.degree + 3),
@@ -458,7 +473,7 @@ do_test(const unsigned int fe_degree,
                                    exact_velocity,
                                    speed_extrapolated);
           data_out.add_data_vector(dof_handler_u, speed_extrapolated, "analytical");
-          data_out.add_data_vector(dof_handler_p, vec_p, "pressure");
+          data_out.add_data_vector(dof_handler_p, vec_p_old[0], "pressure");
           VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p_rhs);
           data_out.add_data_vector(dof_handler_p, vec_p_rhs, "pressure_analytical");
           Vector<double> mpi_owner(tria.n_active_cells());
@@ -493,7 +508,7 @@ do_test(const unsigned int fe_degree,
 
   VectorTools::integrate_difference(mapping,
                                     dof_handler_p,
-                                    vec_p,
+                                    vec_p_old[0],
                                     exact_pressure,
                                     error_per_cell,
                                     QGauss<dim>(fe_p.degree + 3),
