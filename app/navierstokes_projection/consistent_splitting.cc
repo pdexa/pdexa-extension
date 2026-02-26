@@ -32,15 +32,15 @@
 using namespace dealii;
 
 
-const bool use_neumann_boundary                      = false;
+const bool use_neumann_boundary                      = true;
 const bool use_skew_symmetric_convective_formulation = false;
-const bool use_divergence_formulation                = true;
+const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
 
 // Always use MG as preconditioner for the pressure
 // const bool use_amg                       = false;
 const bool use_hmg                       = true;
-const bool use_pmg                       = false;
+const bool use_pmg                       = true;
 const bool use_cmg                       = false;
 // const bool use_pointjacobi_pressure      = false;
 const bool use_amg_as_coarse_grid_solver = false;
@@ -187,8 +187,8 @@ do_test(const unsigned int fe_degree,
   if (use_neumann_boundary)
     {
       tria.begin()->face(0)->set_all_boundary_ids(1);
-      tria.begin()->face(1)->set_all_boundary_ids(1);
-      tria.begin()->face(2)->set_all_boundary_ids(1);
+      //tria.begin()->face(1)->set_all_boundary_ids(1);
+      //tria.begin()->face(2)->set_all_boundary_ids(1);
     }
   tria.refine_global(n_refinements);
 
@@ -210,7 +210,7 @@ do_test(const unsigned int fe_degree,
   // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
 
-  unsigned int bdf_order   = 4;
+  unsigned int bdf_order   = 3;
   unsigned int bdf_order_p = 3;
   unsigned int bdf_order_c = 3;
 
