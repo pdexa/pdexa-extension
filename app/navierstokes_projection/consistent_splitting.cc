@@ -212,9 +212,11 @@ do_test(const unsigned int fe_degree,
 
   unsigned int bdf_order   = 4;
   unsigned int bdf_order_p = 3;
+  unsigned int bdf_order_c = 3;
 
   BDFTimeIntegratorConstants bdf(bdf_order);
   BDFTimeIntegratorConstants bdf_p(bdf_order_p);
+  BDFTimeIntegratorConstants bdf_c(bdf_order_c);
 
   MomentumOperator<dim, dim, Number> momentum_op;
   // set up operator
@@ -319,12 +321,12 @@ do_test(const unsigned int fe_degree,
           }
       pressure_op.set_time(current_time);
 
-      for (unsigned int i = 0; i < bdf.get_order(); ++i)
+      for (unsigned int i = 0; i < bdf_c.get_order(); ++i)
         {
           pressure_op.set_time(current_time - (i + 1) * time_step);
           vec_p_rhs_n = 0.;
           pressure_op.compute_convective_rhs(vec_p_rhs_n, vec_u_old[i]);
-          vec_p_rhs.add(bdf.get_beta(i), vec_p_rhs_n);
+          vec_p_rhs.add(bdf_c.get_beta(i), vec_p_rhs_n);
         }
 
       speed_extrapolated = 0.;
@@ -544,7 +546,7 @@ main(int argc, char **argv)
   // for (unsigned int i = 1; i < 7; ++i)
   //   do_test<2, double>(5, i, 14);
 
-  for (unsigned int i = 1; i < 15; ++i)
-    do_test<2, double>(5, 4, i);
-  // do_test<2, double>(5, 4, 14);
+  //for (unsigned int i = 1; i < 15; ++i)
+  //  do_test<2, double>(5, 4, i);
+  do_test<2, double>(5, 4, 14);
 }
