@@ -1913,13 +1913,15 @@ public:
   reinit(const MatrixFree<dim, number> &matrix_free_in,
          const unsigned int             bdf_order_in,
          const number                   time_step_in,
-         const bool                     use_leray_projection_in)
+         const bool                     use_leray_projection_in,
+         const bool                     use_traction_boundary_condition_in)
   {
     bdf_order         = bdf_order_in;
     time_step         = time_step_in;
     this->matrix_free = &matrix_free_in;
     is_dg = matrix_free->get_dof_handler(dof_no_p).get_fe().n_dofs_per_vertex() == 0;
     use_leray_projection = use_leray_projection_in;
+    use_traction_boundary_condition = use_traction_boundary_condition_in;
 
     constrained_indices.clear();
 
@@ -2007,6 +2009,12 @@ public:
     return use_leray_projection;
   }
 
+  bool
+  get_use_traction_boundary_condition()
+  {
+    return use_traction_boundary_condition;
+  }
+  
   void
   vmult(VectorType &dst, const VectorType &src) const
   {
@@ -2061,14 +2069,15 @@ public:
   }
 
   void
-  compute_rhs(VectorType &dst, const VectorType &vorticity)
+  compute_rhs(VectorType &dst, const VectorType &vorticity,  const VectorType &speed)
   {
     matrix_free->loop(&PressureOperator::local_rhs_domain,
                       &PressureOperator::local_rhs_inner_face,
                       &PressureOperator::local_rhs_boundary_face,
                       this,
                       dst,
-                      vorticity,
+                      std::vector<const VectorType *>{&vorticity,
+                                                           &speed},
                       true,
                       MatrixFree<dim, number>::DataAccessOnFaces::gradients,
                       MatrixFree<dim, number>::DataAccessOnFaces::gradients);
@@ -2260,6 +2269,7 @@ private:
   unsigned int                                           bdf_order;
   bool                                                   is_dg;
   bool                                                   use_leray_projection;
+  bool                                                   use_traction_boundary_condition;
   std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_velocity_factory;
   std::function<std::unique_ptr<Function<dim>>()>        dirichletBC_pressure_factory;
   std::function<std::unique_ptr<Function<dim>>()>        body_force_factory;
@@ -2484,7 +2494,7 @@ private:
   void
   local_rhs_domain(const MatrixFree<dim, number> &data,
                    VectorType                    &dst,
-                   const VectorType &,
+                   const std::vector<const VectorType *>       &,
                    const std::pair<unsigned int, unsigned int> &cell_range) const
   {
     FEEvaluation<dim, -1, 0, 1, number> eval_p(data, 1, 1);
@@ -2512,7 +2522,7 @@ private:
   void
   local_rhs_inner_face(const MatrixFree<dim, number> &data,
                        VectorType                    &dst,
-                       const VectorType &,
+                       const std::vector<const VectorType *>       &,
                        const std::pair<unsigned int, unsigned int> &face_range) const
   {
     if (!is_dg)
@@ -2547,11 +2557,11 @@ private:
   void
   local_rhs_boundary_face(const MatrixFree<dim, number>               &data,
                           VectorType                                  &dst,
-                          const VectorType                            &src,
+                          const std::vector<const VectorType *>       &src,
                           const std::pair<unsigned int, unsigned int> &face_range) const
   {
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_vorticity(data, true, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
 
     auto velocity_bc = dirichletBC_velocity_factory();
     velocity_bc->set_time(time);
@@ -2567,9 +2577,9 @@ private:
         if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
           {
             eval_p_minus.reinit(face);
-            eval_vorticity.reinit(face);
+            eval_u_minus.reinit(face);
 
-            eval_vorticity.gather_evaluate(src, EvaluationFlags::gradients);
+            eval_u_minus.gather_evaluate(*src[0], EvaluationFlags::gradients);
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
@@ -2596,7 +2606,7 @@ private:
 
                 Tensor<1, dim, VectorizedArray<number>> curl_omega =
                   CurlCompute<dim, FEFaceEvaluation<dim, -1, 0, dim, number>>::compute(
-                    eval_vorticity, q);
+                    eval_u_minus, q);
 
                 const auto curl_flux = (-viscosity) * normal * curl_omega;
 
@@ -2609,17 +2619,34 @@ private:
           {
             eval_p_minus.reinit(face);
 
+            if(use_traction_boundary_condition)
+            {
+              eval_u_minus.reinit(face);
+              eval_u_minus.gather_evaluate(*src[1], EvaluationFlags::gradients);
+            }
+            
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
                 const auto f = evaluate_function((*rhs), eval_p_minus.quadrature_point(q));
-
                 const auto normal = eval_p_minus.normal_vector(q);
-
                 const auto flux = -f * normal;
-
-                const auto g_p =
-                  evaluate_scalar_function((*pressure_bc),
-                                           eval_p_minus.quadrature_point(q));
+                
+                VectorizedArray<number> g_p;
+                
+                if(use_traction_boundary_condition)
+                {
+                  const auto h = - evaluate_scalar_function((*pressure_bc),
+                                            eval_p_minus.quadrature_point(q)) * normal +  
+                                    viscosity * evaluate_tensor_function((*velocity_bc), eval_p_minus.quadrature_point(q)) * normal;
+                  const auto h_u = viscosity * eval_u_minus.get_gradient(q) * normal;
+                  g_p = - h * normal + h_u * normal;
+                }
+                else
+                {
+                  g_p =
+                    evaluate_scalar_function((*pressure_bc),
+                                            eval_p_minus.quadrature_point(q));
+                }
 
                 const VectorizedArray<number> penalty_factor =
                   eval_p_minus.read_cell_data(array_penalty_parameter);

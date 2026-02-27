@@ -3,7 +3,7 @@
 ##
 
 # Set the name of the project and target:
-SET(TARGET "consistent_splitting_momentum_first_combined_with_leray")
+SET(TARGET "consistent_splitting_traction_boundary")
 
 # Declare all source files the target consists of. Here, this is only
 # the one step-X.cc file, but as you expand your project you may wish

@@ -702,7 +702,7 @@ public:
           std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
           data);
 
-        mg_matrices[level].reinit(mg_matrices_mf[level], bdf_order, time_step, pressure_operator.get_use_leray_projection());
+        mg_matrices[level].reinit(mg_matrices_mf[level], bdf_order, time_step, pressure_operator.get_use_leray_projection(), pressure_operator.get_use_traction_boundary_condition());
       }
 
     // init transfer
