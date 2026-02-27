@@ -2641,9 +2641,6 @@ private:
                                     viscosity * grad_u_analytical * normal;
                   const auto h_u = viscosity * grad_u_numerically * normal;
                   g_p = - h * normal + h_u * normal;
-                  std::cout << "g_p: " << p << "    " << g_p << std::endl;
-                  std::cout << "h_u: " << grad_u_analytical  << std::endl;
-                  std::cout << "h_u: " << grad_u_numerically << std::endl;
                 }
                 else
                 {

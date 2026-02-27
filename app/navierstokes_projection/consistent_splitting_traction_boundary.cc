@@ -211,13 +211,15 @@ do_test(const unsigned int fe_degree,
   // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
 
-  unsigned int bdf_order   = 4;
-  unsigned int bdf_order_p = 3;
-  unsigned int bdf_order_c = 3;
+  const unsigned int bdf_order   = 4;
+  const unsigned int bdf_order_p = 3;
+  const unsigned int bdf_order_c = 3;
+  const unsigned int bdf_order_traction = 2;
 
   BDFTimeIntegratorConstants bdf(bdf_order);
   BDFTimeIntegratorConstants bdf_p(bdf_order_p);
   BDFTimeIntegratorConstants bdf_c(bdf_order_c);
+  BDFTimeIntegratorConstants bdf_traction(bdf_order_traction);
 
   MomentumOperator<dim, dim, Number> momentum_op;
   // set up operator
@@ -353,8 +355,8 @@ do_test(const unsigned int fe_degree,
       momentum_op.evaluate_vorticity(vec_vorticity, speed_extrapolated);
 
       speed_extrapolated = 0.;
-      for (unsigned int i = 0; i < bdf_p.get_order(); ++i) 
-        speed_extrapolated.add(bdf_p.get_beta(i), vec_u_old[i]); 
+      for (unsigned int i = 0; i < bdf_traction.get_order(); ++i) 
+        speed_extrapolated.add(bdf_traction.get_beta(i), vec_u_old[i]); 
       pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity, speed_extrapolated);
       vec_p_rhs.add(1, vec_p_rhs_n);
 
