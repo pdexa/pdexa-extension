@@ -2618,34 +2618,38 @@ private:
         else
           {
             eval_p_minus.reinit(face);
-
-            if(use_traction_boundary_condition)
-            {
-              eval_u_minus.reinit(face);
-              eval_u_minus.gather_evaluate(*src[1], EvaluationFlags::gradients);
-            }
+            eval_u_minus.reinit(face);
+            eval_u_minus.gather_evaluate(*src[1], EvaluationFlags::gradients);
+            velocity_bc->set_time(time);
+            pressure_bc->set_time(time);
             
-            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+            for (const unsigned int q : eval_u_minus.quadrature_point_indices())
               {
-                const auto f = evaluate_function((*rhs), eval_p_minus.quadrature_point(q));
-                const auto normal = eval_p_minus.normal_vector(q);
+                const auto f = evaluate_function((*rhs), eval_u_minus.quadrature_point(q));
+                const auto normal = eval_u_minus.normal_vector(q);
                 const auto flux = -f * normal;
                 
                 VectorizedArray<number> g_p;
                 
                 if(use_traction_boundary_condition)
                 {
-                  const auto h = - evaluate_scalar_function((*pressure_bc),
-                                            eval_p_minus.quadrature_point(q)) * normal +  
-                                    viscosity * evaluate_tensor_function((*velocity_bc), eval_p_minus.quadrature_point(q)) * normal;
-                  const auto h_u = viscosity * eval_u_minus.get_gradient(q) * normal;
+                  const auto p = evaluate_scalar_function((*pressure_bc),
+                                            eval_u_minus.quadrature_point(q));
+                  const auto grad_u_analytical = evaluate_tensor_function((*velocity_bc), eval_u_minus.quadrature_point(q));
+                  const auto grad_u_numerically = eval_u_minus.get_gradient(q);
+                  const auto h = -p * normal +  
+                                    viscosity * grad_u_analytical * normal;
+                  const auto h_u = viscosity * grad_u_numerically * normal;
                   g_p = - h * normal + h_u * normal;
+                  std::cout << "g_p: " << p << "    " << g_p << std::endl;
+                  std::cout << "h_u: " << grad_u_analytical  << std::endl;
+                  std::cout << "h_u: " << grad_u_numerically << std::endl;
                 }
                 else
                 {
                   g_p =
                     evaluate_scalar_function((*pressure_bc),
-                                            eval_p_minus.quadrature_point(q));
+                                            eval_u_minus.quadrature_point(q));
                 }
 
                 const VectorizedArray<number> penalty_factor =

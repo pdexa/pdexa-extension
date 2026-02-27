@@ -211,7 +211,7 @@ do_test(const unsigned int fe_degree,
   // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
 
-  unsigned int bdf_order   = 3;
+  unsigned int bdf_order   = 4;
   unsigned int bdf_order_p = 3;
   unsigned int bdf_order_c = 3;
 
