@@ -317,6 +317,7 @@ do_test(const unsigned int fe_degree,
   unsigned int time_step_number  = bdf.get_order() - 1;
   unsigned int n_performed_steps = 0;
 
+  unsigned int n_iterations = 0;
   const bool write_its    = false;
   const bool write_output = false;
   while (current_time <= end_time)
@@ -415,8 +416,10 @@ do_test(const unsigned int fe_degree,
        
         ++iterations;
       }
-      std::cout << "N iterations: " << iterations << std::endl;
+      if (write_its)
+        std::cout << "N iterations: " << iterations << std::endl;
 
+      n_iterations += iterations;
       // Compute Leray projection but do not add, add in the next time step in the acceleration term
       if(use_leray_projection)
       {
@@ -590,7 +593,7 @@ do_test(const unsigned int fe_degree,
   pcout << "Average iteration count in " << n_performed_steps
         << " time steps for pressure / momentum: "
         << static_cast<double>(n_pressure_iterations) / n_performed_steps << " / "
-        << static_cast<double>(n_momentum_iterations) / n_performed_steps << std::endl;
+        << static_cast<double>(n_momentum_iterations) / n_performed_steps << " in " <<static_cast<double>( n_iterations) / n_performed_steps << " inner iterations" << std::endl;
   pcout << std::endl;
 }
 
