@@ -210,8 +210,8 @@ do_test(const unsigned int fe_degree,
   // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
 
-  unsigned int bdf_order   = 3;
-  unsigned int bdf_order_p = 2;
+  unsigned int bdf_order   = 4;
+  unsigned int bdf_order_p = 4;
 
   BDFTimeIntegratorConstants bdf(bdf_order);
   BDFTimeIntegratorConstants bdf_p(bdf_order_p);
@@ -317,7 +317,7 @@ do_test(const unsigned int fe_degree,
   unsigned int time_step_number  = bdf.get_order() - 1;
   unsigned int n_performed_steps = 0;
 
-  const bool write_its    = true;
+  const bool write_its    = false;
   const bool write_output = false;
   while (current_time <= end_time)
     {
@@ -351,30 +351,78 @@ do_test(const unsigned int fe_degree,
         pressure_extrapolated.add(bdf_p.get_beta(i), vec_p_old[i]);
       }
 
-      vec_u_rhs = 0.;
-      momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, pressure_extrapolated);
+      bool continue_iteration = true;
+      unsigned int iterations = 0;
+      vec_u = 0.;
+      vec_p = 0.;
+      vec_u.add(1.0, speed_extrapolated);
+      vec_p.add(1.0, pressure_extrapolated);
+      while (continue_iteration && iterations < 1000)
+      {      
+        vec_u_rhs = 0.;
+        momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, pressure_extrapolated);
 
-      ReductionControl control_mom(10000, 1e-12, 1e-6);
-      SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
-      inverse_mass.set_scaling_factor(time_step / bdf.get_gamma0());
-      vec_u.swap(speed_extrapolated); // = 0.;
-      solver_mom.solve(momentum_op, vec_u, vec_u_rhs, inverse_mass);
+        ReductionControl control_mom(10000, 1e-12, 1e-6);
+        SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
+        inverse_mass.set_scaling_factor(time_step / bdf.get_gamma0());
+        solver_mom.solve(momentum_op, vec_u, vec_u_rhs, inverse_mass);
 
-      if (write_its)
-        pcout << "Momentum solver: " << control_mom.last_step() << " iterations"
-              << std::endl;
+        if (write_its)
+          pcout << "Momentum solver: " << control_mom.last_step() << " iterations"
+                << std::endl;
 
-      n_momentum_iterations += control_mom.last_step();
+        n_momentum_iterations += control_mom.last_step();
 
-      // exact_velocity.set_time(current_time);
-      // VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
+        // exact_velocity.set_time(current_time);
+        // VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);    
+
+        // Pressure step
+        vec_p_rhs = 0.;
+        pressure_op.set_time(current_time);
+        pressure_op.compute_convective_rhs(vec_p_rhs, vec_u);
+
+        vec_p_rhs_n   = 0.;
+        vec_vorticity = 0.;
+        momentum_op.evaluate_vorticity(vec_vorticity, vec_u);
+        pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity);
+        vec_p_rhs.add(1.0, vec_p_rhs_n);
+
+
+        if (!use_neumann_boundary)
+          VectorTools::subtract_mean_value(vec_p_rhs);
+
+        const unsigned int iteration_count =
+          precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs);
+        if (!use_neumann_boundary)
+          VectorTools::subtract_mean_value(vec_p);
+        if (write_its)
+          pcout << "Pressure solver: " << iteration_count << " iterations" << std::endl;
+        n_pressure_iterations += iteration_count;
+      
+        // in vec_u and vec_p are now the new values at the end of the iteration
+        // check if the iteration is finished
+        vec_u_np = 0.;
+        vec_u_np.add(1.0, vec_u);
+        vec_u_np.add(-1.0, speed_extrapolated);
+        if(vec_u_np.l2_norm() < 1e-10)
+          continue_iteration = false;
+       
+        // prepare vectors for the next iteration
+        speed_extrapolated = 0.;
+        pressure_extrapolated = 0.;
+        speed_extrapolated.add(1.0, vec_u);
+        pressure_extrapolated.add(1.0, vec_p);
+       
+        ++iterations;
+      }
+      std::cout << "N iterations: " << iterations << std::endl;
 
       // Compute Leray projection but do not add, add in the next time step in the acceleration term
       if(use_leray_projection)
       {
         // get divergence
         vec_div_u = 0.;
-        momentum_op.compute_divergence(vec_div_u, vec_u);
+        momentum_op.compute_divergence(vec_div_u, speed_extrapolated);
         // solve for phi
         pressure_op.set_time(current_time);
         phi = 0.;
@@ -389,35 +437,6 @@ do_test(const unsigned int fe_degree,
           pcout << "Leray solver: " << iteration_count_leray << " iterations" << std::endl;
       }
 
-      vec_u_np = 0.;
-      vec_u_np.add(1.0, vec_u);
-    
-
-      // Pressure step
-      vec_p_rhs = 0.;
-      pressure_op.set_time(current_time);
-      pressure_op.compute_convective_rhs(vec_p_rhs, vec_u_np);
-
-      vec_p_rhs_n   = 0.;
-      vec_vorticity = 0.;
-      momentum_op.evaluate_vorticity(vec_vorticity, vec_u_np);
-      pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity);
-      vec_p_rhs.add(1.0, vec_p_rhs_n);
-
-
-      if (!use_neumann_boundary)
-        VectorTools::subtract_mean_value(vec_p_rhs);
-
-      vec_p.swap(pressure_extrapolated);
-      const unsigned int iteration_count =
-        precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs);
-      if (!use_neumann_boundary)
-        VectorTools::subtract_mean_value(vec_p);
-      if (write_its)
-        pcout << "Pressure solver: " << iteration_count << " iterations" << std::endl;
-      n_pressure_iterations += iteration_count;
-
-
       // Update vectors
       for (unsigned int i = bdf.get_order() - 1; i != 0; --i)
         {
@@ -426,8 +445,8 @@ do_test(const unsigned int fe_degree,
           std::swap(vec_phi_old[i], vec_phi_old[i - 1]);
         }
 
-      vec_u_old[0].swap(vec_u_np);
-      vec_p_old[0].swap(vec_p);
+      vec_u_old[0].swap(speed_extrapolated);
+      vec_p_old[0].swap(pressure_extrapolated);
       vec_phi_old[0].swap(phi);
 
       if (write_output || write_its)
@@ -589,5 +608,5 @@ main(int argc, char **argv)
 
   //for (unsigned int i = 1; i < 15; ++i)
   //  do_test<2, double>(5, 4, i);
-  do_test<2, double>(5, 4, 14);
+  do_test<2, double>(5, 4, 7);
 }

@@ -32,6 +32,8 @@
 using namespace dealii;
 
 
+// Do momentum step first, then apply Leray projection (extra solve), then solve the PPE
+
 const bool use_neumann_boundary                      = true;
 const bool use_skew_symmetric_convective_formulation = false;
 const bool use_divergence_formulation                = false;
@@ -234,12 +236,11 @@ do_test(const unsigned int fe_degree,
 
   LinearAlgebra::distributed::Vector<Number> vec_u, vec_u_deriv, vec_u_rhs, vec_p,
     vec_u_norm, speed_extrapolated, vec_vorticity, vec_p_rhs, vec_p_rhs_n, vec_p_norm,
-    vec_div_u, pressure_extrapolated, phi, vec_u_np, vec_u_corrected;
+    vec_div_u, pressure_extrapolated, phi, vec_u_np;
   momentum_op.initialize_dof_vector(vec_u, dof_no_v);
   momentum_op.initialize_dof_vector(vec_u_np, dof_no_v);
   momentum_op.initialize_dof_vector(vec_u_deriv, dof_no_v);
   momentum_op.initialize_dof_vector(vec_u_rhs, dof_no_v);
-  momentum_op.initialize_dof_vector(vec_u_corrected, dof_no_v);
   momentum_op.initialize_dof_vector(vec_p, dof_no_p);
   momentum_op.initialize_dof_vector(vec_u_norm, dof_no_v);
   momentum_op.initialize_dof_vector(speed_extrapolated, dof_no_v);
@@ -253,12 +254,9 @@ do_test(const unsigned int fe_degree,
 
   std::vector<LinearAlgebra::distributed::Vector<double>> vec_u_old(bdf_order);
   std::vector<LinearAlgebra::distributed::Vector<double>> vec_p_old(bdf_order);
-  std::vector<LinearAlgebra::distributed::Vector<double>> vec_phi_old(bdf_order);
   for (auto &vec : vec_u_old)
     momentum_op.initialize_dof_vector(vec, dof_no_v);
   for (auto &vec : vec_p_old)
-    momentum_op.initialize_dof_vector(vec, dof_no_p);
-  for (auto &vec : vec_phi_old)
     momentum_op.initialize_dof_vector(vec, dof_no_p);
 
   InverseMassPreconditioner<dim, Number> inverse_mass;
@@ -306,8 +304,6 @@ do_test(const unsigned int fe_degree,
                               dof_handler_p,
                               exact_pressure,
                               vec_p_old[bdf_order - 1 - i]);
-                          
-      vec_phi_old[bdf_order - 1 - i] = 0.;
 
       current_time += time_step;
     }
@@ -332,20 +328,10 @@ do_test(const unsigned int fe_degree,
       pressure_extrapolated = 0.;
 
       for (unsigned int i = 0; i < bdf.get_order(); ++i)
-      {
-        vec_u_corrected = 0.;
-        // correct velocity
-        if(use_leray_projection)
-          momentum_op.apply_leray_correction(vec_u_corrected, vec_phi_old[i]);
-        vec_u_corrected.add(1.0, vec_u_old[i]);
-        vec_u_deriv.add(bdf.get_alpha(i) / time_step, vec_u_corrected);
-      }
-
-      for (unsigned int i = 0; i < bdf.get_order(); ++i)
-      {
-        speed_extrapolated.add(bdf.get_beta(i), vec_u_old[i]);
-      }
-      
+        {
+          vec_u_deriv.add(bdf.get_alpha(i) / time_step, vec_u_old[i]);
+          speed_extrapolated.add(bdf.get_beta(i), vec_u_old[i]);
+        }
       for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
       {
         pressure_extrapolated.add(bdf_p.get_beta(i), vec_p_old[i]);
@@ -369,7 +355,8 @@ do_test(const unsigned int fe_degree,
       // exact_velocity.set_time(current_time);
       // VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
 
-      // Compute Leray projection but do not add, add in the next time step in the acceleration term
+      // Apply Leray correction to u
+      vec_u_np = 0.;
       if(use_leray_projection)
       {
         // get divergence
@@ -387,9 +374,9 @@ do_test(const unsigned int fe_degree,
           VectorTools::subtract_mean_value(phi);
         if (write_its)
           pcout << "Leray solver: " << iteration_count_leray << " iterations" << std::endl;
+        // correct velocity
+        momentum_op.apply_leray_correction(vec_u_np, phi);
       }
-
-      vec_u_np = 0.;
       vec_u_np.add(1.0, vec_u);
     
 
@@ -408,7 +395,7 @@ do_test(const unsigned int fe_degree,
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
 
-      vec_p.swap(pressure_extrapolated);
+      vec_p.swap(pressure_extrapolated); // = 0.;
       const unsigned int iteration_count =
         precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs);
       if (!use_neumann_boundary)
@@ -423,12 +410,10 @@ do_test(const unsigned int fe_degree,
         {
           std::swap(vec_u_old[i], vec_u_old[i - 1]);
           std::swap(vec_p_old[i], vec_p_old[i - 1]);
-          std::swap(vec_phi_old[i], vec_phi_old[i - 1]);
         }
 
       vec_u_old[0].swap(vec_u_np);
       vec_p_old[0].swap(vec_p);
-      vec_phi_old[0].swap(phi);
 
       if (write_output || write_its)
         {
