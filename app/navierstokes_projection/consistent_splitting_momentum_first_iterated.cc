@@ -425,7 +425,7 @@ do_test(const unsigned int fe_degree,
       {
         // get divergence
         vec_div_u = 0.;
-        momentum_op.compute_divergence(vec_div_u, speed_extrapolated);
+        momentum_op.compute_divergence(vec_div_u, vec_u);
         // solve for phi
         pressure_op.set_time(current_time);
         phi = 0.;
@@ -448,8 +448,8 @@ do_test(const unsigned int fe_degree,
           std::swap(vec_phi_old[i], vec_phi_old[i - 1]);
         }
 
-      vec_u_old[0].swap(speed_extrapolated);
-      vec_p_old[0].swap(pressure_extrapolated);
+      vec_u_old[0].swap(vec_u);
+      vec_p_old[0].swap(vec_p);
       vec_phi_old[0].swap(phi);
 
       if (write_output || write_its)
@@ -611,5 +611,5 @@ main(int argc, char **argv)
 
   //for (unsigned int i = 1; i < 15; ++i)
   //  do_test<2, double>(5, 4, i);
-  do_test<2, double>(5, 4, 7);
+  do_test<2, double>(5, 4, 4);
 }
