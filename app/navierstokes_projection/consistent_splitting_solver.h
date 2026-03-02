@@ -1914,7 +1914,7 @@ public:
          const unsigned int             bdf_order_in,
          const number                   time_step_in,
          const bool                     use_leray_projection_in,
-         const bool                     use_traction_boundary_condition_in)
+         const bool                     use_traction_boundary_condition_in = false)
   {
     bdf_order         = bdf_order_in;
     time_step         = time_step_in;
@@ -2069,8 +2069,28 @@ public:
   }
 
   void
+  compute_rhs(VectorType &dst, const VectorType &vorticity)
+  {
+    if(get_use_traction_boundary_condition())
+      DEAL_II_NOT_IMPLEMENTED();
+
+    matrix_free->loop(&PressureOperator::local_rhs_domain,
+                      &PressureOperator::local_rhs_inner_face,
+                      &PressureOperator::local_rhs_boundary_face,
+                      this,
+                      dst,
+                      std::vector<const VectorType *>{&vorticity},
+                      true,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+  }
+
+  void
   compute_rhs(VectorType &dst, const VectorType &vorticity,  const VectorType &speed)
   {
+     if(!get_use_traction_boundary_condition())
+      DEAL_II_NOT_IMPLEMENTED();
+
     matrix_free->loop(&PressureOperator::local_rhs_domain,
                       &PressureOperator::local_rhs_inner_face,
                       &PressureOperator::local_rhs_boundary_face,
@@ -2619,7 +2639,15 @@ private:
           {
             eval_p_minus.reinit(face);
             eval_u_minus.reinit(face);
-            eval_u_minus.gather_evaluate(*src[1], EvaluationFlags::gradients);
+
+            if(use_traction_boundary_condition)
+            {
+              if(src.size() < 2)
+                DEAL_II_ASSERT_UNREACHABLE();
+
+              eval_u_minus.gather_evaluate(*src[1], EvaluationFlags::gradients);
+            }
+
             velocity_bc->set_time(time);
             pressure_bc->set_time(time);
             
@@ -2633,12 +2661,16 @@ private:
                 
                 if(use_traction_boundary_condition)
                 {
+                  // get pressure at boundary
                   const auto p = evaluate_scalar_function((*pressure_bc),
                                             eval_u_minus.quadrature_point(q));
+                  // get grad u at boundary
                   const auto grad_u_analytical = evaluate_tensor_function((*velocity_bc), eval_u_minus.quadrature_point(q));
+                  // compute traction boundary condition
+                  const auto h = viscosity * grad_u_analytical * normal - p * normal;
+                  
+                  // compute pressure boundary condition
                   const auto grad_u_numerically = eval_u_minus.get_gradient(q);
-                  const auto h = -p * normal +  
-                                    viscosity * grad_u_analytical * normal;
                   const auto h_u = viscosity * grad_u_numerically * normal;
                   g_p = - h * normal + h_u * normal;
                 }
