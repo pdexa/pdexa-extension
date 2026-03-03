@@ -34,33 +34,33 @@
 using namespace dealii;
 
 
-const bool use_extrapolated_velocity                 = false;
-const bool use_pressure_convective_upwind_flux       = false;
 const bool use_neumann_boundary                      = false;
 const bool use_skew_symmetric_convective_formulation = false;
+const bool use_divergence_formulation                = true;
 const bool use_leray_projection                      = true;
 
 const bool use_amg                       = false;
 const bool use_hmg                       = true;
 const bool use_pmg                       = true;
-const bool use_cmg                       = true;
+const bool use_cmg                       = false;
 const bool use_pointjacobi_pressure      = false;
-const bool use_amg_as_coarse_grid_solver = true;
+const bool use_amg_as_coarse_grid_solver = false;
 
 const bool use_velocity_point_jacobi         = false;
 const bool use_velocity_block_jacobi_fdm     = true;
 const bool use_inverse_mass_velocity         = false;
 const bool use_mg_velocity                   = false;
 const bool analyze_preconditioners           = false;
-const bool use_cmg_vel                       = true;
-const bool use_pmg_vel                       = true;
-const bool use_hmg_vel                       = true;
-const bool use_amg_as_coarse_grid_solver_vel = true;
+const bool use_cmg_vel                       = false;
+const bool use_pmg_vel                       = false;
+const bool use_hmg_vel                       = false;
+const bool use_amg_as_coarse_grid_solver_vel = false;
 
 const double penalty_divergence                 = 1.0;
 const double penalty_continuity                 = 1.0;
 const bool   do_penalty_terms_as_postprocessing = true;
 
+const double upwind_factor = 1.0;
 
 const double viscosity = 1. / 1600.0;
 const double u_x_max   = 1.0;
@@ -166,7 +166,7 @@ do_test(const unsigned int fe_degree,
     MPI_COMM_WORLD, Triangulation<dim>::limit_level_difference_at_vertices);
 
   pcout << "Setup tria" << std::endl;
-  GridGenerator::subdivided_hyper_cube(tria, 4, -L * numbers::PI, L * numbers::PI);
+  GridGenerator::subdivided_hyper_cube(tria, 1, -L * numbers::PI, L * numbers::PI);
   pcout << "Setup boundary" << std::endl;
 
   const bool periodic_boundary = true;
@@ -250,9 +250,8 @@ do_test(const unsigned int fe_degree,
                      time_step,
                      bdf_order,
                      use_skew_symmetric_convective_formulation,
-                     penalty_divergence,
-                     penalty_continuity,
-                     use_extrapolated_velocity);
+                     use_divergence_formulation,
+                     upwind_factor);
   if (do_penalty_terms_as_postprocessing)
     {
       momentum_op.set_divergence_penalty(0.0);
@@ -311,8 +310,7 @@ do_test(const unsigned int fe_degree,
   pressure_op.reinit(momentum_op.get_matrix_free(),
                      bdf_order,
                      time_step,
-                     use_skew_symmetric_convective_formulation,
-                     use_pressure_convective_upwind_flux);
+                     use_leray_projection);
   pressure_op.set_body_force_factory(
     [=]() { return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity); });
   pressure_op.set_time_step(time_step);
@@ -358,6 +356,7 @@ do_test(const unsigned int fe_degree,
   exact_pressure.set_time(current_time);
   VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
 
+  Number max_dissipation = 0.;
   {
     Number energy;
     Number enstrophy;
@@ -368,6 +367,7 @@ do_test(const unsigned int fe_degree,
       vec_u_old[0], energy, enstrophy, dissipation, max_vorticity);
     pcout << "Energy, enstrophy, dissipation, max vorticity at t=0: " << energy << " "
           << enstrophy << " " << dissipation << " " << max_vorticity << std::endl;
+    max_dissipation = std::max(max_dissipation, dissipation);
   }
 
   const Number       end_time = 20.0;
@@ -409,12 +409,12 @@ do_test(const unsigned int fe_degree,
           }
       pressure_op.set_time(current_time);
 
-      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
+      for (unsigned int i = 0; i < bdf.get_order(); ++i)
         {
           pressure_op.set_time(current_time - (i + 1) * time_step);
           vec_p_rhs_n = 0.;
           pressure_op.compute_convective_rhs(vec_p_rhs_n, vec_u_old[i]);
-          vec_p_rhs.add(bdf_p.get_beta(i), vec_p_rhs_n);
+          vec_p_rhs.add(bdf.get_beta(i), vec_p_rhs_n);
         }
 
       speed_extrapolated = 0.;
@@ -432,7 +432,7 @@ do_test(const unsigned int fe_degree,
       unsigned int iteration_count;
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
-      SolverControl control(100000, 1e-9 * vec_p_rhs.l2_norm());
+      ReductionControl control(10000, 1e-12, 1e-6);
       SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
       // vec_p = 0.;
       if (use_amg)
@@ -483,7 +483,7 @@ do_test(const unsigned int fe_degree,
       if (use_mg_velocity)
         preconditioner_velocity.update(current_time, speed_extrapolated);
 
-      SolverControl control_mom(500, 1e-8 * vec_u_rhs.l2_norm());
+      ReductionControl control_mom(10000, 1e-12, 1e-6);
       SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData gmres_data;
       gmres_data.max_basis_size        = 20;
       gmres_data.right_preconditioning = true;
@@ -590,23 +590,26 @@ do_test(const unsigned int fe_degree,
 
       vec_u_old[0].swap(vec_u);
 
-      {
-        Number energy;
-        Number enstrophy;
-        Number dissipation;
-        Number max_vorticity;
 
-        momentum_op.calculate_energy(
-          vec_u_old[0], energy, enstrophy, dissipation, max_vorticity);
-        pcout << "Energy, enstrophy, dissipation, max vorticity at t=" << current_time
-              << ": " << energy << " " << enstrophy << " " << dissipation << " "
-              << max_vorticity << std::endl;
-      }
 
       if (write_output && time_step_number % output_interval == 0)
         {
           double single_step = time_single_step.wall_time();
           pcout << "Time single step: " << single_step << std::endl;
+
+          {
+            Number energy;
+            Number enstrophy;
+            Number dissipation;
+            Number max_vorticity;
+
+            momentum_op.calculate_energy(
+              vec_u_old[0], energy, enstrophy, dissipation, max_vorticity);
+            pcout << "Energy, enstrophy, dissipation, max vorticity at t=" << current_time
+                  << ": " << energy << " " << enstrophy << " " << dissipation << " "
+                  << max_vorticity << std::endl;
+            max_dissipation = std::max(max_dissipation, dissipation);
+          }
 
           Vector<double> error_per_cell;
           exact_velocity.set_time(current_time);
@@ -711,8 +714,10 @@ do_test(const unsigned int fe_degree,
     pcout << "Energy, enstrophy, dissipation, max vorticity at t=" << current_time << ": "
           << energy << " " << enstrophy << " " << dissipation << " " << max_vorticity
           << std::endl;
+    max_dissipation = std::max(max_dissipation, dissipation);
   }
 
+  pcout << "Max dissipation is: " << max_dissipation << std::endl;
   const double loop_time = time_loop.wall_time();
   pcout << "Time loop time: " << loop_time << std::endl;
   pcout << std::endl;

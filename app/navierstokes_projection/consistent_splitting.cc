@@ -8,6 +8,7 @@
 #include <deal.II/distributed/tria.h>
 
 #include <deal.II/dofs/dof_handler.h>
+
 #include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_simplex_p.h>
@@ -25,34 +26,34 @@
 
 #include <fstream>
 
-#include "preconditioners.h"
-#include "evaluators.h"
 #include "consistent_splitting_solver.h"
+#include "evaluators.h"
+#include "preconditioners.h"
 
 using namespace dealii;
 
 
-const bool use_extrapolated_velocity                 = false;
-const bool use_pressure_convective_upwind_flux       = false;
-const bool use_neumann_boundary                      = true;
-const bool use_analytical_curl                       = false;
-const bool use_skew_symmetric_convective_formulation = true;
+const bool use_neumann_boundary                      = false;
+const bool use_skew_symmetric_convective_formulation = false;
+const bool use_divergence_formulation                = true;
 const bool use_leray_projection                      = true;
 
-const bool use_amg                       = false;
+// Always use MG as preconditioner for the pressure
+// const bool use_amg                       = false;
 const bool use_hmg                       = true;
 const bool use_pmg                       = false;
 const bool use_cmg                       = false;
-const bool use_pointjacobi_pressure      = false;
+// const bool use_pointjacobi_pressure      = false;
 const bool use_amg_as_coarse_grid_solver = false;
 
-const bool use_velocity_point_jacobi         = false;
-const bool use_inverse_mass_velocity         = true;
-const bool use_mg_velocity                   = false;
-const bool use_cmg_vel                       = false;
-const bool use_pmg_vel                       = false;
-const bool use_hmg_vel                       = false;
-const bool use_amg_as_coarse_grid_solver_vel = false;
+// Always uses inverse mass, no need to set these variables
+// const bool use_velocity_point_jacobi         = false;
+// const bool use_inverse_mass_velocity         = true;
+// const bool use_mg_velocity                   = false;
+// const bool use_cmg_vel                       = false;
+// const bool use_pmg_vel                       = false;
+// const bool use_hmg_vel                       = false;
+// const bool use_amg_as_coarse_grid_solver_vel = false;
 
 const double penalty_divergence = 1.0;
 const double penalty_continuity = 1.0;
@@ -210,8 +211,8 @@ do_test(const unsigned int fe_degree,
   // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
 
-  unsigned int bdf_order   = 3;
-  unsigned int bdf_order_p = 2;
+  unsigned int bdf_order   = 4;
+  unsigned int bdf_order_p = 3;
 
   BDFTimeIntegratorConstants bdf(bdf_order);
   BDFTimeIntegratorConstants bdf_p(bdf_order_p);
@@ -222,13 +223,12 @@ do_test(const unsigned int fe_degree,
 
   momentum_op.set_viscosity(viscosity);
   momentum_op.set_time(0.0);
-  momentum_op.set_body_force_factory([=]() {
-    return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
-  });
-  momentum_op.set_dirichletBC_pressure_factory ([=]() {
+  momentum_op.set_body_force_factory(
+    [=]() { return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity); });
+  momentum_op.set_dirichletBC_pressure_factory([=]() {
     return std::make_unique<AnalyticalSolutionPressure<dim>>(u_x_max, viscosity);
   });
-  momentum_op.set_DirichletBC_velocity_factory ([=]() {
+  momentum_op.set_DirichletBC_velocity_factory([=]() {
     return std::make_unique<AnalyticalSolutionVelocity<dim>>(u_x_max, viscosity);
   });
 
@@ -255,27 +255,27 @@ do_test(const unsigned int fe_degree,
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
 
   PressureOperator<dim, double> pressure_op;
-  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step);
-  pressure_op.set_body_force_factory([=]() {
-    return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
-  });
+  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, use_leray_projection);
+  pressure_op.set_body_force_factory(
+    [=]() { return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity); });
   pressure_op.set_viscosity(viscosity);
-  pressure_op.set_dirichletBC_pressure_factory ([=]() {
+  pressure_op.set_dirichletBC_pressure_factory([=]() {
     return std::make_unique<AnalyticalSolutionPressure<dim>>(u_x_max, viscosity);
   });
-  pressure_op.set_DirichletBC_velocity_factory ([=]() {
+  pressure_op.set_DirichletBC_velocity_factory([=]() {
     return std::make_unique<AnalyticalSolutionVelocity<dim>>(u_x_max, viscosity);
   });
 
-  MultigridPreconditioner<dim, Number, Number> precondition_hmg(pressure_op,
-                                                                mapping.get_degree(),
-                                                                time_step,
-                                                                bdf_order,
-                                                               use_hmg,
-                                                               use_cmg,
-                                                               use_pmg,   
-                                                               use_amg_as_coarse_grid_solver,
-                                                               use_neumann_boundary);
+  MultigridPreconditioner<dim, Number, Number> precondition_hmg(
+    pressure_op,
+    mapping.get_degree(),
+    time_step,
+    bdf_order,
+    use_hmg,
+    use_cmg,
+    use_pmg,
+    use_amg_as_coarse_grid_solver,
+    use_neumann_boundary);
 
   Number      current_time          = 0;
   std::size_t n_momentum_iterations = 0, n_pressure_iterations = 0;
@@ -299,6 +299,7 @@ do_test(const unsigned int fe_degree,
   unsigned int time_step_number  = bdf.get_order() - 1;
   unsigned int n_performed_steps = 0;
 
+  const bool write_its    = true;
   const bool write_output = true;
   while (current_time <= end_time)
     {
@@ -319,12 +320,12 @@ do_test(const unsigned int fe_degree,
           }
       pressure_op.set_time(current_time);
 
-      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
+      for (unsigned int i = 0; i < bdf.get_order(); ++i)
         {
           pressure_op.set_time(current_time - (i + 1) * time_step);
           vec_p_rhs_n = 0.;
           pressure_op.compute_convective_rhs(vec_p_rhs_n, vec_u_old[i]);
-          vec_p_rhs.add(bdf_p.get_beta(i), vec_p_rhs_n);
+          vec_p_rhs.add(bdf.get_beta(i), vec_p_rhs_n);
         }
 
       speed_extrapolated = 0.;
@@ -346,7 +347,7 @@ do_test(const unsigned int fe_degree,
         precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs);
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p);
-      if (write_output)
+      if (write_its)
         pcout << "Pressure solver: " << iteration_count << " iterations" << std::endl;
       n_pressure_iterations += iteration_count;
 
@@ -363,7 +364,7 @@ do_test(const unsigned int fe_degree,
       vec_u_rhs = 0.;
       momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, vec_p);
 
-      SolverControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
+      ReductionControl control_mom(10000, 1e-12, 1e-6);
       SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData gmres_data;
       gmres_data.max_basis_size        = 100;
       gmres_data.right_preconditioning = true;
@@ -372,9 +373,18 @@ do_test(const unsigned int fe_degree,
       //SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
       inverse_mass.set_scaling_factor(time_step / bdf.get_gamma0());
       vec_u.swap(speed_extrapolated); // = 0.;
-      solver_mom.solve(momentum_op, vec_u, vec_u_rhs, inverse_mass);
+      try
+        {
+          solver_mom.solve(momentum_op, vec_u, vec_u_rhs, inverse_mass);
+        }
+      catch (SolverControl::NoConvergence)
+        {
+          pcout << "Solver did not converge, last residual at " << control_mom.last_step()
+                << " iterations was " << control_mom.last_value() << std::endl;
+          break;
+        }
 
-      if (write_output)
+      if (write_its)
         pcout << "Momentum solver: " << control_mom.last_step() << " iterations"
               << std::endl;
 
@@ -544,7 +554,8 @@ main(int argc, char **argv)
   // for (unsigned int i = 1; i < 7; ++i)
   //   do_test<2, double>(5, i, 14);
 
-  //for (unsigned int i = 1; i < 15; ++i)
-  //  do_test<2, double>(5, 4, i);
-  do_test<2, double>(3, 5, 10);
+  // for (unsigned int i = 1; i < 15; ++i)
+  //   do_test<2, double>(5, 4, i);
+  for (unsigned int i = 5; i < 14; ++i)
+    do_test<2, double>(3, 6, i);
 }
