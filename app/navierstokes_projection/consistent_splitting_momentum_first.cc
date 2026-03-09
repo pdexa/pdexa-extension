@@ -593,6 +593,6 @@ main(int argc, char **argv)
   //   do_test<2, double>(5, i, 14);
 
   for (unsigned int i = 1; i < 15; ++i)
-    do_test<2, double>(5, 4, i);
+    do_test<2, double>(5, 4, 14-i);
   // do_test<2, double>(5, 4, 14);
 }

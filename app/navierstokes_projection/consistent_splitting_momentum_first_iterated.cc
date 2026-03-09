@@ -36,6 +36,8 @@ const bool use_neumann_boundary                      = true;
 const bool use_skew_symmetric_convective_formulation = false;
 const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
+const bool use_traction_boundary_condition_for_PPE   = true;
+
 
 // Always use MG as preconditioner for the pressure
 // const bool use_amg                       = false;
@@ -265,7 +267,7 @@ do_test(const unsigned int fe_degree,
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
 
   PressureOperator<dim, double> pressure_op;
-  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, false);
+  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, false, use_traction_boundary_condition_for_PPE);
   pressure_op.set_body_force_factory([=]() {
     return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
   });
@@ -385,7 +387,10 @@ do_test(const unsigned int fe_degree,
         vec_p_rhs_n   = 0.;
         vec_vorticity = 0.;
         momentum_op.evaluate_vorticity(vec_vorticity, vec_u);
-        pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity);
+        if(use_traction_boundary_condition_for_PPE)
+          pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity, vec_u);
+        else
+          pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity);
         vec_p_rhs.add(1.0, vec_p_rhs_n);
 
 
@@ -609,7 +614,7 @@ main(int argc, char **argv)
   // for (unsigned int i = 1; i < 7; ++i)
   //   do_test<2, double>(5, i, 14);
 
-  //for (unsigned int i = 1; i < 15; ++i)
-  //  do_test<2, double>(5, 4, i);
-  do_test<2, double>(5, 4, 4);
+  for (unsigned int i = 1; i < 15; ++i)
+    do_test<2, double>(5, 4, 14 - i);
+  // do_test<2, double>(5, 4, 4);
 }
