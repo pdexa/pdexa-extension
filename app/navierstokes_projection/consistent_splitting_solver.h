@@ -2612,7 +2612,8 @@ private:
                   make_vectorized_array(integration_constants.get_gamma0() / time_step) *
                   g;
                 
-                if(!use_leray_projection)
+                //TODO
+                //if(!use_leray_projection)
                   for (unsigned int i = 0; i < integration_constants.get_order(); ++i)
                     {
                       velocity_bc->set_time(time - (i + 1) * time_step);
@@ -2650,6 +2651,7 @@ private:
 
             velocity_bc->set_time(time);
             pressure_bc->set_time(time);
+            rhs->set_time(time);
             
             for (const unsigned int q : eval_u_minus.quadrature_point_indices())
               {
@@ -2912,7 +2914,13 @@ private:
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
-                eval_p_minus.submit_value({}, q);
+
+                const auto g =
+                  evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
+                eval_p_minus.submit_value(g * eval_p_minus.normal_vector(q), q);
+
+                // TODO:
+                //eval_p_minus.submit_value({}, q);
               }
 
             eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
