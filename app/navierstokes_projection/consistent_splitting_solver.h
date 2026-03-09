@@ -2612,8 +2612,7 @@ private:
                   make_vectorized_array(integration_constants.get_gamma0() / time_step) *
                   g;
                 
-                //TODO
-                //if(!use_leray_projection)
+                if(!use_leray_projection)
                   for (unsigned int i = 0; i < integration_constants.get_order(); ++i)
                     {
                       velocity_bc->set_time(time - (i + 1) * time_step);
@@ -2903,9 +2902,6 @@ private:
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
 
-    auto velocity_bc = dirichletBC_velocity_factory();  
-    velocity_bc->set_time(time);
-
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
         if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
@@ -2914,13 +2910,7 @@ private:
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
-
-                const auto g =
-                  evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
-                eval_p_minus.submit_value(g * eval_p_minus.normal_vector(q), q);
-
-                // TODO:
-                //eval_p_minus.submit_value({}, q);
+                eval_p_minus.submit_value({}, q);
               }
 
             eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
