@@ -36,6 +36,8 @@ const bool use_neumann_boundary                      = true;
 const bool use_skew_symmetric_convective_formulation = false;
 const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
+const bool use_traction_boundary_condition_for_PPE   = true;
+
 
 // Always use MG as preconditioner for the pressure
 // const bool use_amg                       = false;
@@ -210,8 +212,8 @@ do_test(const unsigned int fe_degree,
   // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
 
-  unsigned int bdf_order   = 3;
-  unsigned int bdf_order_p = 2;
+  unsigned int bdf_order   = 4;
+  unsigned int bdf_order_p = 3;
 
   BDFTimeIntegratorConstants bdf(bdf_order);
   BDFTimeIntegratorConstants bdf_p(bdf_order_p);
@@ -265,7 +267,7 @@ do_test(const unsigned int fe_degree,
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
 
   PressureOperator<dim, double> pressure_op;
-  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, false);
+  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, false, use_traction_boundary_condition_for_PPE);
   pressure_op.set_body_force_factory([=]() {
     return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
   });
@@ -317,7 +319,7 @@ do_test(const unsigned int fe_degree,
   unsigned int time_step_number  = bdf.get_order() - 1;
   unsigned int n_performed_steps = 0;
 
-  const bool write_its    = true;
+  const bool write_its    = false;
   const bool write_output = false;
   while (current_time <= end_time)
     {
@@ -401,7 +403,10 @@ do_test(const unsigned int fe_degree,
       vec_p_rhs_n   = 0.;
       vec_vorticity = 0.;
       momentum_op.evaluate_vorticity(vec_vorticity, vec_u_np);
-      pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity);
+      if(use_traction_boundary_condition_for_PPE)
+        pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity, vec_u_np);
+      else
+        pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity);
       vec_p_rhs.add(1.0, vec_p_rhs_n);
 
 
@@ -587,7 +592,7 @@ main(int argc, char **argv)
   // for (unsigned int i = 1; i < 7; ++i)
   //   do_test<2, double>(5, i, 14);
 
-  //for (unsigned int i = 1; i < 15; ++i)
-  //  do_test<2, double>(5, 4, i);
-  do_test<2, double>(5, 4, 14);
+  for (unsigned int i = 1; i < 15; ++i)
+    do_test<2, double>(5, 4, i);
+  // do_test<2, double>(5, 4, 14);
 }
