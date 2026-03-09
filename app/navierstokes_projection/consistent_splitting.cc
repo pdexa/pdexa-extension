@@ -36,7 +36,7 @@ const bool use_neumann_boundary                      = true;
 const bool use_skew_symmetric_convective_formulation = false;
 const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
-const bool use_traction_boundary_condition_for_PPE   = false;
+const bool use_traction_boundary_condition_for_PPE   = true;
 
 // Always use MG as preconditioner for the pressure
 // const bool use_amg                       = false;
@@ -214,7 +214,7 @@ do_test(const unsigned int fe_degree,
   const unsigned int bdf_order   = 4;
   const unsigned int bdf_order_p = 3;
   const unsigned int bdf_order_c = 3;
-  const unsigned int bdf_order_traction = 2;
+  const unsigned int bdf_order_traction = 3;
 
   BDFTimeIntegratorConstants bdf(bdf_order);
   BDFTimeIntegratorConstants bdf_p(bdf_order_p);
@@ -573,7 +573,7 @@ main(int argc, char **argv)
   // for (unsigned int i = 1; i < 7; ++i)
   //   do_test<2, double>(5, i, 14);
 
-  //for (unsigned int i = 1; i < 15; ++i)
-  //  do_test<2, double>(5, 4, i);
-  do_test<2, double>(5, 4, 6);
+  for (unsigned int i = 1; i < 15; ++i)
+    do_test<2, double>(5, 4, i);
+  //do_test<2, double>(5, 4, 6);
 }

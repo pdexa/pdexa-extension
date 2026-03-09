@@ -2672,7 +2672,7 @@ private:
                   // compute pressure boundary condition
                   const auto grad_u_numerically = eval_u_minus.get_gradient(q);
                   const auto h_u = viscosity * grad_u_numerically * normal;
-                  g_p = - h * normal + h_u * normal;
+                  g_p = - h * normal + h_u * normal - viscosity * eval_u_minus.get_divergence(q);
                 }
                 else
                 {
