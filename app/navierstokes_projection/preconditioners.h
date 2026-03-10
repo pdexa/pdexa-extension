@@ -103,6 +103,164 @@ private:
   unsigned int                   quad_no_v_mass;
 };
 
+template <int dim,  typename number>
+class MassOperator
+{ 
+  public:
+  using VectorType = LinearAlgebra::distributed::Vector<number>;
+  typedef MassOperator<dim, number> This;
+
+  MassOperator() = default;
+
+  void
+  reinit(const MatrixFree<dim, number> &matrix_free,
+         const unsigned int             dof_no_v       = 0,
+         const unsigned int             quad_no_v      = 0,
+         const unsigned int             quad_no_v_mass = 1)
+  {
+    this->matrix_free    = &matrix_free;
+    this->dof_no_v       = dof_no_v;
+    this->quad_no_v      = quad_no_v;
+    this->quad_no_v_mass = quad_no_v_mass;
+  }
+
+  void
+  vmult(VectorType &dst, const VectorType &src) const
+  {
+    dst = 0;
+    dst.zero_out_ghost_values();
+    //std::cout<<"Mass operator vmult\n";
+    //std::cout<<"src norm: "<<src.l2_norm()<<"\n";
+    matrix_free->cell_loop(&This::do_cell_integral_range,
+                      this,
+                      dst,
+                      src,
+                      true);
+  }
+
+  void
+  compute_inverse_diagonal(VectorType &diagonal_vector) const
+  {
+    this->matrix_free->initialize_dof_vector(diagonal_vector, dof_no_v);
+
+    MatrixFreeTools::compute_diagonal<dim, -1, 0, dim, number, VectorizedArray<number>>(
+      *matrix_free,
+      diagonal_vector,
+      [&](auto &phi) { do_cell_integral_local(phi); },
+      dof_no_v,
+      quad_no_v_mass);
+
+    for (unsigned int i = 0; i < diagonal_vector.locally_owned_size(); ++i)
+      {
+        if (std::abs(diagonal_vector.local_element(i)) > 1.0e-10)
+          diagonal_vector.local_element(i) = 1.0 / diagonal_vector.local_element(i);
+        else
+          diagonal_vector.local_element(i) = 1.0;
+      }
+  }
+
+  private:
+  const MatrixFree<dim, number>  *matrix_free;
+
+  unsigned int                   dof_no_v;
+  unsigned int                   quad_no_v;
+  unsigned int                   quad_no_v_mass;
+
+  void
+  do_cell_integral_range(const MatrixFree<dim, number>               &matrix_free,
+                         VectorType                                  &dst,
+                         const VectorType                            &src,
+                         const std::pair<unsigned int, unsigned int> &range) const
+  {
+     FEEvaluation<dim, -1, 0, dim, number> integrator(matrix_free,
+                                                dof_no_v,
+                                                quad_no_v_mass);
+
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
+      {
+        integrator.reinit(cell);
+        integrator.read_dof_values(src);
+        do_cell_integral_local(integrator);
+        integrator.distribute_local_to_global(dst);
+      }
+  }
+
+  void
+  do_cell_integral_local(FEEvaluation<dim, -1, 0, dim, number> &integrator) const
+  {
+    integrator.evaluate(EvaluationFlags::values);
+    // loop over quadrature points and compute the local volume flux
+    for (unsigned int q = 0; q < integrator.n_q_points; ++q)
+      integrator.submit_value(integrator.get_value(q), q);
+
+    // multiply by nabla v^h(x) and sum
+    integrator.integrate(EvaluationFlags::values);
+  }
+
+};
+
+
+template <int dim, typename number>
+class InverseMassPreconditionerRT
+{
+public:
+  using VectorType = LinearAlgebra::distributed::Vector<number>;
+  typedef InverseMassPreconditionerRT<dim, number> This;
+
+
+  InverseMassPreconditionerRT() = default;
+
+  void
+  reinit(const MatrixFree<dim, number> &matrix_free,
+         number                         scaling_factor_in,
+         const unsigned int             dof_no_v       = 0,
+         const unsigned int             quad_no_v      = 0,
+         const unsigned int             quad_no_v_mass = 1)
+  {
+    scaling_factor       = scaling_factor_in;
+    this->matrix_free    = &matrix_free;
+    this->dof_no_v       = dof_no_v;
+    this->quad_no_v      = quad_no_v;
+    this->quad_no_v_mass = quad_no_v_mass;
+  }
+
+  void
+  set_scaling_factor(number scaling_factor_in)
+  {
+    scaling_factor = scaling_factor_in;
+  }
+
+  void
+  vmult(VectorType &dst, const VectorType &src) const
+  {
+    //std::cout<<"scaling factor: "<<scaling_factor<<"\n";
+    dst = 0;
+    dst.zero_out_ghost_values();
+    MassOperator<dim, number> mass_operator;
+    mass_operator.reinit(*matrix_free, dof_no_v, quad_no_v, quad_no_v_mass);
+    /*std::cout<<"src norm: \n";
+    std::cout<<src.l2_norm()<<"\n\n";*/
+    AssertThrow(std::isfinite(src.l2_norm()), ExcMessage("src contains NaN or Inf"));
+    //ReductionControl control_massInv(100000, 1e-12, 1e-9, false, false);
+    DiagonalMatrix<LinearAlgebra::distributed::Vector<number>> preconditioner_mass;
+    mass_operator.compute_inverse_diagonal(
+    preconditioner_mass.get_vector());
+    SolverControl control_massInv(100000, 1e-12 * src.l2_norm());
+    SolverCG<LinearAlgebra::distributed::Vector<double>> solver_massInv(control_massInv);
+    solver_massInv.solve(mass_operator, dst, src,
+                         preconditioner_mass);
+    //std::cout<<"Preconditioner solver iterations: "<<control_massInv.last_step()<<"\n";
+    dst *= scaling_factor;
+  }
+
+private:
+  const MatrixFree<dim, number> *matrix_free;
+  number                         scaling_factor;
+  unsigned int                   dof_no_v;
+  unsigned int                   quad_no_v;
+  unsigned int                   quad_no_v_mass;
+};
+
 
 
 template <typename VectorType>
