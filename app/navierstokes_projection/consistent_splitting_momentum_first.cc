@@ -36,7 +36,7 @@ const bool use_neumann_boundary                      = true;
 const bool use_skew_symmetric_convective_formulation = false;
 const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
-const bool use_traction_boundary_condition_for_PPE   = true;
+const bool use_traction_boundary_condition_for_PPE   = false;
 
 
 // Always use MG as preconditioner for the pressure
@@ -337,8 +337,8 @@ do_test(const unsigned int fe_degree,
       {
         vec_u_corrected = 0.;
         // correct velocity
-        if(use_leray_projection)
-          momentum_op.apply_leray_correction(vec_u_corrected, vec_phi_old[i]);
+        // if(use_leray_projection)
+        //  momentum_op.apply_leray_correction(vec_u_corrected, vec_phi_old[i]);
         vec_u_corrected.add(1.0, vec_u_old[i]);
         vec_u_deriv.add(bdf.get_alpha(i) / time_step, vec_u_corrected);
       }
@@ -352,6 +352,12 @@ do_test(const unsigned int fe_degree,
       {
         pressure_extrapolated.add(bdf_p.get_beta(i), vec_p_old[i]);
       }
+    
+      if(use_leray_projection)
+        for (unsigned int i = 0; i < bdf.get_order(); ++i)
+        {
+          pressure_extrapolated.add(-bdf.get_alpha(i) / time_step, vec_phi_old[i]);
+        }
 
       vec_u_rhs = 0.;
       momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, pressure_extrapolated);
