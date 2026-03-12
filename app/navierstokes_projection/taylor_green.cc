@@ -36,7 +36,7 @@ using namespace dealii;
 
 const bool use_neumann_boundary                      = false;
 const bool use_skew_symmetric_convective_formulation = false;
-const bool use_divergence_formulation                = true;
+const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
 
 const bool use_amg                       = false;
@@ -225,7 +225,9 @@ do_test(const unsigned int fe_degree,
   h_min = Utilities::MPI::min(h_min, dof_handler_u.get_mpi_communicator());
 
   const double time_step = courant * h_min / u_x_max;
-  pcout << "Time step size: " << time_step << std::endl;
+  pcout << "Time step size: " << time_step
+        << " , mesh size: " << tria.begin_active()->minimum_vertex_distance()
+        << std::endl;
 
   const unsigned int bdf_order   = 3;
   const unsigned int bdf_order_p = 2;
