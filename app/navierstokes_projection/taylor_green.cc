@@ -152,7 +152,7 @@ template <int dim, typename Number>
 void
 do_test(const unsigned int fe_degree,
         const unsigned int n_refinements,
-        const unsigned int n_refinements_time)
+        const double       courant)
 {
   ConditionalOStream pcout(std::cout,
                            Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
@@ -211,24 +211,18 @@ do_test(const unsigned int fe_degree,
   DoFHandler<dim> dof_handler_p(tria);
   dof_handler_p.distribute_dofs(fe_p);
 
-  pcout << "number of active_cells: " << tria.n_global_active_cells() << std::endl;
+  pcout << "Number of active_cells: " << tria.n_global_active_cells() << std::endl;
   pcout << "Solving with " << fe_u.get_name() << " x " << fe_p.get_name() << " element"
         << std::endl;
-  pcout << "number of degrees of freedom: " << dof_handler_u.n_dofs() << " + "
+  pcout << "Number of degrees of freedom: " << dof_handler_u.n_dofs() << " + "
         << dof_handler_p.n_dofs() << std::endl;
 
   double h_min = std::numeric_limits<double>::max();
   for (const auto &cell : dof_handler_u.active_cell_iterators())
     h_min = std::min(h_min, cell->minimum_vertex_distance());
   h_min = Utilities::MPI::min(h_min, dof_handler_u.get_mpi_communicator());
-  double time_step_size = 1.;
-  for (unsigned int i = 0; i < n_refinements_time; ++i)
-    time_step_size *= 0.5;
-  const double local_time_step =
-    4.0 * time_step_size / std::pow(fe_degree, 1.5) * h_min / u_x_max;
 
-  const Number time_step =
-    dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD); // time_step_size
+  const double time_step = courant * h_min / u_x_max;
   pcout << "Time step size: " << time_step << std::endl;
 
   const unsigned int bdf_order   = 3;
@@ -372,7 +366,7 @@ do_test(const unsigned int fe_degree,
 
   const Number       end_time = 20.0;
   const unsigned int output_interval =
-    std::max(static_cast<unsigned int>(0.1 / time_step), 1u);
+    std::max(static_cast<unsigned int>(1.0 / time_step), 1u);
   unsigned int time_step_number = 0;
 
   const bool write_output = true;
@@ -489,6 +483,14 @@ do_test(const unsigned int fe_degree,
       gmres_data.right_preconditioning = true;
       SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom,
                                                                          gmres_data);
+      if (false)
+        solver_mom.connect_eigenvalues_slot(
+          [](const std::vector<std::complex<double>> &eigenvalues) {
+            std::cout << "Eigenvalue estimate: ";
+            for (const auto &a : eigenvalues)
+              std::cout << ' ' << a;
+            std::cout << std::endl;
+          });
       vec_u = speed_extrapolated; // = 0.;
       unsigned int n_iterations_vel;
       if (use_mg_velocity)
@@ -729,14 +731,46 @@ main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-  // for (unsigned int i = 1; i < 7; ++i)
-  //   do_test<2, double>(3, i, 14);
+  unsigned int dim      = 2;
+  unsigned int n_refine = 2;
+  unsigned int degree   = 4;
+  double       courant  = 0.2;
 
-  // for (unsigned int i = 1; i < 7; ++i)
-  // do_test<2, double>(5, i, 0);
+  if (argc % 2 == 0)
+    {
+      if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+        std::cout << "Error, expected odd number of common line arguments!" << std::endl
+                  << "Expected line of the form (or permutation of)" << std::endl
+                  << "dim 3 n_refine 2 degree 4 courant 0.2" << std::endl;
+      std::abort();
+    }
 
-  // for (unsigned int i = 3; i < 7; ++i)
-  //   do_test<3, double>(8, 3, i);
-  //  do_test<3, double>(5, 5, 3);
-  do_test<3, double>(5, 2, 0);
+  // parse from the command line
+  for (int l = 1; l < argc; l += 2)
+    {
+      std::string option = argv[l];
+      if (option == "dim")
+        dim = std::atoll(argv[l + 1]);
+      else if (option == "n_refine")
+        n_refine = std::atoll(argv[l + 1]);
+      else if (option == "degree")
+        degree = std::atoll(argv[l + 1]);
+      else if (option == "courant")
+        courant = std::atof(argv[l + 1]);
+      else
+        {
+          if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+            std::cout << "Given command-line argument " << option << " not supported!"
+                      << std::endl
+                      << "Expected line of the form (or premutation of)" << std::endl
+                      << "dim 3 n_refine 2 degree 4 courant 0.2" << std::endl;
+          std::abort();
+        }
+    }
+
+
+  if (dim == 2)
+    do_test<2, double>(degree, n_refine, courant);
+  else
+    do_test<3, double>(degree, n_refine, courant);
 }
