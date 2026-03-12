@@ -1,4 +1,4 @@
-#pragma once 
+#pragma once
 #include <deal.II/base/quadrature_lib.h>
 
 using namespace dealii;

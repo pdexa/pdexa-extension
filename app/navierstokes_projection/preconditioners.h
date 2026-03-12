@@ -1009,7 +1009,7 @@ private:
 
 namespace BlockJacobi
 {
-  void
+  unsigned int
   extract_real_eigenvalues(LAPACKFullMatrix<double> &A,
                            std::vector<double>      &eigenvalues,
                            FullMatrix<double>       &eigenvectors)
@@ -1019,8 +1019,8 @@ namespace BlockJacobi
 
     eigenvalues.resize(A.n());
     eigenvectors.reinit(A.n(), A.n());
-    unsigned int real_eigenvalue_index = numbers::invalid_unsigned_int;
-    unsigned int j                     = 0;
+    std::vector<unsigned int> real_eigenvalue_indices;
+    unsigned int              j = 0;
     for (unsigned int i = 0; i < A.n();)
       if (i + 1 < A.n() && std::abs(A.eigenvalue(i).imag()) > 1e-12)
         {
@@ -1041,28 +1041,30 @@ namespace BlockJacobi
       else
         {
           AssertThrow(std::abs(A.eigenvalue(i).imag()) <= 1e-12, ExcInternalError());
-          AssertThrow(real_eigenvalue_index == numbers::invalid_unsigned_int,
-                      ExcInternalError("Expected single real eigenvalue"));
-          real_eigenvalue_index = i;
+          real_eigenvalue_indices.push_back(i);
           ++i;
         }
-    if (real_eigenvalue_index != numbers::invalid_unsigned_int)
+    for (unsigned int i : real_eigenvalue_indices)
       {
-        AssertThrow(j + 1 == A.n(), ExcInternalError());
-        eigenvalues[j] = A.eigenvalue(real_eigenvalue_index).real();
+        eigenvalues[j] = A.eigenvalue(i).real();
         for (unsigned int k = 0; k < A.n(); ++k)
-          eigenvectors(k, j) = eig_vectors(k, real_eigenvalue_index).real();
+          eigenvectors(k, j) = eig_vectors(k, i).real();
+        ++j;
       }
-    // std::cout << "eigvals: " << eigenvalues[0] << " " << eigenvalues[1] <<
-    // std::endl;
+    AssertThrow(j == A.n(), ExcDimensionMismatch(j, A.n()));
+
+    // complex eigenvalues come in complex-conjugate pairs
+    return (A.n() - real_eigenvalue_indices.size()) / 2;
   }
+
+
 
   template <int n_components, int dim, int fe_degree, typename Number = double>
   class CellwisePreconditionerFDM
   {
   public:
-    static constexpr unsigned int n = fe_degree + 1;
-    using vcomplex                  = std::complex<VectorizedArray<Number>>;
+    static constexpr int n = fe_degree + 1;
+    using vcomplex         = std::complex<VectorizedArray<Number>>;
 
     CellwisePreconditionerFDM()
     {
@@ -1076,12 +1078,15 @@ namespace BlockJacobi
 
       for (unsigned int d = 0; d < dim; ++d)
         previous_blend_factor[d] = -1.0;
+
+      n_complex_eigenvalues = numbers::invalid_unsigned_int;
     }
 
     void
     reinit(const std::array<FullMatrix<double>, 2>       &eigenvectors,
            const std::array<FullMatrix<double>, 2>       &inverse_eigenvectors,
            const std::array<std::vector<double>, 2>      &eigenvalues,
+           const int                                      n_complex_eigenvalues,
            const VectorizedArray<Number>                  inv_jacobian_determinant,
            const Tensor<1, dim, VectorizedArray<Number>> &average_velocity,
            const double                                   inv_dt)
@@ -1094,9 +1099,8 @@ namespace BlockJacobi
           else
             blend_factor_eig[d][v] = 0.0;
 
-      constexpr int                          n_half = (n + 1) / 2;
-      dealii::ndarray<vcomplex, dim, n_half> tmp_eig;
-      for (unsigned int i0 = 0; i0 < n / 2; ++i0)
+      dealii::ndarray<vcomplex, dim, n> tmp_eig;
+      for (int i0 = 0; i0 < n_complex_eigenvalues; ++i0)
         {
           const vcomplex eig0(eigenvalues[0][2 * i0], eigenvalues[0][2 * i0 + 1]);
           const vcomplex eig1(eigenvalues[1][2 * i0], eigenvalues[1][2 * i0 + 1]);
@@ -1106,15 +1110,16 @@ namespace BlockJacobi
                                                       blend_factor_eig[d] * eig1);
             }
         }
-      if constexpr (n % 2 == 1)
-        {
-          for (unsigned int d = 0; d < dim; ++d)
-            tmp_eig[d][n_half - 1] =
-              average_velocity[d] * ((1.0 - blend_factor_eig[d]) * eigenvalues[0][n - 1] +
-                                     blend_factor_eig[d] * eigenvalues[1][n - 1]);
-        }
-      for (unsigned int i2 = 0, c = 0; i2 < (dim > 2 ? n_half : 1); ++i2)
-        for (unsigned int i1 = 0; i1 < (dim > 1 ? n_half : 1); ++i1)
+
+      const int n_eigenvalues = n - n_complex_eigenvalues;
+      for (int i0 = n_complex_eigenvalues, i = 2 * i0; i < n; ++i0, ++i)
+        for (unsigned int d = 0; d < dim; ++d)
+          tmp_eig[d][i0] =
+            average_velocity[d] * ((1.0 - blend_factor_eig[d]) * eigenvalues[0][i] +
+                                   blend_factor_eig[d] * eigenvalues[1][i]);
+
+      for (int i2 = 0, c = 0; i2 < n_eigenvalues; ++i2)
+        for (int i1 = 0; i1 < n_eigenvalues; ++i1)
           {
             std::array<vcomplex, 4> diagonal_element_yz;
             if constexpr (dim == 2)
@@ -1129,12 +1134,12 @@ namespace BlockJacobi
                 diagonal_element_yz[2] = conj(diagonal_element_yz[1]);
                 diagonal_element_yz[3] = conj(diagonal_element_yz[0]);
               }
-            for (unsigned int i0 = 0; i0 < n_half; ++i0, ++c)
+            for (int i0 = 0; i0 < n_eigenvalues; ++i0, ++c)
               {
                 const vcomplex val0 =
                   tmp_eig[0][i0] + make_vectorized_array<Number>(inv_dt);
                 const vcomplex val1 = conj(val0);
-                for (unsigned int d = 0; d < (1 << (dim - 1)); ++d)
+                for (unsigned int d = 0; d < Utilities::pow(2, dim - 1); ++d)
                   {
                     inverse_eigenvalues_for_cell[c][2 * d] =
                       Utilities::fixed_power<dim>(0.5) * inv_jacobian_determinant /
@@ -1164,7 +1169,8 @@ namespace BlockJacobi
                     blend_factor_eig[d] * inverse_eigenvectors[1](j, i);
                 }
           }
-      previous_blend_factor = blend_factor_eig;
+      previous_blend_factor       = blend_factor_eig;
+      this->n_complex_eigenvalues = n_complex_eigenvalues;
     }
 
     void
@@ -1183,6 +1189,7 @@ namespace BlockJacobi
       constexpr unsigned int n_dofs = Utilities::pow(n, dim);
       AssertDimension(n_dofs, data_array.size());
 
+      const int n_eigenvalues = n - n_complex_eigenvalues;
       for (unsigned int comp = 0; comp < n_components; ++comp)
         {
           using Eval = internal::EvaluatorTensorProduct<internal::evaluate_general,
@@ -1204,28 +1211,35 @@ namespace BlockJacobi
                                                   data_array.data(),
                                                   data_array.data());
 
-          constexpr int n_half  = (n + 1) / 2;
           constexpr int n_pairs = Utilities::pow(2, dim);
 
-          for (unsigned int i2 = 0, c = 0; i2 < (dim > 2 ? n_half : 1); ++i2)
-            for (unsigned int i1 = 0; i1 < (dim > 1 ? n_half : 1); ++i1)
-              for (unsigned int i0 = 0; i0 < n_half; ++i0, ++c)
-                {
-                  const unsigned int i = 2 * ((i2 * n + i1) * n + i0);
-                  const std::array<unsigned int, n_pairs> &my_offsets =
-                    offsets[n % 2 == 0 || i2 + 1 < n_half][n % 2 == 0 || i1 + 1 < n_half]
-                           [n % 2 == 0 || i0 + 1 < n_half];
-                  std::array<vcomplex, n_pairs> data_i;
-                  for (unsigned int d = 0; d < n_pairs; ++d)
-                    {
-                      const unsigned int j = my_offsets[d] + i;
-                      AssertIndexRange(j, n_dofs);
-                      data_i[d] = vcomplex(data_array[j], -data_array[j]);
-                    }
-                  apply_complex_inverse(data_i, inverse_eigenvalues_for_cell[c]);
-                  for (unsigned int d = 0; d < n_pairs; ++d)
-                    data_array[my_offsets[d] + i] = data_i[d].real();
-                }
+          for (int i2 = 0, j2 = 0, c = 0; i2 < n_eigenvalues;
+               j2 += (dim > 2 && i2 < n_complex_eigenvalues ? 2 : 1), ++i2)
+            for (int i1 = 0, j1 = 0; i1 < n_eigenvalues;
+                 j1 += (i1 < n_complex_eigenvalues ? 2 : 1), ++i1)
+              {
+                const auto &offsets_xy =
+                  offsets[(dim == 2 || i2 >= n_complex_eigenvalues ? 0 : 1)]
+                         [i1 >= n_complex_eigenvalues ? 0 : 1];
+                const int i_xy = (j2 * n + j1) * n;
+                for (int i0 = 0, j0 = 0; i0 < n_eigenvalues;
+                     j0 += (i0 < n_complex_eigenvalues ? 2 : 1), ++i0, ++c)
+                  {
+                    const unsigned int                       i = i_xy + j0;
+                    const std::array<unsigned int, n_pairs> &my_offsets =
+                      offsets_xy[i0 >= n_complex_eigenvalues ? 0 : 1];
+                    std::array<vcomplex, n_pairs> data_i;
+                    for (unsigned int d = 0; d < n_pairs; ++d)
+                      {
+                        const unsigned int j = my_offsets[d] + i;
+                        AssertIndexRange(j, n_dofs);
+                        data_i[d] = vcomplex(data_array[j], -data_array[j]);
+                      }
+                    apply_complex_inverse(data_i, inverse_eigenvalues_for_cell[c]);
+                    for (unsigned int d = 0; d < n_pairs; ++d)
+                      data_array[my_offsets[d] + i] = data_i[d].real();
+                  }
+              }
 
           // apply V
           if constexpr (dim > 1)
@@ -1317,6 +1331,7 @@ namespace BlockJacobi
     dealii::ndarray<unsigned int, 2, 2, 2, Utilities::pow(2, dim)> offsets;
 
     Tensor<1, dim, VectorizedArray<Number>> previous_blend_factor;
+    int                                     n_complex_eigenvalues;
   };
 
 
@@ -1420,7 +1435,8 @@ namespace BlockJacobi
           mass_matrix.compute_cholesky_factorization();
           mass_matrix.solve(deriv_matrix);
 
-          extract_real_eigenvalues(deriv_matrix, eigenvalues[c], eigenvectors[c]);
+          n_complex_eigenvalues =
+            extract_real_eigenvalues(deriv_matrix, eigenvalues[c], eigenvectors[c]);
 
           auto tmp = eigenvectors[c];
           tmp.gauss_jordan();
@@ -1515,6 +1531,7 @@ namespace BlockJacobi
           cell_fdm.reinit(eigenvectors,
                           inverse_eigenvectors,
                           eigenvalues,
+                          n_complex_eigenvalues,
                           determinant(eval.inverse_jacobian(0)),
                           scaled_cell_velocity[cell],
                           inverse_dt);
@@ -1532,6 +1549,7 @@ namespace BlockJacobi
     Number                             inverse_dt;
     std::array<FullMatrix<double>, 2>  eigenvectors, inverse_eigenvectors;
     std::array<std::vector<double>, 2> eigenvalues;
+    unsigned int                       n_complex_eigenvalues;
     AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> scaled_cell_velocity;
   };
 
