@@ -2622,6 +2622,8 @@ private:
                         evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
                     }
                 
+                velocity_bc->set_time(time);
+                
                 const auto flux = (-u_plus) * normal;
 
                 Tensor<1, dim, VectorizedArray<number>> curl_omega =
@@ -2902,6 +2904,9 @@ private:
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
 
+    auto velocity_bc = dirichletBC_velocity_factory();
+    velocity_bc->set_time(time);
+
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
         if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
@@ -2910,7 +2915,14 @@ private:
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
-                eval_p_minus.submit_value({}, q);
+                if(use_leray_projection)
+                  eval_p_minus.submit_value({}, q);
+                else
+                {
+                  const auto g =
+                  evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
+                  eval_p_minus.submit_value(g * eval_p_minus.normal_vector(q), q);
+                }
               }
 
             eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
