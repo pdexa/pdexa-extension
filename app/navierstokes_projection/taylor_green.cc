@@ -226,7 +226,7 @@ do_test(const unsigned int fe_degree,
 
   const double time_step = courant * h_min / u_x_max;
   pcout << "Time step size: " << time_step
-        << " , mesh size: " << tria.begin_active()->minimum_vertex_distance()
+        << " , mesh size: " << tria.begin(tria.n_levels() - 1)->minimum_vertex_distance()
         << std::endl;
 
   const unsigned int bdf_order   = 3;
