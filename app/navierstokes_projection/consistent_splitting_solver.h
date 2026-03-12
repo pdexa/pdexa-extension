@@ -605,7 +605,7 @@ private:
 
     integrator.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
 
-    for (unsigned int q = 0; q < integrator.n_q_points; ++q)
+    for (const unsigned int q : integrator.quadrature_point_indices())
       {
         const auto u          = integrator.get_value(q);
         const auto time_deriv = make_vectorized_array<number>(gamma0 / time_step) * u;
