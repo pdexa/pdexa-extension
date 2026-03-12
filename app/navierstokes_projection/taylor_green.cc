@@ -165,9 +165,11 @@ do_test(const unsigned int fe_degree,
   parallel::distributed::Triangulation<dim> tria(
     MPI_COMM_WORLD, Triangulation<dim>::limit_level_difference_at_vertices);
 
-  pcout << "Setup tria" << std::endl;
+  pcout << "Running with fe_degree=" << fe_degree << ", n_refine=" << n_refinements
+        << " and Courant=" << courant << std::endl;
+  pcout << "Set up tria" << std::endl;
   GridGenerator::subdivided_hyper_cube(tria, 1, -L * numbers::PI, L * numbers::PI);
-  pcout << "Setup boundary" << std::endl;
+  pcout << "Set up boundary" << std::endl;
 
   const bool periodic_boundary = true;
   if (periodic_boundary)
@@ -426,7 +428,7 @@ do_test(const unsigned int fe_degree,
       unsigned int iteration_count;
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
-      ReductionControl control(10000, 1e-12, 1e-6);
+      ReductionControl                                     control(10000, 1e-12, 1e-6);
       SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
       // vec_p = 0.;
       if (use_amg)
