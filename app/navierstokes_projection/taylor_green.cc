@@ -42,7 +42,7 @@ const bool use_leray_projection                      = true;
 const bool use_amg                       = false;
 const bool use_hmg                       = true;
 const bool use_pmg                       = true;
-const bool use_cmg                       = false;
+const bool use_cmg                       = true;
 const bool use_pointjacobi_pressure      = false;
 const bool use_amg_as_coarse_grid_solver = false;
 
@@ -225,9 +225,7 @@ do_test(const unsigned int fe_degree,
   h_min = Utilities::MPI::min(h_min, dof_handler_u.get_mpi_communicator());
 
   const double time_step = courant * h_min / u_x_max;
-  pcout << "Time step size: " << time_step
-        << " , mesh size: " << tria.begin(tria.n_levels() - 1)->minimum_vertex_distance()
-        << std::endl;
+  pcout << "Time step size: " << time_step << " , mesh size: " << h_min << std::endl;
 
   const unsigned int bdf_order   = 3;
   const unsigned int bdf_order_p = 2;
@@ -286,7 +284,7 @@ do_test(const unsigned int fe_degree,
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
 
   BlockJacobi::PreconditionerMomentum<dim, Number> preconditioner_block_jacobi(
-    momentum_op.get_matrix_free(), 0, 1);
+    momentum_op.get_matrix_free(), 0, 1, 5 * viscosity / h_min);
 
   MultigridPreconditionerVelocity<dim, Number, Number> preconditioner_velocity(
     momentum_op,
@@ -372,6 +370,8 @@ do_test(const unsigned int fe_degree,
   const unsigned int output_interval =
     std::max(static_cast<unsigned int>(1.0 / time_step), 1u);
   unsigned int time_step_number = 0;
+  unsigned int its_pre = 0, its_mom = 0, its_pen = 0;
+  double       time_pre = 0, time_mom = 0, time_pen = 0;
 
   const bool write_output = true;
 
@@ -395,6 +395,7 @@ do_test(const unsigned int fe_degree,
       BDFTimeIntegratorConstants bdf_p(time_step_number < bdf_order_p ? time_step_number :
                                                                         bdf_order_p);
 
+      Timer time_detail;
       // Pressure step
       vec_p_rhs = 0.;
       if (use_leray_projection)
@@ -460,8 +461,13 @@ do_test(const unsigned int fe_degree,
         }
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p);
+      time_pre += time_detail.wall_time();
+
       if (write_output && time_step_number % output_interval == 0)
-        pcout << "Pressure solver: " << iteration_count << " iterations" << std::endl;
+        pcout << "Pressure solver: " << iteration_count << " iterations in "
+              << time_detail.wall_time() << " sec " << std::endl;
+      its_pre += iteration_count;
+      time_detail.restart();
 
       // exact_pressure.set_time(current_time);
       // VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
@@ -530,20 +536,26 @@ do_test(const unsigned int fe_degree,
           solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
           n_iterations_vel = control_mom.last_step();
         }
+      its_mom += n_iterations_vel;
+      time_mom += time_detail.wall_time();
 
       if (write_output && time_step_number % output_interval == 0)
-        pcout << "Momentum solver: " << n_iterations_vel << " iterations" << std::endl;
+        pcout << "Momentum solver: " << n_iterations_vel << " iterations in "
+              << time_detail.wall_time() << " sec " << std::endl;
 
       if (do_penalty_terms_as_postprocessing)
         {
+          time_detail.restart();
           penalty_operator.rhs(vec_u_rhs, vec_u);
           SolverControl control_penalty(500, 1e-8 * vec_u_rhs.l2_norm());
           SolverCG<LinearAlgebra::distributed::Vector<double>> solver_penalty(
             control_penalty);
           solver_penalty.solve(penalty_operator, vec_u, vec_u_rhs, inverse_mass);
+          time_pen += time_detail.wall_time();
           if (write_output && time_step_number % output_interval == 0)
-            pcout << "Penalty solver: " << control_penalty.last_step() << " iterations"
-                  << std::endl;
+            pcout << "Penalty solver: " << control_penalty.last_step()
+                  << " iterations in " << time_detail.wall_time() << " sec " << std::endl;
+          its_pen += control_penalty.last_step();
         }
 
       if (analyze_preconditioners)
@@ -723,9 +735,25 @@ do_test(const unsigned int fe_degree,
     max_dissipation = std::max(max_dissipation, dissipation);
   }
 
-  pcout << "Max dissipation is: " << max_dissipation << std::endl;
+  pcout << std::endl << "Max dissipation is: " << max_dissipation << std::endl;
   const double loop_time = time_loop.wall_time();
   pcout << "Time loop time: " << loop_time << std::endl;
+  pcout << "Average iteration count pressure " << std::defaultfloat
+        << std::setprecision(3) << static_cast<double>(its_pre) / time_step_number
+        << " momentum " << static_cast<double>(its_mom) / time_step_number;
+  if (its_pen > 0)
+    pcout << " penalty " << static_cast<double>(its_pen) / time_step_number;
+  pcout << std::endl;
+  pcout << "Average wall time pressure " << std::defaultfloat << std::setprecision(3)
+        << static_cast<double>(time_pre) / time_step_number << " sec, momentum "
+        << static_cast<double>(time_mom) / time_step_number;
+  if (its_pen > 0)
+    pcout << " sec, penalty " << static_cast<double>(time_pen) / time_step_number;
+  pcout << " sec" << std::endl;
+  pcout << "Throughput per time step: " << std::scientific
+        << static_cast<double>(dof_handler_u.n_dofs() + dof_handler_p.n_dofs()) *
+             time_step_number / loop_time
+        << " DoFs/s" << std::endl;
   pcout << std::endl;
 }
 

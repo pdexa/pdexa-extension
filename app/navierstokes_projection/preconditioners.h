@@ -103,10 +103,10 @@ private:
   unsigned int                   quad_no_v_mass;
 };
 
-template <int dim,  typename number>
+template <int dim, typename number>
 class MassOperator
-{ 
-  public:
+{
+public:
   using VectorType = LinearAlgebra::distributed::Vector<number>;
   typedef MassOperator<dim, number> This;
 
@@ -129,13 +129,9 @@ class MassOperator
   {
     dst = 0;
     dst.zero_out_ghost_values();
-    //std::cout<<"Mass operator vmult\n";
-    //std::cout<<"src norm: "<<src.l2_norm()<<"\n";
-    matrix_free->cell_loop(&This::do_cell_integral_range,
-                      this,
-                      dst,
-                      src,
-                      true);
+    // std::cout<<"Mass operator vmult\n";
+    // std::cout<<"src norm: "<<src.l2_norm()<<"\n";
+    matrix_free->cell_loop(&This::do_cell_integral_range, this, dst, src, true);
   }
 
   void
@@ -159,12 +155,12 @@ class MassOperator
       }
   }
 
-  private:
-  const MatrixFree<dim, number>  *matrix_free;
+private:
+  const MatrixFree<dim, number> *matrix_free;
 
-  unsigned int                   dof_no_v;
-  unsigned int                   quad_no_v;
-  unsigned int                   quad_no_v_mass;
+  unsigned int dof_no_v;
+  unsigned int quad_no_v;
+  unsigned int quad_no_v_mass;
 
   void
   do_cell_integral_range(const MatrixFree<dim, number>               &matrix_free,
@@ -172,9 +168,9 @@ class MassOperator
                          const VectorType                            &src,
                          const std::pair<unsigned int, unsigned int> &range) const
   {
-     FEEvaluation<dim, -1, 0, dim, number> integrator(matrix_free,
-                                                dof_no_v,
-                                                quad_no_v_mass);
+    FEEvaluation<dim, -1, 0, dim, number> integrator(matrix_free,
+                                                     dof_no_v,
+                                                     quad_no_v_mass);
 
     for (unsigned int cell = range.first; cell < range.second; ++cell)
       {
@@ -196,8 +192,31 @@ class MassOperator
     // multiply by nabla v^h(x) and sum
     integrator.integrate(EvaluationFlags::values);
   }
-
 };
+
+
+
+template <typename Number>
+void
+make_zero_mean(const std::vector<unsigned int>                    &constrained_dofs,
+               dealii::LinearAlgebra::distributed::Vector<Number> &vec)
+{
+  // set constrained entries to zero
+  for (const unsigned int index : constrained_dofs)
+    vec.local_element(index) = 0.;
+
+  // rescale mean value computed among all vector entries to the vector size
+  // without constraints
+  const unsigned int n_unconstrained_dofs =
+    vec.locally_owned_size() - constrained_dofs.size();
+  vec.add(-vec.mean_value() * vec.size() /
+          dealii::Utilities::MPI::sum(n_unconstrained_dofs, vec.get_mpi_communicator()));
+
+  // set constrained entries to zero again, this should now have zero mean
+  for (const unsigned int index : constrained_dofs)
+    vec.local_element(index) = 0.;
+}
+
 
 
 template <int dim, typename number>
@@ -233,7 +252,7 @@ public:
   void
   vmult(VectorType &dst, const VectorType &src) const
   {
-    //std::cout<<"scaling factor: "<<scaling_factor<<"\n";
+    // std::cout<<"scaling factor: "<<scaling_factor<<"\n";
     dst = 0;
     dst.zero_out_ghost_values();
     MassOperator<dim, number> mass_operator;
@@ -241,15 +260,13 @@ public:
     /*std::cout<<"src norm: \n";
     std::cout<<src.l2_norm()<<"\n\n";*/
     AssertThrow(std::isfinite(src.l2_norm()), ExcMessage("src contains NaN or Inf"));
-    //ReductionControl control_massInv(100000, 1e-12, 1e-9, false, false);
+    // ReductionControl control_massInv(100000, 1e-12, 1e-9, false, false);
     DiagonalMatrix<LinearAlgebra::distributed::Vector<number>> preconditioner_mass;
-    mass_operator.compute_inverse_diagonal(
-    preconditioner_mass.get_vector());
+    mass_operator.compute_inverse_diagonal(preconditioner_mass.get_vector());
     SolverControl control_massInv(100000, 1e-12 * src.l2_norm());
     SolverCG<LinearAlgebra::distributed::Vector<double>> solver_massInv(control_massInv);
-    solver_massInv.solve(mass_operator, dst, src,
-                         preconditioner_mass);
-    //std::cout<<"Preconditioner solver iterations: "<<control_massInv.last_step()<<"\n";
+    solver_massInv.solve(mass_operator, dst, src, preconditioner_mass);
+    // std::cout<<"Preconditioner solver iterations: "<<control_massInv.last_step()<<"\n";
     dst *= scaling_factor;
   }
 
@@ -312,28 +329,6 @@ public:
   }
 
 private:
-  template <typename Number>
-  void
-  make_zero_mean(const std::vector<unsigned int>                    &constrained_dofs,
-                 dealii::LinearAlgebra::distributed::Vector<Number> &vec) const
-  {
-    // set constrained entries to zero
-    for (const unsigned int index : constrained_dofs)
-      vec.local_element(index) = 0.;
-
-    // rescale mean value computed among all vector entries to the vector size
-    // without constraints
-    const unsigned int n_unconstrained_dofs =
-      vec.locally_owned_size() - constrained_dofs.size();
-    vec.add(
-      -vec.mean_value() * vec.size() /
-      dealii::Utilities::MPI::sum(n_unconstrained_dofs, vec.get_mpi_communicator()));
-
-    // set constrained entries to zero again, this should now have zero mean
-    for (const unsigned int index : constrained_dofs)
-      vec.local_element(index) = 0.;
-  }
-
   const TrilinosWrappers::PreconditionAMG *amg_preconditioner;
   bool                                     is_singular;
   std::vector<unsigned int>                constrained_dofs;
@@ -598,7 +593,7 @@ public:
     PreconditionerType preconditioner(
       momentum_operator.get_matrix_free().get_dof_handler(dof_no_v), mg, transfer);
 
-    ReductionControl control(10000, 1e-12, 1e-6);
+    ReductionControl              control(10000, 1e-12, 1e-6);
     SolverGMRES<VectorTypeSystem> solver_gmres(control);
 
     solver_gmres.solve(momentum_operator, vec_u, vec_u_rhs, preconditioner);
@@ -740,7 +735,6 @@ public:
       use_cmg ? n_h_levels + n_p_levels : n_h_levels + n_p_levels - 1;
 
     dof_handlers.resize(minlevel, maxlevel);
-    dof_handlers_u.resize(minlevel, maxlevel);
     mg_matrices.resize(minlevel, maxlevel);
     mg_matrices_mf.resize(minlevel, maxlevel);
     transfers.resize(minlevel, maxlevel);
@@ -748,97 +742,77 @@ public:
     // h-MG with linear elements
     for (unsigned int l = 0; l < n_h_levels; ++l)
       {
-        auto &dof_handler   = dof_handlers[l];
-        auto &dof_handler_u = dof_handlers_u[l];
+        auto &dof_handler = dof_handlers[l];
 
         if (use_cmg)
           {
-            const FE_Q<dim>     fe(level_degrees[0]);
-            const FESystem<dim> fe_u(FE_Q<dim>(level_degrees[0] + 1), dim);
+            const FE_Q<dim> fe(level_degrees[0]);
 
             dof_handler.reinit(*coarse_grid_triangulations[l]);
             dof_handler.distribute_dofs(fe);
-            dof_handler_u.reinit(*coarse_grid_triangulations[l]);
-            dof_handler_u.distribute_dofs(fe_u);
           }
         else
           {
-            const FE_DGQ<dim>   fe(level_degrees[0]);
-            const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[0] + 1), dim);
+            const FE_DGQ<dim> fe(level_degrees[0]);
 
             dof_handler.reinit(*coarse_grid_triangulations[l]);
             dof_handler.distribute_dofs(fe);
-            dof_handler_u.reinit(*coarse_grid_triangulations[l]);
-            dof_handler_u.distribute_dofs(fe_u);
           }
       }
     // p-MG
     const unsigned int max_loop_it = use_cmg ? maxlevel : maxlevel + 1;
     for (unsigned int i = 0, l = n_h_levels; l < max_loop_it; ++l, ++i)
       {
-        auto &dof_handler   = dof_handlers[l];
-        auto &dof_handler_u = dof_handlers_u[l];
+        auto &dof_handler = dof_handlers[l];
 
         if (use_cmg)
           {
-            const FE_Q<dim>     fe(level_degrees[i]);
-            const FESystem<dim> fe_u(FE_Q<dim>(level_degrees[i] + 1), dim);
+            const FE_Q<dim> fe(level_degrees[i]);
 
             dof_handler.reinit(*coarse_grid_triangulations[n_h_levels]);
             dof_handler.distribute_dofs(fe);
-            dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
-            dof_handler_u.distribute_dofs(fe_u);
           }
         else
           {
-            const FE_DGQ<dim>   fe(level_degrees[i]);
-            const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[i] + 1), dim);
+            const FE_DGQ<dim> fe(level_degrees[i]);
 
             dof_handler.reinit(*coarse_grid_triangulations[n_h_levels]);
             dof_handler.distribute_dofs(fe);
-            dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
-            dof_handler_u.distribute_dofs(fe_u);
           }
       }
     // c-MG
     if (use_cmg)
       {
-        const unsigned int l             = maxlevel;
-        auto              &dof_handler   = dof_handlers[l];
-        auto              &dof_handler_u = dof_handlers_u[l];
+        const unsigned int l           = maxlevel;
+        auto              &dof_handler = dof_handlers[l];
 
-        const FE_DGQ<dim>   fe(level_degrees[level_degrees.size() - 1]);
-        const FESystem<dim> fe_u(FE_DGQ<dim>(level_degrees[level_degrees.size() - 1] + 1),
-                                 dim);
-
+        const FE_DGQ<dim> fe(level_degrees[level_degrees.size() - 1]);
 
         dof_handler.reinit(*coarse_grid_triangulations[n_h_levels]);
         dof_handler.distribute_dofs(fe);
-        dof_handler_u.reinit(*coarse_grid_triangulations[n_h_levels]);
-        dof_handler_u.distribute_dofs(fe_u);
       }
 
     std::vector<AffineConstraints<double>> level_constraints(maxlevel + 1);
     // init levels
     for (unsigned int level = minlevel; level <= maxlevel; ++level)
       {
-        const unsigned int fe_degree_u     = dof_handlers_u[level].get_fe().degree;
-        const unsigned int fe_degree_p     = dof_handlers[level].get_fe().degree;
-        Quadrature<1>      quadrature      = QGauss<1>(fe_degree_u + 2);
-        Quadrature<1>      quadrature_mass = QGauss<1>(fe_degree_u + 1);
-        Quadrature<1>      quadrature_p    = QGauss<1>(fe_degree_p + 1);
+        const unsigned int fe_degree_p      = dof_handlers[level].get_fe().degree;
+        Quadrature<1>      quadrature_dummy = QGauss<1>(1);
+        Quadrature<1>      quadrature_p     = QGauss<1>(fe_degree_p + 1);
 
 
         typename MatrixFree<dim, number>::AdditionalData data;
         data.mapping_update_flags = (update_gradients | update_JxW_values |
                                      update_quadrature_points | update_values);
-        data.mapping_update_flags_inner_faces =
-          (update_gradients | update_JxW_values | update_normal_vectors |
-           update_quadrature_points);
-        data.mapping_update_flags_boundary_faces =
-          (update_gradients | update_JxW_values | update_normal_vectors |
-           update_quadrature_points);
-        // data.mg_level = level;
+        if (!use_cmg || level == maxlevel)
+          {
+            data.mapping_update_flags_inner_faces =
+              (update_gradients | update_JxW_values | update_normal_vectors |
+               update_quadrature_points);
+            data.mapping_update_flags_boundary_faces =
+              (update_gradients | update_JxW_values | update_normal_vectors |
+               update_quadrature_points);
+          }
 
         // periodicity constraints
         AffineConstraints<double> dummy;
@@ -873,14 +847,17 @@ public:
         mg_matrices_mf[level].reinit(
           level < n_h_levels ? MappingQGeneric<dim>(1) :
                                MappingQGeneric<dim>(mapping_degree),
-          std::vector<const DoFHandler<dim> *>{&dof_handlers_u[level],
+          std::vector<const DoFHandler<dim> *>{&dof_handlers[level],
                                                &dof_handlers[level]},
           std::vector<const AffineConstraints<double> *>{&dummy,
                                                          &level_constraints[level]},
-          std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
+          std::vector<Quadrature<1>>{{quadrature_dummy, quadrature_dummy, quadrature_p}},
           data);
 
-        mg_matrices[level].reinit(mg_matrices_mf[level], bdf_order, time_step, pressure_operator.get_use_leray_projection());
+        mg_matrices[level].reinit(mg_matrices_mf[level],
+                                  bdf_order,
+                                  time_step,
+                                  pressure_operator.get_use_leray_projection());
       }
 
     // init transfer
@@ -900,22 +877,39 @@ public:
 
     for (unsigned int level = minlevel; level <= maxlevel; ++level)
       {
-        if (level > 0)
-          {
-            smoother_data[level].smoothing_range     = 20.;
-            smoother_data[level].degree              = 5;
-            smoother_data[level].eig_cg_n_iterations = 10;
-          }
-        else
-          {
-            smoother_data[0].smoothing_range     = 1e-3;
-            smoother_data[0].degree              = numbers::invalid_unsigned_int;
-            smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
-          }
         smoother_data[level].preconditioner =
           std::make_shared<SmootherPreconditionerType>();
         mg_matrices[level].compute_inverse_diagonal(
           smoother_data[level].preconditioner->get_vector());
+
+        // manually compute the eigenvalue estimate for Chebyshev because we
+        // need to be careful with the constrained indices
+        dealii::IterationNumberControl control(12, 1e-6, false, false);
+
+        dealii::SolverCG<VectorType>        solver(control);
+        dealii::internal::EigenvalueTracker eigenvalue_tracker;
+        solver.connect_eigenvalues_slot(
+          [&eigenvalue_tracker](const std::vector<double> &eigenvalues) {
+            eigenvalue_tracker.slot(eigenvalues);
+          });
+
+        VectorType sol, tmp, rhs;
+        mg_matrices[level].get_matrix_free().initialize_dof_vector(sol, dof_no_p);
+        mg_matrices[level].get_matrix_free().initialize_dof_vector(tmp, dof_no_p);
+        mg_matrices[level].get_matrix_free().initialize_dof_vector(rhs, dof_no_p);
+
+        dealii::internal::set_initial_guess(rhs);
+        make_zero_mean(
+          mg_matrices[level].get_matrix_free().get_constrained_dofs(dof_no_p), rhs);
+        solver.solve(mg_matrices[level], tmp, rhs, *smoother_data[level].preconditioner);
+
+        smoother_data[level].eig_cg_n_iterations = 0;
+        if (eigenvalue_tracker.values.empty())
+          smoother_data[level].max_eigenvalue = 1.0;
+        else
+          smoother_data[level].max_eigenvalue = eigenvalue_tracker.values.back();
+        smoother_data[level].smoothing_range = 20.;
+        smoother_data[level].degree          = 5;
       }
 
     mg_smoother.initialize(mg_matrices, smoother_data);
@@ -977,7 +971,7 @@ public:
     PreconditionerType preconditioner(
       pressure_operator.get_matrix_free().get_dof_handler(dof_no_p), mg, transfer);
 
-    SolverControl              control(100000, 1e-12 * vec_p_rhs.l2_norm());
+    SolverControl              control(10000, 1e-9 * vec_p_rhs.l2_norm());
     SolverCG<VectorTypeSystem> solver_cg(control);
 
     solver_cg.solve(pressure_operator, vec_p, vec_p_rhs, preconditioner);
@@ -991,7 +985,6 @@ private:
   MGLevelObject<typename SmootherType::AdditionalData>              smoother_data;
 
   MGLevelObject<DoFHandler<dim>>                     dof_handlers;
-  MGLevelObject<DoFHandler<dim>>                     dof_handlers_u;
   MGLevelObject<MGTwoLevelTransfer<dim, VectorType>> transfers;
   MGTransferGlobalCoarsening<dim, VectorType>        transfer;
 
@@ -1387,7 +1380,8 @@ namespace BlockJacobi
     using VectorType                        = LinearAlgebra::distributed::Vector<Number>;
     PreconditionerMomentum(const MatrixFree<dim, Number> &matrix_free,
                            const unsigned int             velocity_dof_handler_in_mf,
-                           const unsigned int             batched_solver_iterations)
+                           const unsigned int             batched_solver_iterations,
+                           const double                   diffusivity)
       : matrix_free(matrix_free)
       , dof_index_velocity(velocity_dof_handler_in_mf)
       , batched_solver_iterations(batched_solver_iterations)
@@ -1407,29 +1401,47 @@ namespace BlockJacobi
         {
           LAPACKFullMatrix<double> deriv_matrix(n, n);
           LAPACKFullMatrix<double> mass_matrix(n, n);
+          const double             sign_advection = (c == 0) ? 1.0 : -1.0;
+
           for (unsigned int q = 0; q < n; ++q)
             {
               for (unsigned int i = 0; i < n; ++i)
                 for (unsigned int j = 0; j < n; ++j)
-                  {
-                    const Point<1> point = gauss_quad.point(q);
-                    deriv_matrix(i, j) -= fe_1d.shape_grad(i, point)[0] *
-                                          fe_1d.shape_value(j, point) *
-                                          gauss_quad.weight(q);
-                    mass_matrix(i, j) += fe_1d.shape_value(i, point) *
-                                         fe_1d.shape_value(j, point) *
-                                         gauss_quad.weight(q);
-                  }
+                  deriv_matrix(i, j) += (sign_advection * diffusivity *
+                                           fe_1d.shape_grad(i, gauss_quad.point(q)) *
+                                           fe_1d.shape_grad(j, gauss_quad.point(q)) -
+                                         fe_1d.shape_grad(i, gauss_quad.point(q))[0] *
+                                           fe_1d.shape_value(j, gauss_quad.point(q))) *
+                                        gauss_quad.weight(q);
+              for (unsigned int i = 0; i < n; ++i)
+                for (unsigned int j = 0; j < n; ++j)
+                  mass_matrix(i, j) += fe_1d.shape_value(i, gauss_quad.point(q)) *
+                                       fe_1d.shape_value(j, gauss_quad.point(q)) *
+                                       gauss_quad.weight(q);
             }
-          const double sign_advection = (c == 0) ? 1.0 : -1.0;
+          const double sigma = (fe.degree + 1) * (fe.degree + 1);
           for (unsigned int i = 0; i < n; ++i)
             for (unsigned int j = 0; j < n; ++j)
-              deriv_matrix(i, j) += -fe_1d.shape_value(i, Point<1>()) *
-                                      fe_1d.shape_value(j, Point<1>()) *
-                                      (0.5 - flux_alpha * 0.5 * sign_advection) +
-                                    fe_1d.shape_value(i, Point<1>(1.0)) *
-                                      fe_1d.shape_value(j, Point<1>(1.0)) *
-                                      (0.5 + flux_alpha * 0.5 * sign_advection);
+              deriv_matrix(i, j) +=
+                (-fe_1d.shape_value(i, Point<1>()) * fe_1d.shape_value(j, Point<1>()) *
+                   (0.5 - flux_alpha * 0.5 * sign_advection) +
+                 (0.5 * fe_1d.shape_value(i, Point<1>()) *
+                    fe_1d.shape_grad(j, Point<1>())[0] +
+                  0.5 * fe_1d.shape_value(j, Point<1>()) *
+                    fe_1d.shape_grad(i, Point<1>())[0] +
+                  fe_1d.shape_value(i, Point<1>()) * fe_1d.shape_value(j, Point<1>()) *
+                    sigma) *
+                   diffusivity * sign_advection) +
+                (fe_1d.shape_value(i, Point<1>(1.0)) *
+                   fe_1d.shape_value(j, Point<1>(1.0)) *
+                   (0.5 + flux_alpha * 0.5 * sign_advection) -
+                 (0.5 * fe_1d.shape_value(i, Point<1>(1.0)) *
+                    fe_1d.shape_grad(j, Point<1>(1.0))[0] +
+                  0.5 * fe_1d.shape_value(j, Point<1>(1.0)) *
+                    fe_1d.shape_grad(i, Point<1>(1.0))[0] -
+                  fe_1d.shape_value(i, Point<1>(1.0)) *
+                    fe_1d.shape_value(j, Point<1>(1.0)) * sigma) *
+                   diffusivity * sign_advection);
 
           mass_matrix.set_property(LAPACKSupport::symmetric);
           mass_matrix.compute_cholesky_factorization();
