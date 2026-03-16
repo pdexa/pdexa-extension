@@ -1317,7 +1317,7 @@ namespace BlockJacobi
 
     dealii::ndarray<VectorizedArray<Number>, dim, n * n> eigenvectors;
     dealii::ndarray<VectorizedArray<Number>, dim, n * n> inverse_eigenvectors;
-    dealii::ndarray<vcomplex, Utilities::pow((n + 1) / 2, dim), Utilities::pow(2, dim)>
+    dealii::ndarray<vcomplex, Utilities::pow(n, dim), Utilities::pow(2, dim)>
       inverse_eigenvalues_for_cell;
     mutable dealii::ndarray<VectorizedArray<Number>, Utilities::pow(n, dim)> data_array;
 

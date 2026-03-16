@@ -763,7 +763,7 @@ main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-  unsigned int dim      = 2;
+  unsigned int dim      = 3;
   unsigned int n_refine = 2;
   unsigned int degree   = 4;
   double       courant  = 0.2;
@@ -792,7 +792,7 @@ main(int argc, char **argv)
       else
         {
           if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
-            std::cout << "Given command-line argument " << option << " not supported!"
+            std::cout << "Given command-line argument `" << option << "` not supported!"
                       << std::endl
                       << "Expected line of the form (or premutation of)" << std::endl
                       << "dim 3 n_refine 2 degree 4 courant 0.2" << std::endl;
