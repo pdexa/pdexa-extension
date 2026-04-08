@@ -781,6 +781,8 @@ main(int argc, char **argv)
   for (int l = 1; l < argc; l += 2)
     {
       std::string option = argv[l];
+      std::transform(option.begin(), option.end(), option.begin(),
+                     [](unsigned char c){ return std::tolower(c); });
       if (option == "dim")
         dim = std::atoll(argv[l + 1]);
       else if (option == "n_refine")
@@ -792,7 +794,7 @@ main(int argc, char **argv)
       else
         {
           if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
-            std::cout << "Given command-line argument `" << option << "` not supported!"
+            std::cout << "Given command-line argument `" << argv[l] << "` not supported!"
                       << std::endl
                       << "Expected line of the form (or premutation of)" << std::endl
                       << "dim 3 n_refine 2 degree 4 courant 0.2" << std::endl;
