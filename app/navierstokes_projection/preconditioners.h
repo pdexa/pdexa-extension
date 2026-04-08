@@ -627,56 +627,36 @@ class MGCoarseCG : public MGCoarseGridBase<VectorType>
 {
 private:
 public:
-  MGCoarseCG(const OperatorType                      &operator_in,
-             const TrilinosWrappers::PreconditionAMG &amg,
-             const bool                               is_singular_in)
-  {
-    is_singular        = is_singular_in;
-    amg_preconditioner = &amg;
-    op                 = &operator_in;
-  }
+  MGCoarseCG(const OperatorType                                &operator_in,
+             const std::shared_ptr<DiagonalMatrix<VectorType>> &preconditioner,
+             const bool                                         is_singular_in)
+    : is_singular(is_singular_in)
+    , preconditioner(preconditioner)
+    , op(operator_in)
+  {}
 
   void
   operator()(const unsigned int /*level*/,
              VectorType       &dst,
              const VectorType &src) const final
   {
-    ReductionControl coarse_grid_solver_control(10000, 1e-12, 1e-3, false, false);
-    SolverCG<LinearAlgebra::distributed::Vector<TrilinosScalar>> coarse_grid_solver(
-      coarse_grid_solver_control);
+    ReductionControl     coarse_grid_solver_control(10000, 1e-12, 1e-3, false, false);
+    SolverCG<VectorType> coarse_grid_solver(coarse_grid_solver_control);
 
-    if constexpr (std::is_same_v<VectorType,
-                                 LinearAlgebra::distributed::Vector<TrilinosScalar>>)
+    if (is_singular)
       {
-        if (is_singular)
-          {
-            VectorType r(src);
-            dealii::VectorTools::subtract_mean_value(r);
-            coarse_grid_solver.solve(*op, dst, r, *amg_preconditioner);
-          }
-        else
-          coarse_grid_solver.solve(*op, dst, src, *amg_preconditioner);
+        VectorType r(src);
+        dealii::VectorTools::subtract_mean_value(r);
+        coarse_grid_solver.solve(op, dst, r, *preconditioner);
       }
     else
-      {
-        LinearAlgebra::distributed::Vector<TrilinosScalar> src_;
-        LinearAlgebra::distributed::Vector<TrilinosScalar> dst_;
-
-        src_ = src;
-        dst_ = dst;
-
-        if (is_singular)
-          dealii::VectorTools::subtract_mean_value(src_);
-        coarse_grid_solver.solve(*op, dst_, src_, *amg_preconditioner);
-
-        dst = dst_;
-      }
+      coarse_grid_solver.solve(op, dst, src, *preconditioner);
   }
 
 private:
-  bool                                     is_singular;
-  const TrilinosWrappers::PreconditionAMG *amg_preconditioner;
-  const OperatorType                      *op;
+  const bool                                        is_singular;
+  const std::shared_ptr<DiagonalMatrix<VectorType>> preconditioner;
+  const OperatorType                               &op;
 };
 
 
@@ -842,6 +822,11 @@ public:
                                                              level_constraints[level]);
         }
 
+        VectorTools::interpolate_boundary_values(dof_handlers[level],
+                                                 /* neumann_boundary_id */ 1,
+                                                 Functions::ZeroFunction<dim>(1),
+                                                 level_constraints[level]);
+
         level_constraints[level].close();
 
         mg_matrices_mf[level].reinit(
@@ -930,20 +915,19 @@ public:
         amg_data.smoother_sweeps = 1;
         amg_data.n_cycles        = 2;
         amg_data.smoother_type   = "ILU";
+        precondition_amg.initialize(coarse_system_matrix, amg_data);
+        mg_coarse = std::make_unique<MGCoarseAMG<VectorType>>(
+          mg_matrices[0].get_matrix_free().get_constrained_dofs(dof_no_p),
+          precondition_amg,
+          !use_neumann_boundary);
       }
     else
       {
-        amg_data.elliptic              = true;
-        amg_data.higher_order_elements = false;
-        amg_data.w_cycle               = false;
-        amg_data.aggregation_threshold = 0.2;
-        amg_data.smoother_sweeps       = 5;
-        amg_data.n_cycles              = 1;
-        amg_data.smoother_type         = "Chebyshev";
+        mg_coarse = std::make_unique<MGCoarseCG<VectorType, LevelMatrixType>>(
+          mg_matrices[minlevel],
+          smoother_data[minlevel].preconditioner,
+          !use_neumann_boundary);
       }
-
-
-    precondition_amg.initialize(coarse_system_matrix, amg_data);
   }
 
   unsigned int
@@ -951,20 +935,7 @@ public:
         VectorTypeSystem       &vec_p,
         const VectorTypeSystem &vec_p_rhs)
   {
-    // Coarse grid solver
-    std::unique_ptr<MGCoarseGridBase<VectorType>> mg_coarse;
-    if (use_amg_as_coarse_grid_solver)
-      mg_coarse = std::make_unique<MGCoarseAMG<VectorType>>(
-        mg_matrices[0].get_matrix_free().get_constrained_dofs(dof_no_p),
-        precondition_amg,
-        !use_neumann_boundary);
-    else
-      mg_coarse =
-        std::make_unique<MGCoarseCG<VectorType, TrilinosWrappers::SparseMatrix>>(
-          coarse_system_matrix, precondition_amg, !use_neumann_boundary);
-
-
-    // Setup levels and transfers
+    // Set up levels and transfers
     mg::Matrix<VectorType> mg_matrix(mg_matrices);
     Multigrid<VectorType>  mg(mg_matrix, *mg_coarse, transfer, mg_smoother, mg_smoother);
 
@@ -987,6 +958,7 @@ private:
   MGLevelObject<DoFHandler<dim>>                     dof_handlers;
   MGLevelObject<MGTwoLevelTransfer<dim, VectorType>> transfers;
   MGTransferGlobalCoarsening<dim, VectorType>        transfer;
+  std::unique_ptr<MGCoarseGridBase<VectorType>>      mg_coarse;
 
   std::vector<std::shared_ptr<const Triangulation<dim>>> coarse_grid_triangulations;
 
