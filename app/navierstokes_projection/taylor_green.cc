@@ -247,7 +247,9 @@ do_test(const unsigned int fe_degree,
                      bdf_order,
                      use_skew_symmetric_convective_formulation,
                      use_divergence_formulation,
-                     upwind_factor);
+                     upwind_factor,
+                     penalty_divergence,
+                     penalty_continuity);
   if (do_penalty_terms_as_postprocessing)
     {
       momentum_op.set_divergence_penalty(0.0);
