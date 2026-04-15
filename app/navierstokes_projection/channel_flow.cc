@@ -186,6 +186,8 @@ do_test(const unsigned int fe_degree,
             cell->face(f)->set_all_boundary_ids(0);
         }
 
+  tria.reset_all_manifolds();
+  tria.set_manifold(0, PolarManifold<dim>(midpoint));
   tria.refine_global(n_refinements);
 
   DoFHandler<dim> dof_handler_u(tria);
