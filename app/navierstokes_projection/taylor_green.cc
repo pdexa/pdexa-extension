@@ -47,7 +47,8 @@ const bool use_pointjacobi_pressure      = false;
 const bool use_amg_as_coarse_grid_solver = false;
 
 const bool use_velocity_point_jacobi         = false;
-const bool use_velocity_block_jacobi_fdm     = true;
+const bool use_velocity_block_jacobi         = true;
+const int n_iterations_block_jacobi          = 4;
 const bool use_inverse_mass_velocity         = false;
 const bool use_mg_velocity                   = false;
 const bool analyze_preconditioners           = false;
@@ -286,7 +287,7 @@ do_test(const unsigned int fe_degree,
   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
 
   BlockJacobi::PreconditionerMomentum<dim, Number> preconditioner_block_jacobi(
-    momentum_op.get_matrix_free(), 0, 1, 5 * viscosity / h_min);
+    momentum_op, 0, n_iterations_block_jacobi, 5 * viscosity / h_min);
 
   MultigridPreconditionerVelocity<dim, Number, Number> preconditioner_velocity(
     momentum_op,
@@ -490,19 +491,18 @@ do_test(const unsigned int fe_degree,
         preconditioner_velocity.update(current_time, speed_extrapolated);
 
       ReductionControl control_mom(10000, 1e-12, 1e-6);
-      SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData gmres_data;
+      SolverFGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData gmres_data;
       gmres_data.max_basis_size        = 20;
-      gmres_data.right_preconditioning = true;
-      SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom,
+      SolverFGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom,
                                                                          gmres_data);
-      if (false)
-        solver_mom.connect_eigenvalues_slot(
-          [](const std::vector<std::complex<double>> &eigenvalues) {
-            std::cout << "Eigenvalue estimate: ";
-            for (const auto &a : eigenvalues)
-              std::cout << ' ' << a;
-            std::cout << std::endl;
-          });
+      //if (false)
+      //  solver_mom.connect_eigenvalues_slot(
+      //    [](const std::vector<std::complex<double>> &eigenvalues) {
+      //      std::cout << "Eigenvalue estimate: ";
+      //      for (const auto &a : eigenvalues)
+      //        std::cout << ' ' << a;
+      //      std::cout << std::endl;
+      //    });
       vec_u = speed_extrapolated; // = 0.;
       unsigned int n_iterations_vel;
       if (use_mg_velocity)
@@ -526,7 +526,7 @@ do_test(const unsigned int fe_degree,
                            preconditioner_velocity_pointjacobi);
           n_iterations_vel = control_mom.last_step();
         }
-      else if (use_velocity_block_jacobi_fdm)
+      else if (use_velocity_block_jacobi)
         {
           preconditioner_block_jacobi.reinit(speed_extrapolated,
                                              bdf.get_gamma0() / time_step);
@@ -783,8 +783,9 @@ main(int argc, char **argv)
   for (int l = 1; l < argc; l += 2)
     {
       std::string option = argv[l];
-      std::transform(option.begin(), option.end(), option.begin(),
-                     [](unsigned char c){ return std::tolower(c); });
+      std::transform(option.begin(), option.end(), option.begin(), [](unsigned char c) {
+        return std::tolower(c);
+      });
       if (option == "dim")
         dim = std::atoll(argv[l + 1]);
       else if (option == "n_refine")

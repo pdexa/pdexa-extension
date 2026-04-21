@@ -1,4 +1,6 @@
 
+#pragma once
+
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_cg.h>
@@ -18,16 +20,10 @@
 #include <deal.II/multigrid/mg_transfer_matrix_free.h>
 #include <deal.II/multigrid/multigrid.h>
 
+#include "consistent_splitting_solver.h"
 
-// #include "consistent_splitting_solver.h"
 
 using namespace dealii;
-
-template <int dim1, int n_components, typename Number>
-class MomentumOperator;
-
-template <int dim, typename Number>
-class PressureOperator;
 
 
 template <int dim, typename number>
@@ -1083,7 +1079,7 @@ namespace BlockJacobi
             average_velocity[d] * ((1.0 - blend_factor_eig[d]) * eigenvalues[0][i] +
                                    blend_factor_eig[d] * eigenvalues[1][i]);
 
-      for (int i2 = 0, c = 0; i2 < n_eigenvalues; ++i2)
+      for (int i2 = 0, c = 0; i2 < (dim > 2 ? n_eigenvalues : 1); ++i2)
         for (int i1 = 0; i1 < n_eigenvalues; ++i1)
           {
             std::array<vcomplex, 4> diagonal_element_yz;
@@ -1142,8 +1138,8 @@ namespace BlockJacobi
     vmult(Vector<Number> &dst, const Vector<Number> &src) const
     {
       constexpr unsigned int n_lanes = VectorizedArray<Number>::size();
-      AssertDimension(n_lanes * data_array.size(), dst.size());
-      AssertDimension(n_lanes * data_array.size(), src.size());
+      AssertDimension(n_lanes * data_array.size(), dst.size() / n_components);
+      AssertDimension(n_lanes * data_array.size(), src.size() / n_components);
       apply(reinterpret_cast<const VectorizedArray<Number> *>(src.begin()),
             reinterpret_cast<VectorizedArray<Number> *>(dst.begin()));
     }
@@ -1178,7 +1174,7 @@ namespace BlockJacobi
 
           constexpr int n_pairs = Utilities::pow(2, dim);
 
-          for (int i2 = 0, j2 = 0, c = 0; i2 < n_eigenvalues;
+          for (int i2 = 0, j2 = 0, c = 0; i2 < (dim > 2 ? n_eigenvalues : 1);
                j2 += (dim > 2 && i2 < n_complex_eigenvalues ? 2 : 1), ++i2)
             for (int i1 = 0, j1 = 0; i1 < n_eigenvalues;
                  j1 += (i1 < n_complex_eigenvalues ? 2 : 1), ++i1)
@@ -1343,18 +1339,44 @@ namespace BlockJacobi
   };
 
 
+  template <int dim, int degree, typename Number>
+  class CellwiseOperatorMomentum
+  {
+  public:
+    CellwiseOperatorMomentum(const MomentumOperator<dim, dim, Number> &momentum_op,
+                             const unsigned int                        cell_batch_index)
+      : momentum_op(momentum_op)
+      , cell_batch_index(cell_batch_index)
+    {}
+
+    void
+    vmult(Vector<Number> &dst, const Vector<Number> &src) const
+    {
+      constexpr unsigned int n_q_points = degree + (degree + 2) / 2;
+      momentum_op.template apply_cellwise_operator<n_q_points>(
+        cell_batch_index,
+        (const VectorizedArray<Number> *)src.begin(),
+        (VectorizedArray<Number> *)dst.begin());
+    }
+
+  private:
+    const MomentumOperator<dim, dim, Number> &momentum_op;
+    const unsigned int                        cell_batch_index;
+  };
+
+
 
   template <int dim, typename Number>
   class PreconditionerMomentum
   {
   public:
-    static constexpr bool do_batched_solver = false;
-    using VectorType                        = LinearAlgebra::distributed::Vector<Number>;
-    PreconditionerMomentum(const MatrixFree<dim, Number> &matrix_free,
-                           const unsigned int             velocity_dof_handler_in_mf,
-                           const unsigned int             batched_solver_iterations,
-                           const double                   diffusivity)
-      : matrix_free(matrix_free)
+    using VectorType = LinearAlgebra::distributed::Vector<Number>;
+    PreconditionerMomentum(const MomentumOperator<dim, dim, Number> &momentum_op,
+                           const unsigned int velocity_dof_handler_in_mf,
+                           const unsigned int batched_solver_iterations,
+                           const double       diffusivity)
+      : matrix_free(momentum_op.get_matrix_free())
+      , momentum_op(momentum_op)
       , dof_index_velocity(velocity_dof_handler_in_mf)
       , batched_solver_iterations(batched_solver_iterations)
     {
@@ -1366,9 +1388,9 @@ namespace BlockJacobi
 
       QGauss<1>               gauss_quad(fe.degree + 1);
       QGaussLobatto<1>        lobatto_quad(gauss_quad.size());
-      FE_DGQArbitraryNodes<1> fe_1d(do_batched_solver ?
-                                      static_cast<Quadrature<1> &>(gauss_quad) :
-                                      static_cast<Quadrature<1> &>(lobatto_quad));
+      FE_DGQArbitraryNodes<1> fe_1d(/*do_batched_solver ?
+                                      static_cast<Quadrature<1> &>(gauss_quad) :*/
+                                    static_cast<Quadrature<1> &>(lobatto_quad));
       for (unsigned int c = 0; c < 2; ++c)
         {
           LAPACKFullMatrix<double> deriv_matrix(n, n);
@@ -1496,14 +1518,14 @@ namespace BlockJacobi
       FEEvaluation<dim, degree, degree + 1, dim, Number> eval(matrix_free);
       MyVectorMemory<Vector<Number>>                     memory;
       Vector<Number> local_src(eval.dofs_per_cell * VectorizedArray<Number>::size());
-      Vector<Number> local_dst(local_src);
+      Vector<Number> local_dst(local_src.size());
 
       IterationNumberControl control(batched_solver_iterations, 1e-18, false, false);
       typename SolverGMRES<Vector<Number>>::AdditionalData gmres_data;
       gmres_data.right_preconditioning = true;
       gmres_data.orthogonalization_strategy =
         LinearAlgebra::OrthogonalizationStrategy::classical_gram_schmidt;
-      gmres_data.max_basis_size = batched_solver_iterations;
+      gmres_data.max_basis_size = std::min(1u, batched_solver_iterations);
       gmres_data.batched_mode   = true;
       SolverGMRES<Vector<Number>> gmres(control, memory, gmres_data);
       CellwisePreconditionerFDM<dim, dim, degree, Number> cell_fdm;
@@ -1520,20 +1542,40 @@ namespace BlockJacobi
                           scaled_cell_velocity[cell],
                           inverse_dt);
 
-          cell_fdm.apply(eval.begin_dof_values(), eval.begin_dof_values());
+          if (batched_solver_iterations == 0)
+            {
+              cell_fdm.apply(eval.begin_dof_values(), eval.begin_dof_values());
+            }
+          else
+            {
+              CellwiseOperatorMomentum<dim, degree, Number> local_operator(momentum_op,
+                                                                           cell);
+              for (unsigned int i = 0; i < eval.dofs_per_cell; ++i)
+                {
+                  ((VectorizedArray<Number> *)local_dst.data())[i] =
+                    VectorizedArray<Number>();
+                  ((VectorizedArray<Number> *)local_src.data())[i] =
+                    eval.begin_dof_values()[i];
+                }
+              gmres.solve(local_operator, local_dst, local_src, cell_fdm);
+              for (unsigned int i = 0; i < eval.dofs_per_cell; ++i)
+                eval.begin_dof_values()[i] =
+                  ((const VectorizedArray<Number> *)local_dst.data())[i];
+            }
 
           eval.set_dof_values(dst);
         }
     }
 
   private:
-    const MatrixFree<dim, Number>     &matrix_free;
-    const unsigned int                 dof_index_velocity;
-    const unsigned int                 batched_solver_iterations;
-    Number                             inverse_dt;
-    std::array<FullMatrix<double>, 2>  eigenvectors, inverse_eigenvectors;
-    std::array<std::vector<double>, 2> eigenvalues;
-    unsigned int                       n_complex_eigenvalues;
+    const MatrixFree<dim, Number>            &matrix_free;
+    const MomentumOperator<dim, dim, Number> &momentum_op;
+    const unsigned int                        dof_index_velocity;
+    const unsigned int                        batched_solver_iterations;
+    Number                                    inverse_dt;
+    std::array<FullMatrix<double>, 2>         eigenvectors, inverse_eigenvectors;
+    std::array<std::vector<double>, 2>        eigenvalues;
+    unsigned int                              n_complex_eigenvalues;
     AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> scaled_cell_velocity;
   };
 
