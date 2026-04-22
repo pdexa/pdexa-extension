@@ -529,11 +529,10 @@ public:
                                 velocity);
 
     // sum over all MPI processes
-    Number volume;
-    volume      = dealii::Utilities::MPI::sum(dst.at(0), MPI_COMM_WORLD);
-    energy      = dealii::Utilities::MPI::sum(dst.at(1), MPI_COMM_WORLD);
-    enstrophy   = dealii::Utilities::MPI::sum(dst.at(2), MPI_COMM_WORLD);
-    dissipation = dealii::Utilities::MPI::sum(dst.at(3), MPI_COMM_WORLD);
+    const Number volume = dealii::Utilities::MPI::sum(dst.at(0), MPI_COMM_WORLD);
+    energy              = dealii::Utilities::MPI::sum(dst.at(1), MPI_COMM_WORLD);
+    enstrophy           = dealii::Utilities::MPI::sum(dst.at(2), MPI_COMM_WORLD);
+    dissipation         = dealii::Utilities::MPI::sum(dst.at(3), MPI_COMM_WORLD);
 
     energy /= volume;
     enstrophy /= volume;

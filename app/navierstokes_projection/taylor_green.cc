@@ -48,7 +48,7 @@ const bool use_amg_as_coarse_grid_solver = false;
 
 const bool use_velocity_point_jacobi         = false;
 const bool use_velocity_block_jacobi         = true;
-const int  n_iterations_block_jacobi         = 2;
+const int  n_iterations_block_jacobi         = 3;
 const bool use_inverse_mass_velocity         = false;
 const bool use_mg_velocity                   = false;
 const bool analyze_preconditioners           = false;
@@ -638,9 +638,9 @@ do_test(const unsigned int fe_degree,
           VectorTools::integrate_difference(mapping,
                                             dof_handler_u,
                                             vec_u_old[0],
-                                            exact_velocity,
+                                            Functions::ZeroFunction<dim>(dim),
                                             error_per_cell,
-                                            QGauss<dim>(fe_u.degree + 3),
+                                            QGauss<dim>(fe_u.degree + 2),
                                             VectorTools::L2_norm);
           const double velocity_error =
             VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
@@ -648,9 +648,9 @@ do_test(const unsigned int fe_degree,
           VectorTools::integrate_difference(mapping,
                                             dof_handler_p,
                                             vec_p,
-                                            exact_pressure,
+                                            Functions::ZeroFunction<dim>(1),
                                             error_per_cell,
-                                            QGauss<dim>(fe_p.degree + 3),
+                                            QGauss<dim>(fe_p.degree + 2),
                                             VectorTools::L2_norm);
           const double pressure_error =
             VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
@@ -700,9 +700,9 @@ do_test(const unsigned int fe_degree,
   VectorTools::integrate_difference(mapping,
                                     dof_handler_u,
                                     vec_u_old[0],
-                                    exact_velocity,
+                                    Functions::ZeroFunction<dim>(dim),
                                     error_per_cell,
-                                    QGauss<dim>(fe_u.degree + 3),
+                                    QGauss<dim>(fe_u.degree + 2),
                                     VectorTools::L2_norm); // H1_seminorm);
   const double velocity_error =
     VectorTools::compute_global_error(tria,
@@ -712,9 +712,9 @@ do_test(const unsigned int fe_degree,
   VectorTools::integrate_difference(mapping,
                                     dof_handler_p,
                                     vec_p,
-                                    exact_pressure,
+                                    Functions::ZeroFunction<dim>(1),
                                     error_per_cell,
-                                    QGauss<dim>(fe_p.degree + 3),
+                                    QGauss<dim>(fe_p.degree + 2),
                                     VectorTools::L2_norm);
   const double pressure_error =
     VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
