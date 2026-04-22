@@ -48,7 +48,7 @@ const bool use_amg_as_coarse_grid_solver = false;
 
 const bool use_velocity_point_jacobi         = false;
 const bool use_velocity_block_jacobi         = true;
-const int n_iterations_block_jacobi          = 4;
+const int  n_iterations_block_jacobi         = 2;
 const bool use_inverse_mass_velocity         = false;
 const bool use_mg_velocity                   = false;
 const bool analyze_preconditioners           = false;
@@ -57,8 +57,8 @@ const bool use_pmg_vel                       = false;
 const bool use_hmg_vel                       = false;
 const bool use_amg_as_coarse_grid_solver_vel = false;
 
-const double penalty_divergence                 = 1.0;
-const double penalty_continuity                 = 1.0;
+const double penalty_divergence                 = 2.0;
+const double penalty_continuity                 = 2.0;
 const bool   do_penalty_terms_as_postprocessing = true;
 
 const double upwind_factor = 1.0;
@@ -490,19 +490,19 @@ do_test(const unsigned int fe_degree,
       if (use_mg_velocity)
         preconditioner_velocity.update(current_time, speed_extrapolated);
 
-      ReductionControl control_mom(10000, 1e-12, 1e-6);
+      ReductionControl control_mom(1000, 1e-12, 1e-6);
       SolverFGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData gmres_data;
-      gmres_data.max_basis_size        = 20;
+      gmres_data.max_basis_size = 20;
       SolverFGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom,
-                                                                         gmres_data);
-      //if (false)
-      //  solver_mom.connect_eigenvalues_slot(
-      //    [](const std::vector<std::complex<double>> &eigenvalues) {
-      //      std::cout << "Eigenvalue estimate: ";
-      //      for (const auto &a : eigenvalues)
-      //        std::cout << ' ' << a;
-      //      std::cout << std::endl;
-      //    });
+                                                                          gmres_data);
+      // if (false)
+      //   solver_mom.connect_eigenvalues_slot(
+      //     [](const std::vector<std::complex<double>> &eigenvalues) {
+      //       std::cout << "Eigenvalue estimate: ";
+      //       for (const auto &a : eigenvalues)
+      //         std::cout << ' ' << a;
+      //       std::cout << std::endl;
+      //     });
       vec_u = speed_extrapolated; // = 0.;
       unsigned int n_iterations_vel;
       if (use_mg_velocity)

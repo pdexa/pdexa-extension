@@ -177,7 +177,7 @@ public:
     FEEvaluation<dim, -1, 0, dim, number> eval_cell(matrix_free, 0, quad_no_v);
     speeds_cells.reinit(matrix_free.n_cell_batches(), eval_cell.n_q_points);
     speeds_cells_mass.reinit(matrix_free.n_cell_batches(),
-                             Utilities::pow(quadrature.size(), dim));
+                             Utilities::pow(quadrature_mass.size(), dim));
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_face(matrix_free, true, 0, 0);
     speeds_faces.reinit(matrix_free.n_inner_face_batches() +
                           matrix_free.n_boundary_face_batches(),
@@ -246,7 +246,7 @@ public:
     }
 
     const auto poly_space =
-      Polynomials::generate_complete_Lagrange_basis(quadrature.get_points());
+      Polynomials::generate_complete_Lagrange_basis(quadrature_mass.get_points());
     interpolate_to_face.resize(poly_space.size());
     for (unsigned int q = 0; q < poly_space.size(); ++q)
       {
@@ -259,7 +259,7 @@ public:
         interpolate_to_face[q][3] = val_and_der[1];
       }
 
-    Quadrature<dim - 1> quad_face(quadrature);
+    Quadrature<dim - 1> quad_face(quadrature_mass);
     face_quadrature_weights.clear();
     face_quadrature_weights.reserve(quad_face.size());
     for (unsigned int q = 0; q < quad_face.size(); ++q)
@@ -574,12 +574,13 @@ public:
                           const VectorizedArray<Number> *src,
                           VectorizedArray<Number>       *dst) const
   {
-    const auto &shape_info_data = matrix_free.get_shape_info(dof_no_v, quad_no_v).data[0];
+    const auto &shape_info_data =
+      matrix_free.get_shape_info(dof_no_v, quad_no_v_mass).data[0];
     AssertThrow(n_q_points_1d == shape_info_data.n_q_points_1d,
                 ExcDimensionMismatch(n_q_points_1d, shape_info_data.n_q_points_1d));
     FEEvaluation<dim, -1, 0, n_components, Number> integrator(matrix_free,
                                                               dof_no_v,
-                                                              quad_no_v);
+                                                              quad_no_v_mass);
     integrator.reinit(cell_batch);
     BDFTimeIntegratorConstants integration_constants(bdf_order);
     double                     gamma0 = integration_constants.get_gamma0();
@@ -587,36 +588,6 @@ public:
     integrator.evaluate(src, EvaluationFlags::values | EvaluationFlags::gradients);
     const Tensor<1, dim, VectorizedArray<Number>> *cell_speed =
       &speeds_cells_mass(cell_batch, 0);
-    const Tensor<1, dim, VectorizedArray<Number>> *cell_speed_ref =
-      &speeds_cells(cell_batch, 0);
-    for (unsigned int q = 0; q < Utilities::pow(n_q_points_1d, dim); ++q)
-      AssertThrow(
-        (cell_speed[q] - cell_speed_ref[q]).norm_square() == VectorizedArray<Number>(0.0),
-        ExcMessage("Got inconsistent velocity: " + std::to_string(cell_speed[q][0][0]) +
-                   " " + std::to_string(cell_speed[q][1][0]) + " " +
-                   std::to_string(cell_speed[q][2][0]) + " " +
-                   std::to_string(cell_speed[q][0][1]) + " " +
-                   std::to_string(cell_speed[q][1][1]) + " " +
-                   std::to_string(cell_speed[q][2][1]) + " " +
-                   std::to_string(cell_speed[q][0][2]) + " " +
-                   std::to_string(cell_speed[q][1][2]) + " " +
-                   std::to_string(cell_speed[q][2][2]) + " " +
-                   std::to_string(cell_speed[q][0][3]) + " " +
-                   std::to_string(cell_speed[q][1][3]) + " " +
-                   std::to_string(cell_speed[q][2][3]) + "  vs  " +
-                   std::to_string(cell_speed_ref[q][0][0]) + " " +
-                   std::to_string(cell_speed_ref[q][1][0]) + " " +
-                   std::to_string(cell_speed_ref[q][2][0]) + " " +
-                   std::to_string(cell_speed_ref[q][0][1]) + " " +
-                   std::to_string(cell_speed_ref[q][1][1]) + " " +
-                   std::to_string(cell_speed_ref[q][2][1]) + " " +
-                   std::to_string(cell_speed_ref[q][0][2]) + " " +
-                   std::to_string(cell_speed_ref[q][1][2]) + " " +
-                   std::to_string(cell_speed_ref[q][2][2]) + " " +
-                   std::to_string(cell_speed_ref[q][0][3]) + " " +
-                   std::to_string(cell_speed_ref[q][1][3]) + " " +
-                   std::to_string(cell_speed_ref[q][2][3])));
-
     AssertThrow(matrix_free.get_mapping_info().cell_type[cell_batch] ==
                   internal::MatrixFreeFunctions::cartesian,
                 ExcNotImplemented());
@@ -1258,7 +1229,7 @@ private:
                                                                     quad_no_v);
     FEEvaluation<dim, -1, 0, n_components, Number> integrator_speed_mass(matrix_free,
                                                                          dof_no_v,
-                                                                         quad_no_v);
+                                                                         quad_no_v_mass);
     FEEvaluation<dim, -1, 0, 1, Number> integrator_p(matrix_free, dof_no_p, quad_no_v);
 
     auto rhs = body_force_factory();
