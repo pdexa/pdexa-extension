@@ -1517,23 +1517,27 @@ namespace BlockJacobi
     {
       FEEvaluation<dim, degree, degree + 1, dim, Number> eval(matrix_free);
       MyVectorMemory<Vector<Number>>                     memory;
-      Vector<Number> local_src(eval.dofs_per_cell * VectorizedArray<Number>::size());
-      Vector<Number> local_dst(local_src.size());
+      constexpr unsigned int n_lanes = VectorizedArray<Number>::size();
+      Vector<Number>         local_src(eval.dofs_per_cell * n_lanes);
+      Vector<Number>         local_dst(local_src.size());
 
       IterationNumberControl control(batched_solver_iterations, 1e-18, false, false);
       typename SolverGMRES<Vector<Number>>::AdditionalData gmres_data;
-      gmres_data.right_preconditioning = true;
+      gmres_data.right_preconditioning = false;
       gmres_data.orthogonalization_strategy =
         LinearAlgebra::OrthogonalizationStrategy::classical_gram_schmidt;
-      gmres_data.max_basis_size = std::min(1u, batched_solver_iterations);
+      gmres_data.max_basis_size = std::max(1u, batched_solver_iterations);
       gmres_data.batched_mode   = true;
       SolverGMRES<Vector<Number>> gmres(control, memory, gmres_data);
       CellwisePreconditionerFDM<dim, dim, degree, Number> cell_fdm;
+      const unsigned int                                 *dof_indices_dg =
+        matrix_free.get_dof_info(dof_no_v)
+          .dof_indices_contiguous[internal::MatrixFreeFunctions::DoFInfo::dof_access_cell]
+          .data();
 
       for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
         {
           eval.reinit(cell);
-          eval.read_dof_values(src);
           cell_fdm.reinit(eigenvectors,
                           inverse_eigenvectors,
                           eigenvalues,
@@ -1544,26 +1548,42 @@ namespace BlockJacobi
 
           if (batched_solver_iterations == 0)
             {
+              eval.reinit(cell);
+              eval.read_dof_values(src);
               cell_fdm.apply(eval.begin_dof_values(), eval.begin_dof_values());
+              eval.set_dof_values(dst);
             }
           else
             {
               CellwiseOperatorMomentum<dim, degree, Number> local_operator(momentum_op,
                                                                            cell);
-              for (unsigned int i = 0; i < eval.dofs_per_cell; ++i)
-                {
-                  ((VectorizedArray<Number> *)local_dst.data())[i] =
-                    VectorizedArray<Number>();
-                  ((VectorizedArray<Number> *)local_src.data())[i] =
-                    eval.begin_dof_values()[i];
-                }
+              constexpr unsigned int                        length_vectorized =
+                Utilities::pow(degree + 1, dim) * dim;
+              VectorizedArray<Number> *dst_ptr =
+                (VectorizedArray<Number> *)local_dst.data();
+              VectorizedArray<Number> *src_ptr =
+                (VectorizedArray<Number> *)local_src.data();
+              for (unsigned int i = 0; i < length_vectorized; ++i)
+                dst_ptr[i] = VectorizedArray<Number>();
+              if (matrix_free.n_active_entries_per_cell_batch(cell) == n_lanes)
+                vectorized_load_and_transpose(length_vectorized,
+                                              src.begin(),
+                                              dof_indices_dg + cell * n_lanes,
+                                              src_ptr);
+              else
+                AssertThrow(false,
+                            ExcMessage("Currently only fully populated lanes supported"));
               gmres.solve(local_operator, local_dst, local_src, cell_fdm);
-              for (unsigned int i = 0; i < eval.dofs_per_cell; ++i)
-                eval.begin_dof_values()[i] =
-                  ((const VectorizedArray<Number> *)local_dst.data())[i];
+              if (matrix_free.n_active_entries_per_cell_batch(cell) == n_lanes)
+                vectorized_transpose_and_store(false,
+                                               length_vectorized,
+                                               dst_ptr,
+                                               dof_indices_dg + cell * n_lanes,
+                                               dst.begin());
+              else
+                AssertThrow(false,
+                            ExcMessage("Currently only fully populated lanes supported"));
             }
-
-          eval.set_dof_values(dst);
         }
     }
 
