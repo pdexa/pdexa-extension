@@ -174,8 +174,10 @@ public:
       std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
       data);
 
-    FEEvaluation<dim, -1, 0, dim, number> eval_cell(matrix_free, 0, 0);
+    FEEvaluation<dim, -1, 0, dim, number> eval_cell(matrix_free, 0, quad_no_v);
     speeds_cells.reinit(matrix_free.n_cell_batches(), eval_cell.n_q_points);
+    speeds_cells_mass.reinit(matrix_free.n_cell_batches(),
+                             Utilities::pow(quadrature.size(), dim));
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_face(matrix_free, true, 0, 0);
     speeds_faces.reinit(matrix_free.n_inner_face_batches() +
                           matrix_free.n_boundary_face_batches(),
@@ -572,11 +574,9 @@ public:
                           const VectorizedArray<Number> *src,
                           VectorizedArray<Number>       *dst) const
   {
-    AssertThrow(n_q_points_1d ==
-                  matrix_free.get_shape_info(dof_no_v, quad_no_v).data[0].n_q_points_1d,
-                ExcDimensionMismatch(
-                  n_q_points_1d,
-                  matrix_free.get_shape_info(dof_no_v, quad_no_v).data[0].n_q_points_1d));
+    const auto &shape_info_data = matrix_free.get_shape_info(dof_no_v, quad_no_v).data[0];
+    AssertThrow(n_q_points_1d == shape_info_data.n_q_points_1d,
+                ExcDimensionMismatch(n_q_points_1d, shape_info_data.n_q_points_1d));
     FEEvaluation<dim, -1, 0, n_components, Number> integrator(matrix_free,
                                                               dof_no_v,
                                                               quad_no_v);
@@ -586,13 +586,45 @@ public:
 
     integrator.evaluate(src, EvaluationFlags::values | EvaluationFlags::gradients);
     const Tensor<1, dim, VectorizedArray<Number>> *cell_speed =
+      &speeds_cells_mass(cell_batch, 0);
+    const Tensor<1, dim, VectorizedArray<Number>> *cell_speed_ref =
       &speeds_cells(cell_batch, 0);
+    for (unsigned int q = 0; q < Utilities::pow(n_q_points_1d, dim); ++q)
+      AssertThrow(
+        (cell_speed[q] - cell_speed_ref[q]).norm_square() == VectorizedArray<Number>(0.0),
+        ExcMessage("Got inconsistent velocity: " + std::to_string(cell_speed[q][0][0]) +
+                   " " + std::to_string(cell_speed[q][1][0]) + " " +
+                   std::to_string(cell_speed[q][2][0]) + " " +
+                   std::to_string(cell_speed[q][0][1]) + " " +
+                   std::to_string(cell_speed[q][1][1]) + " " +
+                   std::to_string(cell_speed[q][2][1]) + " " +
+                   std::to_string(cell_speed[q][0][2]) + " " +
+                   std::to_string(cell_speed[q][1][2]) + " " +
+                   std::to_string(cell_speed[q][2][2]) + " " +
+                   std::to_string(cell_speed[q][0][3]) + " " +
+                   std::to_string(cell_speed[q][1][3]) + " " +
+                   std::to_string(cell_speed[q][2][3]) + "  vs  " +
+                   std::to_string(cell_speed_ref[q][0][0]) + " " +
+                   std::to_string(cell_speed_ref[q][1][0]) + " " +
+                   std::to_string(cell_speed_ref[q][2][0]) + " " +
+                   std::to_string(cell_speed_ref[q][0][1]) + " " +
+                   std::to_string(cell_speed_ref[q][1][1]) + " " +
+                   std::to_string(cell_speed_ref[q][2][1]) + " " +
+                   std::to_string(cell_speed_ref[q][0][2]) + " " +
+                   std::to_string(cell_speed_ref[q][1][2]) + " " +
+                   std::to_string(cell_speed_ref[q][2][2]) + " " +
+                   std::to_string(cell_speed_ref[q][0][3]) + " " +
+                   std::to_string(cell_speed_ref[q][1][3]) + " " +
+                   std::to_string(cell_speed_ref[q][2][3])));
+
     AssertThrow(matrix_free.get_mapping_info().cell_type[cell_batch] ==
                   internal::MatrixFreeFunctions::cartesian,
                 ExcNotImplemented());
 
-    constexpr unsigned int n_q_points_face = Utilities::pow(n_q_points_1d, dim - 1);
-    constexpr unsigned int n_q_points      = Utilities::pow(n_q_points_1d, dim);
+    VectorizedArray<Number> *values            = integrator.begin_values();
+    VectorizedArray<Number> *result_from_faces = integrator.begin_hessians();
+    constexpr unsigned int   n_q_points_face   = Utilities::pow(n_q_points_1d, dim - 1);
+    constexpr unsigned int   n_q_points        = Utilities::pow(n_q_points_1d, dim);
     for (unsigned int face_direction = 0; face_direction < dim; ++face_direction)
       {
         VectorizedArray<Number> values_face[2][dim][n_q_points_face + 1];
@@ -606,11 +638,7 @@ public:
                                          n_q_points_1d,
                                          VectorizedArray<Number>,
                                          Number>
-                           eval({},
-               matrix_free.get_shape_info(dof_no_v, quad_no_v)
-                 .data[0]
-                 .shape_gradients_collocation_eo.data(),
-                                {});
+          eval({}, shape_info_data.shape_gradients_collocation_eo.data(), {});
         const unsigned int stride = Utilities::pow(n_q_points_1d, face_direction);
         for (unsigned int i1 = 0; i1 < (dim > 2 ? n_q_points_1d : 1); ++i1)
           for (unsigned int i0 = 0; i0 < n_q_points_1d; ++i0)
@@ -623,7 +651,7 @@ public:
               else
                 idx = i0 + i1 * n_q_points_1d;
 
-              const VectorizedArray<Number> *my_vals = integrator.begin_values() + idx;
+              const VectorizedArray<Number>                   *my_vals = values + idx;
               dealii::ndarray<VectorizedArray<Number>, 4, dim> val_on_face;
               for (unsigned int comp = 0; comp < dim; ++comp)
                 {
@@ -758,7 +786,7 @@ public:
               else
                 idx = i0 + i1 * n_q_points_1d;
 
-              VectorizedArray<Number> *my_vals = integrator.begin_hessians() + idx;
+              VectorizedArray<Number> *my_vals = result_from_faces + idx;
               if (face_direction == 0)
                 for (unsigned int i = 0; i < n_q_points_1d; ++i)
                   {
@@ -784,19 +812,31 @@ public:
             }
       }
 
+    const Number factor_mass = gamma0 / time_step;
     for (const unsigned int q : integrator.quadrature_point_indices())
       {
         const auto u          = integrator.get_value(q);
-        const auto time_deriv = make_vectorized_array<number>(gamma0 / time_step) * u;
+        const auto time_deriv = factor_mass * u;
 
         const auto grad_u = integrator.get_gradient(q);
         const auto speed  = cell_speed[q];
 
         const auto divergence_penalty =
           penalty_factor_divergence[integrator.get_current_cell_index()] * trace(grad_u);
-        Tensor<2, dim, VectorizedArray<number>> div_penalty;
+        Tensor<2, dim, VectorizedArray<number>> viscous_and_div_penalty;
         for (unsigned int d = 0; d < dim; ++d)
-          div_penalty[d][d] = divergence_penalty;
+          {
+            viscous_and_div_penalty[d][d] =
+              divergence_penalty +
+              make_vectorized_array<number>(viscosity) * grad_u[d][d];
+            for (unsigned int e = d + 1; e < dim; ++e)
+              {
+                viscous_and_div_penalty[d][e] =
+                  make_vectorized_array<number>(viscosity) * grad_u[d][e];
+                viscous_and_div_penalty[e][d] =
+                  make_vectorized_array<number>(viscosity) * grad_u[e][d];
+              }
+          }
 
         if (use_skew_symmetric_convective_formulation)
           {
@@ -804,10 +844,7 @@ public:
             const auto convective_gradient_flux = -0.5 * outer_product(speed, u);
 
             integrator.submit_value(time_deriv + convective_value_flux, q);
-            integrator.submit_gradient(div_penalty +
-                                         make_vectorized_array<number>(viscosity) *
-                                           grad_u +
-                                         convective_gradient_flux,
+            integrator.submit_gradient(viscous_and_div_penalty + convective_gradient_flux,
                                        q);
           }
         else if (use_divergence_formulation)
@@ -815,10 +852,7 @@ public:
             const auto convective_gradient_flux = outer_product(u, speed);
 
             integrator.submit_value(time_deriv, q);
-            integrator.submit_gradient(div_penalty +
-                                         make_vectorized_array<number>(viscosity) *
-                                           grad_u -
-                                         convective_gradient_flux,
+            integrator.submit_gradient(viscous_and_div_penalty - convective_gradient_flux,
                                        q);
           }
         else
@@ -826,12 +860,11 @@ public:
             const auto convective_flux = grad_u * speed;
 
             integrator.submit_value(time_deriv + convective_flux, q);
-            integrator.submit_gradient(
-              div_penalty + make_vectorized_array<number>(viscosity) * grad_u, q);
+            integrator.submit_gradient(viscous_and_div_penalty, q);
           }
       }
     for (unsigned int i = 0; i < dim * n_q_points; ++i)
-      integrator.begin_values()[i] += integrator.begin_hessians()[i];
+      values[i] += result_from_faces[i];
     integrator.integrate(EvaluationFlags::values | EvaluationFlags::gradients, dst);
   }
 
@@ -1223,6 +1256,9 @@ private:
     FEEvaluation<dim, -1, 0, n_components, Number> integrator_speed(matrix_free,
                                                                     dof_no_v,
                                                                     quad_no_v);
+    FEEvaluation<dim, -1, 0, n_components, Number> integrator_speed_mass(matrix_free,
+                                                                         dof_no_v,
+                                                                         quad_no_v);
     FEEvaluation<dim, -1, 0, 1, Number> integrator_p(matrix_free, dof_no_p, quad_no_v);
 
     auto rhs = body_force_factory();
@@ -1232,10 +1268,12 @@ private:
       {
         integrator.reinit(cell);
         integrator_speed.reinit(cell);
+        integrator_speed_mass.reinit(cell);
         integrator_p.reinit(cell);
 
         integrator.gather_evaluate(*src[0], EvaluationFlags::values);
         integrator_speed.gather_evaluate(*src[1], EvaluationFlags::values);
+        integrator_speed_mass.gather_evaluate(*src[1], EvaluationFlags::values);
         // integrator_p.gather_evaluate(*src[2], EvaluationFlags::values);
         integrator_p.gather_evaluate(*src[2], EvaluationFlags::gradients);
 
@@ -1269,6 +1307,10 @@ private:
             // integrator.submit_divergence(p, q);
             integrator.submit_value(f + alpha_u - grad_p, q);
           }
+
+        for (const unsigned int q : integrator_speed_mass.quadrature_point_indices())
+          speeds_cells_mass(cell, q) = integrator_speed_mass.get_value(q);
+
         //integrator.integrate_scatter(EvaluationFlags::values | EvaluationFlags::gradients, dst);
         integrator.integrate_scatter(EvaluationFlags::values, dst);
       }
@@ -1623,6 +1665,7 @@ private:
   bool         use_divergence_formulation;
   dealii::AlignedVector<dealii::VectorizedArray<Number>>    array_penalty_parameter;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_cells;
+  mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_cells_mass;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_faces;
   mutable Table<2, Tensor<1, dim, VectorizedArray<number>>> speeds_outer_faces;
 

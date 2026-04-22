@@ -1352,7 +1352,7 @@ namespace BlockJacobi
     void
     vmult(Vector<Number> &dst, const Vector<Number> &src) const
     {
-      constexpr unsigned int n_q_points = degree + (degree + 2) / 2;
+      constexpr unsigned int n_q_points = degree + 1 + degree / 2;
       momentum_op.template apply_cellwise_operator<n_q_points>(
         cell_batch_index,
         (const VectorizedArray<Number> *)src.begin(),
