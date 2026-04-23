@@ -1353,7 +1353,7 @@ namespace BlockJacobi
     vmult(Vector<Number> &dst, const Vector<Number> &src) const
     {
       constexpr unsigned int n_q_points = degree + 1;
-      momentum_op.template apply_cellwise_operator<n_q_points>(
+      momentum_op.template apply_cellwise_operator_in_collocation_basis<n_q_points>(
         cell_batch_index,
         (const VectorizedArray<Number> *)src.begin(),
         (VectorizedArray<Number> *)dst.begin());
@@ -1388,9 +1388,9 @@ namespace BlockJacobi
 
       QGauss<1>               gauss_quad(fe.degree + 1);
       QGaussLobatto<1>        lobatto_quad(gauss_quad.size());
-      FE_DGQArbitraryNodes<1> fe_1d(/*do_batched_solver ?
-                                      static_cast<Quadrature<1> &>(gauss_quad) :*/
-                                    static_cast<Quadrature<1> &>(lobatto_quad));
+      FE_DGQArbitraryNodes<1> fe_1d(batched_solver_iterations > 0 ?
+                                      static_cast<Quadrature<1> &>(gauss_quad) :
+                                      static_cast<Quadrature<1> &>(lobatto_quad));
       for (unsigned int c = 0; c < 2; ++c)
         {
           LAPACKFullMatrix<double> deriv_matrix(n, n);
@@ -1529,6 +1529,7 @@ namespace BlockJacobi
       gmres_data.max_basis_size = std::max(1u, batched_solver_iterations);
       gmres_data.batched_mode   = true;
       SolverGMRES<Vector<Number>> gmres(control, memory, gmres_data);
+
       CellwisePreconditionerFDM<dim, dim, degree, Number> cell_fdm;
       const unsigned int                                 *dof_indices_dg =
         matrix_free.get_dof_info(dof_no_v)
@@ -1557,32 +1558,76 @@ namespace BlockJacobi
             {
               CellwiseOperatorMomentum<dim, degree, Number> local_operator(momentum_op,
                                                                            cell);
-              constexpr unsigned int                        length_vectorized =
-                Utilities::pow(degree + 1, dim) * dim;
+
+              constexpr unsigned int dofs_per_comp = Utilities::pow(degree + 1, dim);
+              internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
+                                               dim,
+                                               degree + 1,
+                                               degree + 1,
+                                               VectorizedArray<Number>,
+                                               Number>
+                evaluator({},
+                          {},
+                          matrix_free.get_shape_info(dof_no_v, quad_no_v_mass)
+                            .data[0]
+                            .inverse_shape_values_eo);
+
+              for (unsigned int comp = 0; comp < dim; ++comp)
+                {
+                  VectorizedArray<Number> *src_ptr =
+                    (VectorizedArray<Number> *)local_src.data() + comp * dofs_per_comp;
+                  if (matrix_free.n_active_entries_per_cell_batch(cell) == n_lanes)
+                    vectorized_load_and_transpose(dofs_per_comp,
+                                                  src.begin() + comp * dofs_per_comp,
+                                                  dof_indices_dg + cell * n_lanes,
+                                                  src_ptr);
+                  else
+                    AssertThrow(false,
+                                ExcMessage(
+                                  "Currently only fully populated lanes supported"));
+
+
+                  // For transforming to collocation basis, select 'apply'
+                  // method with hessian slot because values assume symmetries
+                  // that do not exist in the inverse shapes
+
+                  evaluator.template hessians<0, true, false>(src_ptr, src_ptr);
+                  if constexpr (dim > 1)
+                    evaluator.template hessians<1, true, false>(src_ptr, src_ptr);
+                  if constexpr (dim > 2)
+                    evaluator.template hessians<2, true, false>(src_ptr, src_ptr);
+                }
+
               VectorizedArray<Number> *dst_ptr =
                 (VectorizedArray<Number> *)local_dst.data();
-              VectorizedArray<Number> *src_ptr =
-                (VectorizedArray<Number> *)local_src.data();
-              for (unsigned int i = 0; i < length_vectorized; ++i)
+              for (unsigned int i = 0; i < dim * dofs_per_comp; ++i)
                 dst_ptr[i] = VectorizedArray<Number>();
-              if (matrix_free.n_active_entries_per_cell_batch(cell) == n_lanes)
-                vectorized_load_and_transpose(length_vectorized,
-                                              src.begin(),
-                                              dof_indices_dg + cell * n_lanes,
-                                              src_ptr);
-              else
-                AssertThrow(false,
-                            ExcMessage("Currently only fully populated lanes supported"));
+
               gmres.solve(local_operator, local_dst, local_src, cell_fdm);
-              if (matrix_free.n_active_entries_per_cell_batch(cell) == n_lanes)
-                vectorized_transpose_and_store(false,
-                                               length_vectorized,
-                                               dst_ptr,
-                                               dof_indices_dg + cell * n_lanes,
-                                               dst.begin());
-              else
-                AssertThrow(false,
-                            ExcMessage("Currently only fully populated lanes supported"));
+
+              // transform from collocation basis back to given basis
+              for (unsigned int comp = 0; comp < dim; ++comp)
+                {
+                  evaluator.template hessians<0, false, false>(
+                    dst_ptr + comp * dofs_per_comp, dst_ptr + comp * dofs_per_comp);
+                  if constexpr (dim > 1)
+                    evaluator.template hessians<1, false, false>(
+                      dst_ptr + comp * dofs_per_comp, dst_ptr + comp * dofs_per_comp);
+                  if constexpr (dim > 2)
+                    evaluator.template hessians<2, false, false>(
+                      dst_ptr + comp * dofs_per_comp, dst_ptr + comp * dofs_per_comp);
+
+                  if (matrix_free.n_active_entries_per_cell_batch(cell) == n_lanes)
+                    vectorized_transpose_and_store(false,
+                                                   dofs_per_comp,
+                                                   dst_ptr + comp * dofs_per_comp,
+                                                   dof_indices_dg + cell * n_lanes,
+                                                   dst.begin() + comp * dofs_per_comp);
+                  else
+                    AssertThrow(false,
+                                ExcMessage(
+                                  "Currently only fully populated lanes supported"));
+                }
             }
         }
     }

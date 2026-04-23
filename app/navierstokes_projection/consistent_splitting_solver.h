@@ -569,273 +569,19 @@ public:
 
   template <int n_q_points_1d>
   void
-  apply_cellwise_operator(const unsigned int             cell_batch,
-                          const VectorizedArray<Number> *src,
-                          VectorizedArray<Number>       *dst) const
+  apply_cellwise_operator_in_collocation_basis(const unsigned int             cell_batch,
+                                               const VectorizedArray<Number> *src,
+                                               VectorizedArray<Number>       *dst) const
   {
     const auto &shape_info_data =
       matrix_free.get_shape_info(dof_no_v, quad_no_v_mass).data[0];
     AssertThrow(n_q_points_1d == shape_info_data.n_q_points_1d,
                 ExcDimensionMismatch(n_q_points_1d, shape_info_data.n_q_points_1d));
-    FEEvaluation<dim, -1, 0, n_components, Number> integrator(matrix_free,
-                                                              dof_no_v,
-                                                              quad_no_v_mass);
-    integrator.reinit(cell_batch);
-    BDFTimeIntegratorConstants integration_constants(bdf_order);
-    double                     gamma0 = integration_constants.get_gamma0();
+    AssertThrow(src != dst,
+                ExcMessage("Source and destination may not be the same pointer"));
 
-    integrator.evaluate(src, EvaluationFlags::values | EvaluationFlags::gradients);
-    const Tensor<1, dim, VectorizedArray<Number>> *cell_speed =
-      &speeds_cells_mass(cell_batch, 0);
-    AssertThrow(matrix_free.get_mapping_info().cell_type[cell_batch] ==
-                  internal::MatrixFreeFunctions::cartesian,
-                ExcNotImplemented());
-
-    VectorizedArray<Number> *values            = integrator.begin_values();
-    VectorizedArray<Number> *result_from_faces = integrator.begin_hessians();
-    constexpr unsigned int   n_q_points_face   = Utilities::pow(n_q_points_1d, dim - 1);
-    constexpr unsigned int   n_q_points        = Utilities::pow(n_q_points_1d, dim);
-    for (unsigned int face_direction = 0; face_direction < dim; ++face_direction)
-      {
-        VectorizedArray<Number> values_face[2][dim][n_q_points_face + 1];
-        VectorizedArray<Number> normal_derivative_face[2][dim][n_q_points_face + 1];
-        VectorizedArray<Number> tang_derivatives_face[dim][dim - 1][n_q_points_face + 1];
-
-        // interpolate evaluated solution to faces, compute gradients
-        internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
-                                         dim - 1,
-                                         n_q_points_1d,
-                                         n_q_points_1d,
-                                         VectorizedArray<Number>,
-                                         Number>
-          eval({}, shape_info_data.shape_gradients_collocation_eo.data(), {});
-        const unsigned int stride = Utilities::pow(n_q_points_1d, face_direction);
-        for (unsigned int i1 = 0; i1 < (dim > 2 ? n_q_points_1d : 1); ++i1)
-          for (unsigned int i0 = 0; i0 < n_q_points_1d; ++i0)
-            {
-              unsigned int idx = 0;
-              if (face_direction == 0)
-                idx = n_q_points_1d * (n_q_points_1d * i1 + i0);
-              else if (face_direction == 1)
-                idx = i0 + i1 * n_q_points_1d * n_q_points_1d;
-              else
-                idx = i0 + i1 * n_q_points_1d;
-
-              const VectorizedArray<Number>                   *my_vals = values + idx;
-              dealii::ndarray<VectorizedArray<Number>, 4, dim> val_on_face;
-              for (unsigned int comp = 0; comp < dim; ++comp)
-                {
-                  val_on_face[0][comp] =
-                    interpolate_to_face[0][0] * my_vals[comp * n_q_points];
-                  val_on_face[1][comp] =
-                    interpolate_to_face[0][1] * my_vals[comp * n_q_points];
-                  val_on_face[2][comp] =
-                    interpolate_to_face[0][2] * my_vals[comp * n_q_points];
-                  val_on_face[3][comp] =
-                    interpolate_to_face[0][3] * my_vals[comp * n_q_points];
-                }
-              for (unsigned int i = 1; i < n_q_points_1d; ++i)
-                for (unsigned int comp = 0; comp < dim; ++comp)
-                  {
-                    val_on_face[0][comp] +=
-                      interpolate_to_face[i][0] * my_vals[comp * n_q_points + i * stride];
-                    val_on_face[1][comp] +=
-                      interpolate_to_face[i][1] * my_vals[comp * n_q_points + i * stride];
-                    val_on_face[2][comp] +=
-                      interpolate_to_face[i][2] * my_vals[comp * n_q_points + i * stride];
-                    val_on_face[3][comp] +=
-                      interpolate_to_face[i][3] * my_vals[comp * n_q_points + i * stride];
-                  }
-              const unsigned int out_idx = i1 * n_q_points_1d + i0;
-              for (unsigned int side = 0; side < 2; ++side)
-                for (unsigned int comp = 0; comp < dim; ++comp)
-                  {
-                    values_face[side][comp][out_idx] = val_on_face[side * 2][comp];
-                    normal_derivative_face[side][comp][out_idx] =
-                      val_on_face[side * 2 + 1][comp];
-                  }
-            }
-        Tensor<2, dim, VectorizedArray<Number>> inverse_jacobian =
-          integrator.inverse_jacobian(0);
-        const auto face_jac_det = inverse_jacobian[face_direction][face_direction] /
-                                  determinant(inverse_jacobian);
-
-        const VectorizedArray<number> sigma =
-          integrator.read_cell_data(array_penalty_parameter) * get_penalty_factor();
-
-        const VectorizedArray<number> cont_pen =
-          integrator.read_cell_data(penalty_factor_continuity);
-
-        for (unsigned int side = 0; side < 2; ++side)
-          {
-            Tensor<1, dim, VectorizedArray<Number>> normal;
-            normal[face_direction]  = (side == 0 ? -1. : 1.);
-            const auto normal_x_jac = normal * inverse_jacobian;
-            for (unsigned int comp = 0; comp < dim; ++comp)
-              {
-                eval.template gradients<0, true, false>(values_face[side][comp],
-                                                        tang_derivatives_face[comp][0]);
-                if constexpr (dim > 2)
-                  eval.template gradients<1, true, false>(values_face[side][comp],
-                                                          tang_derivatives_face[comp][1]);
-              }
-            const unsigned int first  = (face_direction == 0 ? 1 : 0);
-            const unsigned int second = (face_direction == 2 ? 1 : 2);
-            for (unsigned int i1 = 0, q = 0; i1 < (dim > 2 ? n_q_points_1d : 1); ++i1)
-              for (unsigned int i0 = 0; i0 < n_q_points_1d; ++i0, ++q)
-                {
-                  unsigned int idx = 0;
-                  if (face_direction == 0)
-                    idx = n_q_points_1d * (n_q_points_1d * i1 + i0);
-                  else if (face_direction == 1)
-                    idx = i0 + i1 * n_q_points_1d * n_q_points_1d;
-                  else
-                    idx = i0 + i1 * n_q_points_1d;
-                  Tensor<1, dim, VectorizedArray<Number>> velocity =
-                    interpolate_to_face[0][2 * side] * cell_speed[idx];
-                  for (unsigned int i = 1; i < n_q_points_1d; ++i)
-                    velocity +=
-                      interpolate_to_face[i][2 * side] * cell_speed[idx + stride * i];
-                  const auto speed_normal = velocity * normal;
-
-                  // operation at quadrature points
-                  Tensor<1, dim, VectorizedArray<Number>> sol_val;
-                  for (unsigned int comp = 0; comp < dim; ++comp)
-                    sol_val[comp] = values_face[side][comp][q];
-
-                  Tensor<1, dim, VectorizedArray<Number>> normal_derivative;
-                  for (unsigned int comp = 0; comp < dim; ++comp)
-                    {
-                      normal_derivative[comp] = normal_x_jac[face_direction] *
-                                                normal_derivative_face[side][comp][q];
-                      normal_derivative[comp] +=
-                        normal_x_jac[first] * tang_derivatives_face[comp][0][q];
-                      if constexpr (dim == 3)
-                        normal_derivative[comp] +=
-                          normal_x_jac[second] * tang_derivatives_face[comp][1][q];
-                    }
-                  const Tensor<1, dim, VectorizedArray<number>> test_by_value =
-                    make_vectorized_array<number>(viscosity) * sigma * sol_val -
-                    0.5 * viscosity * normal_derivative +
-                    cont_pen * (sol_val * normal) * normal +
-                    (std::abs(speed_normal) - speed_normal) * 0.5 * sol_val;
-
-                  const Tensor<1, dim, VectorizedArray<number>> test_by_gradient =
-                    -0.5 * viscosity * sol_val;
-                  const VectorizedArray<number> JxW =
-                    (face_jac_det * face_quadrature_weights[q]);
-                  for (unsigned int comp = 0; comp < dim; ++comp)
-                    {
-                      values_face[side][comp][q] = test_by_value[comp] * JxW;
-                      normal_derivative_face[side][comp][q] =
-                        test_by_gradient[comp] * JxW * normal_x_jac[face_direction];
-                      tang_derivatives_face[comp][0][q] =
-                        test_by_gradient[comp] * JxW * normal_x_jac[first];
-                      if constexpr (dim > 2)
-                        tang_derivatives_face[comp][1][q] =
-                          test_by_gradient[comp] * JxW * normal_x_jac[second];
-                    }
-                }
-            for (unsigned int comp = 0; comp < dim; ++comp)
-              {
-                eval.template gradients<0, false, true>(tang_derivatives_face[comp][0],
-                                                        values_face[side][comp]);
-                if constexpr (dim > 2)
-                  eval.template gradients<1, false, true>(tang_derivatives_face[comp][1],
-                                                          values_face[side][comp]);
-              }
-          }
-        for (unsigned int i1 = 0, q = 0; i1 < (dim > 2 ? n_q_points_1d : 1); ++i1)
-          for (unsigned int i0 = 0; i0 < n_q_points_1d; ++i0, ++q)
-            {
-              unsigned int idx = 0;
-              if (face_direction == 0)
-                idx = n_q_points_1d * (n_q_points_1d * i1 + i0);
-              else if (face_direction == 1)
-                idx = i0 + i1 * n_q_points_1d * n_q_points_1d;
-              else
-                idx = i0 + i1 * n_q_points_1d;
-
-              VectorizedArray<Number> *my_vals = result_from_faces + idx;
-              if (face_direction == 0)
-                for (unsigned int i = 0; i < n_q_points_1d; ++i)
-                  {
-                    const std::array<Number, 4> interpolate = interpolate_to_face[i];
-                    for (unsigned int comp = 0; comp < dim; ++comp)
-                      my_vals[comp * n_q_points + i * stride] =
-                        values_face[0][comp][q] * interpolate[0] +
-                        values_face[1][comp][q] * interpolate[2] +
-                        normal_derivative_face[0][comp][q] * interpolate[1] +
-                        normal_derivative_face[1][comp][q] * interpolate[3];
-                  }
-              else
-                for (unsigned int i = 0; i < n_q_points_1d; ++i)
-                  {
-                    const std::array<Number, 4> interpolate = interpolate_to_face[i];
-                    for (unsigned int comp = 0; comp < dim; ++comp)
-                      my_vals[comp * n_q_points + i * stride] +=
-                        values_face[0][comp][q] * interpolate[0] +
-                        values_face[1][comp][q] * interpolate[2] +
-                        normal_derivative_face[0][comp][q] * interpolate[1] +
-                        normal_derivative_face[1][comp][q] * interpolate[3];
-                  }
-            }
-      }
-
-    const Number factor_mass = gamma0 / time_step;
-    for (const unsigned int q : integrator.quadrature_point_indices())
-      {
-        const auto u          = integrator.get_value(q);
-        const auto time_deriv = factor_mass * u;
-
-        const auto grad_u = integrator.get_gradient(q);
-        const auto speed  = cell_speed[q];
-
-        const auto divergence_penalty =
-          penalty_factor_divergence[integrator.get_current_cell_index()] * trace(grad_u);
-        Tensor<2, dim, VectorizedArray<number>> viscous_and_div_penalty;
-        for (unsigned int d = 0; d < dim; ++d)
-          {
-            viscous_and_div_penalty[d][d] =
-              divergence_penalty +
-              make_vectorized_array<number>(viscosity) * grad_u[d][d];
-            for (unsigned int e = d + 1; e < dim; ++e)
-              {
-                viscous_and_div_penalty[d][e] =
-                  make_vectorized_array<number>(viscosity) * grad_u[d][e];
-                viscous_and_div_penalty[e][d] =
-                  make_vectorized_array<number>(viscosity) * grad_u[e][d];
-              }
-          }
-
-        if (use_skew_symmetric_convective_formulation)
-          {
-            const auto convective_value_flux    = 0.5 * grad_u * speed;
-            const auto convective_gradient_flux = -0.5 * outer_product(speed, u);
-
-            integrator.submit_value(time_deriv + convective_value_flux, q);
-            integrator.submit_gradient(viscous_and_div_penalty + convective_gradient_flux,
-                                       q);
-          }
-        else if (use_divergence_formulation)
-          {
-            const auto convective_gradient_flux = outer_product(u, speed);
-
-            integrator.submit_value(time_deriv, q);
-            integrator.submit_gradient(viscous_and_div_penalty - convective_gradient_flux,
-                                       q);
-          }
-        else
-          {
-            const auto convective_flux = grad_u * speed;
-
-            integrator.submit_value(time_deriv + convective_flux, q);
-            integrator.submit_gradient(viscous_and_div_penalty, q);
-          }
-      }
-    for (unsigned int i = 0; i < dim * n_q_points; ++i)
-      values[i] += result_from_faces[i];
-    integrator.integrate(EvaluationFlags::values | EvaluationFlags::gradients, dst);
+    apply_cellwise_operator_on_cell<n_q_points_1d>(cell_batch, src, dst);
+    apply_add_cellwise_operator_on_faces<n_q_points_1d>(cell_batch, src, dst);
   }
 
 private:
@@ -1615,6 +1361,356 @@ private:
     dst.at(2) += enstrophy;
     dst.at(3) += dissipation;
     dst.at(4) = std::max(dst.at(4), max_vorticity);
+  }
+
+  template <int n_q_points_1d>
+  void
+  apply_cellwise_operator_on_cell(const unsigned int             cell_batch,
+                                  const VectorizedArray<Number> *src,
+                                  VectorizedArray<Number>       *dst) const
+  {
+    const auto &shape_info_data =
+      matrix_free.get_shape_info(dof_no_v, quad_no_v_mass).data[0];
+    const auto  &mapping_data = matrix_free.get_mapping_info().cell_data[quad_no_v_mass];
+    const auto   cell_type    = matrix_free.get_mapping_info().cell_type[cell_batch];
+    double       gamma0       = BDFTimeIntegratorConstants(bdf_order).get_gamma0();
+    const Number factor_mass  = gamma0 / time_step;
+    const Tensor<1, dim, VectorizedArray<Number>> *cell_speed =
+      &speeds_cells_mass(cell_batch, 0);
+    constexpr unsigned int  n_points_2d = n_q_points_1d * n_q_points_1d;
+    constexpr unsigned int  n_points    = Utilities::pow(n_q_points_1d, dim);
+    VectorizedArray<Number> grad_z[dim * n_points + 1];
+    VectorizedArray<Number> grad_y[dim * Utilities::pow(n_q_points_1d, 2) + 1];
+    VectorizedArray<Number> grad_x[dim * n_q_points_1d];
+
+    // Assume collocation here, which allows us to directly start with the
+    // cell integrals that write into the result, without overwriting the
+    // 'values at quadrature points' slot that is needed later for the faces
+    internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
+                                     3,
+                                     n_q_points_1d,
+                                     n_q_points_1d,
+                                     VectorizedArray<Number>,
+                                     Number>
+      eval_grad_z({}, shape_info_data.shape_gradients_collocation_eo, {});
+    internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
+                                     2,
+                                     n_q_points_1d,
+                                     n_q_points_1d,
+                                     VectorizedArray<Number>,
+                                     Number>
+      eval_grad_y({}, shape_info_data.shape_gradients_collocation_eo, {});
+    internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
+                                     1,
+                                     n_q_points_1d,
+                                     n_q_points_1d,
+                                     VectorizedArray<Number>,
+                                     Number>
+      eval_grad_x({}, shape_info_data.shape_gradients_collocation_eo, {});
+    for (unsigned int comp = 0; comp < dim; ++comp)
+      if (dim > 2)
+        eval_grad_z.template gradients<2, true, false, dim>(src + comp * n_points,
+                                                            grad_z + comp);
+    for (unsigned int iz = 0, q = 0; iz < (dim == 2 ? 1 : n_q_points_1d); ++iz)
+      {
+        for (unsigned int comp = 0; comp < dim; ++comp)
+          eval_grad_y.template gradients<1, true, false, dim>(src + iz * n_points_2d +
+                                                                comp * n_points,
+                                                              grad_y + comp);
+        for (unsigned int iy = 0; iy < n_q_points_1d; ++iy)
+          {
+            for (unsigned int comp = 0; comp < dim; ++comp)
+              eval_grad_x.template gradients<0, true, false, dim>(
+                src + iy * n_q_points_1d + iz * n_points_2d + comp * n_points,
+                grad_x + comp);
+
+            for (unsigned int ix = 0; ix < n_q_points_1d; ++ix, ++q)
+              {
+                Tensor<1, dim, VectorizedArray<Number>> u;
+                for (unsigned int d = 0; d < dim; ++d)
+                  u[d] = src[q + d * n_points];
+
+                const unsigned int index_offset =
+                  mapping_data.data_index_offsets[cell_batch];
+                const Tensor<2, dim, VectorizedArray<Number>> jac =
+                  cell_type <= internal::MatrixFreeFunctions::affine ?
+                    mapping_data.jacobians[0][index_offset] :
+                    mapping_data.jacobians[0][index_offset + q];
+                const VectorizedArray<Number> JxW =
+                  cell_type <= internal::MatrixFreeFunctions::affine ?
+                    mapping_data.JxW_values[index_offset] *
+                      mapping_data.descriptor[0].quadrature_weights[q] :
+                    mapping_data.JxW_values[index_offset + q];
+                Tensor<2, dim, VectorizedArray<Number>> grad_u;
+                for (unsigned int d = 0; d < dim; ++d)
+                  {
+                    for (unsigned int e = 0; e < dim; ++e)
+                      {
+                        if constexpr (dim == 3)
+                          grad_u[d][e] =
+                            grad_x[dim * ix + d] * jac[e][0] +
+                            grad_y[dim * (iy * n_q_points_1d + ix) + d] * jac[e][1] +
+                            grad_z[dim * q + d] * jac[e][2];
+                        else
+                          grad_u[d][e] = grad_x[dim * ix + d] * jac[e][0] +
+                                         grad_y[dim * q + d] * jac[e][1];
+                      }
+                  }
+
+                const auto divergence_penalty =
+                  penalty_factor_divergence[cell_batch] * trace(grad_u);
+                const auto speed = cell_speed[q];
+
+                // collect terms for
+                // div(v) * divergence_penalty * div(u) + grad(v) * viscosity * grad(u)
+                Tensor<2, dim, VectorizedArray<number>> test_grad_u;
+                for (unsigned int d = 0; d < dim; ++d)
+                  {
+                    test_grad_u[d][d] =
+                      divergence_penalty +
+                      make_vectorized_array<number>(viscosity) * grad_u[d][d];
+                    for (unsigned int e = d + 1; e < dim; ++e)
+                      {
+                        test_grad_u[d][e] =
+                          make_vectorized_array<number>(viscosity) * grad_u[d][e];
+                        test_grad_u[e][d] =
+                          make_vectorized_array<number>(viscosity) * grad_u[e][d];
+                      }
+                  }
+
+                Tensor<1, dim, VectorizedArray<Number>> test_u = factor_mass * u;
+                if (use_skew_symmetric_convective_formulation)
+                  {
+                    test_u += make_vectorized_array<Number>(0.5) * (grad_u * speed);
+                    test_grad_u -=
+                      make_vectorized_array<Number>(0.5) * outer_product(speed, u);
+                  }
+                else if (use_divergence_formulation)
+                  {
+                    test_grad_u -= outer_product(u, speed);
+                  }
+                else
+                  test_u += grad_u * speed;
+
+                for (unsigned int d = 0; d < dim; ++d)
+                  dst[q + d * n_points] = test_u[d] * JxW;
+
+                test_grad_u = JxW * test_grad_u * jac;
+                for (unsigned int d = 0; d < dim; ++d)
+                  {
+                    grad_x[dim * ix + d]                        = test_grad_u[d][0];
+                    grad_y[dim * (iy * n_q_points_1d + ix) + d] = test_grad_u[d][1];
+                    if (dim > 2)
+                      grad_z[dim * q + d] = test_grad_u[d][2];
+                  }
+              }
+            for (unsigned int comp = 0; comp < dim; ++comp)
+              eval_grad_x.template gradients<0, false, true, dim>(
+                grad_x + comp,
+                dst + iy * n_q_points_1d + iz * n_points_2d + comp * n_points);
+          }
+        for (unsigned int comp = 0; comp < dim; ++comp)
+          eval_grad_y.template gradients<1, false, true, dim>(grad_y + comp,
+                                                              dst + iz * n_points_2d +
+                                                                comp * n_points);
+      }
+    if (dim > 2)
+      for (unsigned int comp = 0; comp < dim; ++comp)
+        eval_grad_z.template gradients<2, false, true, dim>(grad_z + comp,
+                                                            dst + comp * n_points);
+  }
+
+  template <int n_q_points_1d>
+  void
+  apply_add_cellwise_operator_on_faces(const unsigned int             cell_batch,
+                                       const VectorizedArray<Number> *src,
+                                       VectorizedArray<Number>       *dst) const
+  {
+    const auto &shape_info_data =
+      matrix_free.get_shape_info(dof_no_v, quad_no_v_mass).data[0];
+    const Tensor<1, dim, VectorizedArray<Number>> *cell_speed =
+      &speeds_cells_mass(cell_batch, 0);
+    AssertThrow(matrix_free.get_mapping_info().cell_type[cell_batch] ==
+                  internal::MatrixFreeFunctions::cartesian,
+                ExcNotImplemented());
+    const auto &mapping_data = matrix_free.get_mapping_info().cell_data[quad_no_v_mass];
+    const unsigned int index_offset = mapping_data.data_index_offsets[cell_batch];
+    const Tensor<2, dim, VectorizedArray<Number>> inverse_jacobian =
+      mapping_data.jacobians[0][index_offset];
+
+    constexpr unsigned int n_q_points_face = Utilities::pow(n_q_points_1d, dim - 1);
+    constexpr unsigned int n_q_points      = Utilities::pow(n_q_points_1d, dim);
+    for (unsigned int face_direction = 0; face_direction < dim; ++face_direction)
+      {
+        VectorizedArray<Number> values_face[2][dim][n_q_points_face + 1];
+        VectorizedArray<Number> normal_derivative_face[2][dim][n_q_points_face + 1];
+        VectorizedArray<Number> tang_derivatives_face[dim][dim - 1][n_q_points_face + 1];
+
+        // interpolate evaluated solution to faces, compute gradients
+        internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
+                                         dim - 1,
+                                         n_q_points_1d,
+                                         n_q_points_1d,
+                                         VectorizedArray<Number>,
+                                         Number>
+          eval({}, shape_info_data.shape_gradients_collocation_eo.data(), {});
+        const unsigned int stride = Utilities::pow(n_q_points_1d, face_direction);
+        for (unsigned int i1 = 0; i1 < (dim > 2 ? n_q_points_1d : 1); ++i1)
+          for (unsigned int i0 = 0; i0 < n_q_points_1d; ++i0)
+            {
+              unsigned int idx = 0;
+              if (face_direction == 0)
+                idx = n_q_points_1d * (n_q_points_1d * i1 + i0);
+              else if (face_direction == 1)
+                idx = i0 + i1 * n_q_points_1d * n_q_points_1d;
+              else
+                idx = i0 + i1 * n_q_points_1d;
+
+              const VectorizedArray<Number>                   *my_vals = src + idx;
+              dealii::ndarray<VectorizedArray<Number>, 4, dim> val_on_face;
+              for (unsigned int comp = 0; comp < dim; ++comp)
+                {
+                  val_on_face[0][comp] =
+                    interpolate_to_face[0][0] * my_vals[comp * n_q_points];
+                  val_on_face[1][comp] =
+                    interpolate_to_face[0][1] * my_vals[comp * n_q_points];
+                  val_on_face[2][comp] =
+                    interpolate_to_face[0][2] * my_vals[comp * n_q_points];
+                  val_on_face[3][comp] =
+                    interpolate_to_face[0][3] * my_vals[comp * n_q_points];
+                }
+              for (unsigned int i = 1; i < n_q_points_1d; ++i)
+                for (unsigned int comp = 0; comp < dim; ++comp)
+                  {
+                    val_on_face[0][comp] +=
+                      interpolate_to_face[i][0] * my_vals[comp * n_q_points + i * stride];
+                    val_on_face[1][comp] +=
+                      interpolate_to_face[i][1] * my_vals[comp * n_q_points + i * stride];
+                    val_on_face[2][comp] +=
+                      interpolate_to_face[i][2] * my_vals[comp * n_q_points + i * stride];
+                    val_on_face[3][comp] +=
+                      interpolate_to_face[i][3] * my_vals[comp * n_q_points + i * stride];
+                  }
+              const unsigned int out_idx = i1 * n_q_points_1d + i0;
+              for (unsigned int side = 0; side < 2; ++side)
+                for (unsigned int comp = 0; comp < dim; ++comp)
+                  {
+                    values_face[side][comp][out_idx] = val_on_face[side * 2][comp];
+                    normal_derivative_face[side][comp][out_idx] =
+                      val_on_face[side * 2 + 1][comp];
+                  }
+            }
+        const auto face_jac_det = inverse_jacobian[face_direction][face_direction] /
+                                  determinant(inverse_jacobian);
+
+        const VectorizedArray<number> sigma =
+          array_penalty_parameter[cell_batch] * get_penalty_factor();
+
+        const VectorizedArray<number> cont_pen = penalty_factor_continuity[cell_batch];
+
+        for (unsigned int side = 0; side < 2; ++side)
+          {
+            Tensor<1, dim, VectorizedArray<Number>> normal;
+            normal[face_direction]  = (side == 0 ? -1. : 1.);
+            const auto normal_x_jac = normal * inverse_jacobian;
+            for (unsigned int comp = 0; comp < dim; ++comp)
+              {
+                eval.template gradients<0, true, false>(values_face[side][comp],
+                                                        tang_derivatives_face[comp][0]);
+                if constexpr (dim > 2)
+                  eval.template gradients<1, true, false>(values_face[side][comp],
+                                                          tang_derivatives_face[comp][1]);
+              }
+            const unsigned int first  = (face_direction == 0 ? 1 : 0);
+            const unsigned int second = (face_direction == 2 ? 1 : 2);
+            for (unsigned int i1 = 0, q = 0; i1 < (dim > 2 ? n_q_points_1d : 1); ++i1)
+              for (unsigned int i0 = 0; i0 < n_q_points_1d; ++i0, ++q)
+                {
+                  unsigned int idx = 0;
+                  if (face_direction == 0)
+                    idx = n_q_points_1d * (n_q_points_1d * i1 + i0);
+                  else if (face_direction == 1)
+                    idx = i0 + i1 * n_q_points_1d * n_q_points_1d;
+                  else
+                    idx = i0 + i1 * n_q_points_1d;
+                  Tensor<1, dim, VectorizedArray<Number>> velocity =
+                    interpolate_to_face[0][2 * side] * cell_speed[idx];
+                  for (unsigned int i = 1; i < n_q_points_1d; ++i)
+                    velocity +=
+                      interpolate_to_face[i][2 * side] * cell_speed[idx + stride * i];
+                  const auto speed_normal = velocity * normal;
+
+                  // operation at quadrature points
+                  Tensor<1, dim, VectorizedArray<Number>> sol_val;
+                  for (unsigned int comp = 0; comp < dim; ++comp)
+                    sol_val[comp] = values_face[side][comp][q];
+
+                  Tensor<1, dim, VectorizedArray<Number>> normal_derivative;
+                  for (unsigned int comp = 0; comp < dim; ++comp)
+                    {
+                      normal_derivative[comp] = normal_x_jac[face_direction] *
+                                                normal_derivative_face[side][comp][q];
+                      normal_derivative[comp] +=
+                        normal_x_jac[first] * tang_derivatives_face[comp][0][q];
+                      if constexpr (dim == 3)
+                        normal_derivative[comp] +=
+                          normal_x_jac[second] * tang_derivatives_face[comp][1][q];
+                    }
+                  const Tensor<1, dim, VectorizedArray<number>> test_by_value =
+                    make_vectorized_array<number>(viscosity) * sigma * sol_val -
+                    0.5 * viscosity * normal_derivative +
+                    cont_pen * (sol_val * normal) * normal +
+                    (std::abs(speed_normal) - speed_normal) * 0.5 * sol_val;
+
+                  const Tensor<1, dim, VectorizedArray<number>> test_by_gradient =
+                    -0.5 * viscosity * sol_val;
+                  const VectorizedArray<number> JxW =
+                    (face_jac_det * face_quadrature_weights[q]);
+                  for (unsigned int comp = 0; comp < dim; ++comp)
+                    {
+                      values_face[side][comp][q] = test_by_value[comp] * JxW;
+                      normal_derivative_face[side][comp][q] =
+                        test_by_gradient[comp] * JxW * normal_x_jac[face_direction];
+                      tang_derivatives_face[comp][0][q] =
+                        test_by_gradient[comp] * JxW * normal_x_jac[first];
+                      if constexpr (dim > 2)
+                        tang_derivatives_face[comp][1][q] =
+                          test_by_gradient[comp] * JxW * normal_x_jac[second];
+                    }
+                }
+            for (unsigned int comp = 0; comp < dim; ++comp)
+              {
+                eval.template gradients<0, false, true>(tang_derivatives_face[comp][0],
+                                                        values_face[side][comp]);
+                if constexpr (dim > 2)
+                  eval.template gradients<1, false, true>(tang_derivatives_face[comp][1],
+                                                          values_face[side][comp]);
+              }
+          }
+        for (unsigned int i1 = 0, q = 0; i1 < (dim > 2 ? n_q_points_1d : 1); ++i1)
+          for (unsigned int i0 = 0; i0 < n_q_points_1d; ++i0, ++q)
+            {
+              unsigned int idx = 0;
+              if (face_direction == 0)
+                idx = n_q_points_1d * (n_q_points_1d * i1 + i0);
+              else if (face_direction == 1)
+                idx = i0 + i1 * n_q_points_1d * n_q_points_1d;
+              else
+                idx = i0 + i1 * n_q_points_1d;
+
+              VectorizedArray<Number> *my_vals = dst + idx;
+              for (unsigned int i = 0; i < n_q_points_1d; ++i)
+                {
+                  const std::array<Number, 4> interpolate = interpolate_to_face[i];
+                  for (unsigned int comp = 0; comp < dim; ++comp)
+                    my_vals[comp * n_q_points + i * stride] +=
+                      values_face[0][comp][q] * interpolate[0] +
+                      values_face[1][comp][q] * interpolate[2] +
+                      normal_derivative_face[0][comp][q] * interpolate[1] +
+                      normal_derivative_face[1][comp][q] * interpolate[3];
+                }
+            }
+      }
   }
 
   MatrixFree<dim, number> matrix_free;
