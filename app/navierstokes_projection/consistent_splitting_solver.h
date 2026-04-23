@@ -16,6 +16,33 @@
 using namespace dealii;
 
 
+namespace helper
+{
+  inline void
+  print_time(const double       time,
+             const std::string &name,
+             const MPI_Comm     communicator,
+             const double       total_time = 0.)
+  {
+    dealii::Utilities::MPI::MinMaxAvg data =
+      dealii::Utilities::MPI::min_max_avg(time, communicator);
+
+    if (dealii::Utilities::MPI::this_mpi_process(communicator) == 0)
+      {
+        const unsigned int n_digits = static_cast<unsigned int>(
+          std::ceil(std::log10(dealii::Utilities::MPI::n_mpi_processes(communicator))));
+        std::cout << std::left << std::setw(29) << name << " " << std::setw(11)
+                  << data.min << " [p" << std::setw(n_digits) << data.min_index << "] "
+                  << std::setw(11) << data.avg << " " << std::setw(11) << data.max
+                  << " [p" << std::setw(n_digits) << data.max_index << "]";
+        if (total_time > 0)
+          std::cout << " " << data.avg * 100. / total_time << "%";
+        std::cout << std::endl;
+      }
+  }
+} // namespace helper
+
+
 
 class BDFTimeIntegratorConstants
 {
@@ -122,6 +149,20 @@ public:
   using VectorType = LinearAlgebra::distributed::Vector<Number>;
 
   static const int dim = dim_;
+
+  MomentumOperator()
+    : time_vmult(0)
+    , n_vmult_evaluations(0)
+  {}
+
+  ~MomentumOperator()
+  {
+    if (n_vmult_evaluations > 0)
+      helper::print_time(time_vmult,
+                         "Momentum vmult " + std::to_string(n_vmult_evaluations) +
+                           " times",
+                         MPI_COMM_WORLD);
+  }
 
   void
   reinit(const Mapping<dim>    &mapping,
@@ -359,6 +400,7 @@ public:
   virtual void
   vmult(VectorType &dst, const VectorType &src) const
   {
+    Timer time;
     this->matrix_free.loop(&MomentumOperator::do_cell_integral_range,
                            &MomentumOperator::do_face_integral_range,
                            &MomentumOperator::do_boundary_integral_range,
@@ -368,6 +410,8 @@ public:
                            true,
                            MatrixFree<dim, number>::DataAccessOnFaces::gradients,
                            MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+    time_vmult += time.wall_time();
+    ++n_vmult_evaluations;
   }
 
   virtual void
@@ -1750,6 +1794,9 @@ private:
   std::unique_ptr<Function<dim>> velocity_bc_cached;
   std::unique_ptr<Function<dim>> pressure_bc_cached;
   std::unique_ptr<Function<dim>> rhs_cached;
+
+  mutable double       time_vmult;
+  mutable unsigned int n_vmult_evaluations;
 };
 
 

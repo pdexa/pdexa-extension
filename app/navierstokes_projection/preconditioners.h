@@ -1379,6 +1379,8 @@ namespace BlockJacobi
       , momentum_op(momentum_op)
       , dof_index_velocity(velocity_dof_handler_in_mf)
       , batched_solver_iterations(batched_solver_iterations)
+      , n_vmult_evaluations(0)
+      , time_vmult(0)
     {
       const double flux_alpha = 0.5;
       scaled_cell_velocity.resize_fast(matrix_free.n_cell_batches());
@@ -1459,6 +1461,15 @@ namespace BlockJacobi
         }
     }
 
+    ~PreconditionerMomentum()
+    {
+      if (n_vmult_evaluations > 0)
+        helper::print_time(time_vmult,
+                           "Block Jacobi momentum vmult " +
+                             std::to_string(n_vmult_evaluations) + " times",
+                           MPI_COMM_WORLD);
+    }
+
     void
     reinit(const VectorType &velocity, const Number inverse_dt)
     {
@@ -1484,6 +1495,7 @@ namespace BlockJacobi
     vmult(LinearAlgebra::distributed::Vector<Number>       &dst,
           const LinearAlgebra::distributed::Vector<Number> &src) const
     {
+      Timer              time;
       const unsigned int degree =
         matrix_free.get_dof_handler(dof_index_velocity).get_fe().degree;
       if (degree == 1)
@@ -1508,6 +1520,8 @@ namespace BlockJacobi
         AssertThrow(false,
                     ExcNotImplemented("Degree " + std::to_string(degree) +
                                       " not instantiated"));
+      time_vmult += time.wall_time();
+      ++n_vmult_evaluations;
     }
 
     template <int degree>
@@ -1642,6 +1656,9 @@ namespace BlockJacobi
     std::array<std::vector<double>, 2>        eigenvalues;
     unsigned int                              n_complex_eigenvalues;
     AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> scaled_cell_velocity;
+
+    mutable unsigned int n_vmult_evaluations;
+    mutable double       time_vmult;
   };
 
 } // namespace BlockJacobi
