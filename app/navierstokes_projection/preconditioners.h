@@ -1465,8 +1465,8 @@ namespace BlockJacobi
     {
       if (n_vmult_evaluations > 0)
         helper::print_time(time_vmult,
-                           "Block Jacobi momentum vmult " +
-                             std::to_string(n_vmult_evaluations) + " times",
+                           "Block Jacobi momentum " +
+                             std::to_string(n_vmult_evaluations) + "x",
                            MPI_COMM_WORLD);
     }
 
