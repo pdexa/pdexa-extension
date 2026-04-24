@@ -46,11 +46,15 @@ const bool use_cmg                       = true;
 const bool use_pointjacobi_pressure      = false;
 const bool use_amg_as_coarse_grid_solver = false;
 
-const bool use_velocity_point_jacobi         = false;
-const bool use_velocity_block_jacobi         = true;
-const int  n_iterations_block_jacobi         = 3;
-const bool use_inverse_mass_velocity         = false;
-const bool use_mg_velocity                   = false;
+enum class MomentumPreconditioner
+{
+  none,
+  point_jacobi,
+  block_jacobi,
+  inverse_mass,
+  multigrid,
+  ilu
+};
 const bool analyze_preconditioners           = false;
 const bool use_cmg_vel                       = false;
 const bool use_pmg_vel                       = false;
@@ -153,7 +157,9 @@ template <int dim, typename Number>
 void
 do_test(const unsigned int fe_degree,
         const unsigned int n_refinements,
-        const double       courant)
+        const double       courant,
+        const std::string &preconditioner_string,
+        const unsigned int n_iterations_block_jacobi)
 {
   ConditionalOStream pcout(std::cout,
                            Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
@@ -166,8 +172,28 @@ do_test(const unsigned int fe_degree,
   parallel::distributed::Triangulation<dim> tria(
     MPI_COMM_WORLD, Triangulation<dim>::limit_level_difference_at_vertices);
 
+  MomentumPreconditioner momentum_preconditioner;
+  if (preconditioner_string == "none")
+    momentum_preconditioner = MomentumPreconditioner::none;
+  else if (preconditioner_string == "point_jacobi")
+    momentum_preconditioner = MomentumPreconditioner::point_jacobi;
+  else if (preconditioner_string == "block_jacobi")
+    momentum_preconditioner = MomentumPreconditioner::block_jacobi;
+  else if (preconditioner_string == "ilu")
+    momentum_preconditioner = MomentumPreconditioner::ilu;
+  else if (preconditioner_string == "multigrid")
+    momentum_preconditioner = MomentumPreconditioner::multigrid;
+  else if (preconditioner_string == "inverse_mass")
+    momentum_preconditioner = MomentumPreconditioner::inverse_mass;
+  else
+    AssertThrow(false,
+                ExcMessage("Unknown preconditioner type `" + preconditioner_string +
+                           "`, select among\n none | point_jacobi | block_jacobi"
+                           " | ilu | multigrid | inverse_mass"));
+
   pcout << "Running with fe_degree=" << fe_degree << ", n_refine=" << n_refinements
-        << " and Courant=" << courant << std::endl;
+        << ", Courant=" << courant << ", momentum_precondition=" << preconditioner_string
+        << ", n_iterations_batched_jacobi=" << n_iterations_block_jacobi << std::endl;
   pcout << "Set up tria" << std::endl;
   GridGenerator::subdivided_hyper_cube(tria, 1, -L * numbers::PI, L * numbers::PI);
   pcout << "Set up boundary" << std::endl;
@@ -487,7 +513,7 @@ do_test(const unsigned int fe_degree,
 
       vec_u_rhs = 0.;
       momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, vec_p);
-      if (use_mg_velocity)
+      if (momentum_preconditioner == MomentumPreconditioner::multigrid)
         preconditioner_velocity.update(current_time, speed_extrapolated);
 
       ReductionControl control_mom(1000, 1e-12, 1e-6);
@@ -505,18 +531,18 @@ do_test(const unsigned int fe_degree,
       //     });
       vec_u = speed_extrapolated; // = 0.;
       unsigned int n_iterations_vel;
-      if (use_mg_velocity)
+      if (momentum_preconditioner == MomentumPreconditioner::multigrid)
         {
           n_iterations_vel = preconditioner_velocity.solve(
             momentum_op, vec_u, vec_u_rhs, use_amg_as_coarse_grid_solver_vel);
         }
-      else if (use_inverse_mass_velocity)
+      else if (momentum_preconditioner == MomentumPreconditioner::inverse_mass)
         {
           inverse_mass.set_scaling_factor(time_step / bdf.get_gamma0());
           solver_mom.solve(momentum_op, vec_u, vec_u_rhs, inverse_mass);
           n_iterations_vel = control_mom.last_step();
         }
-      else if (use_velocity_point_jacobi)
+      else if (momentum_preconditioner == MomentumPreconditioner::point_jacobi)
         {
           momentum_op.compute_inverse_diagonal(
             preconditioner_velocity_pointjacobi.get_vector());
@@ -526,18 +552,23 @@ do_test(const unsigned int fe_degree,
                            preconditioner_velocity_pointjacobi);
           n_iterations_vel = control_mom.last_step();
         }
-      else if (use_velocity_block_jacobi)
+      else if (momentum_preconditioner == MomentumPreconditioner::block_jacobi)
         {
           preconditioner_block_jacobi.reinit(speed_extrapolated,
                                              bdf.get_gamma0() / time_step);
           solver_mom.solve(momentum_op, vec_u, vec_u_rhs, preconditioner_block_jacobi);
           n_iterations_vel = control_mom.last_step();
         }
-      else
+      else if (momentum_preconditioner == MomentumPreconditioner::none)
         {
           solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
           n_iterations_vel = control_mom.last_step();
         }
+      else
+        {
+          AssertThrow(false, ExcMessage("Preconditioner case not supported, check enum"));
+        }
+
       its_mom += n_iterations_vel;
       time_mom += time_detail.wall_time();
 
@@ -757,6 +788,14 @@ do_test(const unsigned int fe_degree,
              time_step_number / loop_time
         << " DoFs/s" << std::endl;
   pcout << std::endl;
+
+  // Write the momentum solver data out in a different format to match it with
+  // the data shown by the block-jacobi and momentum operators
+  pcout << "Overall time momentum solver (n_steps=" << time_step_number
+        << "): " << time_mom << std::endl;
+  momentum_op.print_compute_times(MPI_COMM_WORLD, time_mom);
+  if (momentum_preconditioner == MomentumPreconditioner::block_jacobi)
+    preconditioner_block_jacobi.print_compute_times(MPI_COMM_WORLD, time_mom);
 }
 
 
@@ -765,10 +804,13 @@ main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-  unsigned int dim      = 3;
-  unsigned int n_refine = 2;
-  unsigned int degree   = 4;
-  double       courant  = 0.2;
+  unsigned int dim                = 3;
+  unsigned int n_refine           = 2;
+  unsigned int degree             = 4;
+  double       courant            = 0.2;
+  unsigned int batched_iterations = 0;
+
+  std::string preconditioner_string = "block_jacobi";
 
   if (argc % 2 == 0)
     {
@@ -794,20 +836,27 @@ main(int argc, char **argv)
         degree = std::atoll(argv[l + 1]);
       else if (option == "courant")
         courant = std::atof(argv[l + 1]);
+      else if (option == "momentum_precondition")
+        preconditioner_string = argv[l + 1];
+      else if (option == "n_iterations_batched_jacobi")
+        batched_iterations = std::atoll(argv[l + 1]);
       else
         {
           if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
             std::cout << "Given command-line argument `" << argv[l] << "` not supported!"
                       << std::endl
                       << "Expected line of the form (or premutation of)" << std::endl
-                      << "dim 3 n_refine 2 degree 4 courant 0.2" << std::endl;
+                      << "dim 3 n_refine 2 degree 4 courant 0.2 momentum_precondition "
+                      << " block_jacobi n_iterations_batched_jacobi 2" << std::endl;
           std::abort();
         }
     }
 
 
   if (dim == 2)
-    do_test<2, double>(degree, n_refine, courant);
+    do_test<2, double>(
+      degree, n_refine, courant, preconditioner_string, batched_iterations);
   else
-    do_test<3, double>(degree, n_refine, courant);
+    do_test<3, double>(
+      degree, n_refine, courant, preconditioner_string, batched_iterations);
 }

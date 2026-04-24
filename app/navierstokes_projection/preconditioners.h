@@ -1461,13 +1461,15 @@ namespace BlockJacobi
         }
     }
 
-    ~PreconditionerMomentum()
+    void
+    print_compute_times(const MPI_Comm comm, const double total_solver_time)
     {
       if (n_vmult_evaluations > 0)
         helper::print_time(time_vmult,
                            "Block Jacobi momentum " +
                              std::to_string(n_vmult_evaluations) + "x",
-                           MPI_COMM_WORLD);
+                           comm,
+                           total_solver_time);
     }
 
     void

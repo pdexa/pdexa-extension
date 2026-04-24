@@ -155,13 +155,15 @@ public:
     , n_vmult_evaluations(0)
   {}
 
-  ~MomentumOperator()
+  void
+  print_compute_times(const MPI_Comm comm, const double total_solver_time)
   {
     if (n_vmult_evaluations > 0)
       helper::print_time(time_vmult,
                          "Momentum vmult " + std::to_string(n_vmult_evaluations) +
                            " times",
-                         MPI_COMM_WORLD);
+                         comm,
+                         total_solver_time);
   }
 
   void
@@ -573,16 +575,17 @@ public:
                                 velocity);
 
     // sum over all MPI processes
-    const Number volume = dealii::Utilities::MPI::sum(dst.at(0), MPI_COMM_WORLD);
-    energy              = dealii::Utilities::MPI::sum(dst.at(1), MPI_COMM_WORLD);
-    enstrophy           = dealii::Utilities::MPI::sum(dst.at(2), MPI_COMM_WORLD);
-    dissipation         = dealii::Utilities::MPI::sum(dst.at(3), MPI_COMM_WORLD);
+    dealii::Utilities::MPI::sum(dst, MPI_COMM_WORLD, dst);
+    const Number volume = dst.at(0);
+    energy              = dst.at(1);
+    enstrophy           = dst.at(2);
+    dissipation         = dst.at(3);
 
     energy /= volume;
     enstrophy /= volume;
     dissipation /= volume;
 
-    max_vorticity = dealii::Utilities::MPI::max(dst.at(4), MPI_COMM_WORLD);
+    max_vorticity = dst.at(4);
   };
 
   void
