@@ -192,8 +192,10 @@ do_test(const unsigned int fe_degree,
                            " | ilu | multigrid | inverse_mass"));
 
   pcout << "Running with fe_degree=" << fe_degree << ", n_refine=" << n_refinements
-        << ", Courant=" << courant << ", momentum_precondition=" << preconditioner_string
-        << ", n_iterations_batched_jacobi=" << n_iterations_block_jacobi << std::endl;
+        << ", Courant=" << courant << ", momentum_precondition=" << preconditioner_string;
+  if (momentum_preconditioner == MomentumPreconditioner::block_jacobi)
+    pcout << ", n_iterations_batched_jacobi=" << n_iterations_block_jacobi;
+  pcout << std::endl;
   pcout << "Set up tria" << std::endl;
   GridGenerator::subdivided_hyper_cube(tria, 1, -L * numbers::PI, L * numbers::PI);
   pcout << "Set up boundary" << std::endl;

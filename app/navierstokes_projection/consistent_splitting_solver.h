@@ -32,11 +32,12 @@ namespace helper
         const unsigned int n_digits = static_cast<unsigned int>(
           std::ceil(std::log10(dealii::Utilities::MPI::n_mpi_processes(communicator))));
         std::cout << std::left << std::setw(29) << name << " " << std::setw(11)
-                  << data.min << " [p" << std::setw(n_digits) << data.min_index << "] "
-                  << std::setw(11) << data.avg << " " << std::setw(11) << data.max
-                  << " [p" << std::setw(n_digits) << data.max_index << "]";
+                  << std::scientific << data.min << " [p" << std::setw(n_digits)
+                  << data.min_index << "] " << std::setw(11) << data.avg << " "
+                  << std::setw(11) << data.max << " [p" << std::setw(n_digits)
+                  << data.max_index << "]";
         if (total_time > 0)
-          std::cout << " " << data.avg * 100. / total_time << "%";
+          std::cout << " " << std::defaultfloat << data.avg * 100. / total_time << "%";
         std::cout << std::endl;
       }
   }
