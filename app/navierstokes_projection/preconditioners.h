@@ -1491,37 +1491,112 @@ namespace BlockJacobi
           scaled_cell_velocity[cell] = integrated_velocity / volume;
         }
       this->inverse_dt = inverse_dt;
+
+      // create dense matrices for the 'true' block Jacobi method
+      if (batched_solver_iterations == numbers::invalid_unsigned_int)
+        {
+          const unsigned int     dofs_per_comp = evaluator.dofs_per_component;
+          constexpr unsigned int n_lanes       = VectorizedArray<Number>::size();
+          cell_matrices.resize(matrix_free.n_cell_batches() * n_lanes,
+                               LAPACKFullMatrix<float>(dofs_per_comp, dofs_per_comp));
+          AlignedVector<VectorizedArray<Number>> local_src(evaluator.dofs_per_cell);
+          AlignedVector<VectorizedArray<Number>> local_dst(local_src.size());
+          const unsigned int                     degree =
+            matrix_free.get_dof_handler(dof_index_velocity).get_fe().degree;
+
+          for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
+            {
+              for (unsigned int v = 0; v < n_lanes; ++v)
+                cell_matrices[cell * n_lanes + v] = 0;
+              for (unsigned int i = 0; i < dofs_per_comp; ++i)
+                {
+                  local_src.fill(0.);
+                  local_src[i] = 1.;
+
+                  if (degree == 1)
+                    do_local_vmult<1>(cell, local_dst, local_src);
+                  else if (degree == 2)
+                    do_local_vmult<2>(cell, local_dst, local_src);
+                  else if (degree == 3)
+                    do_local_vmult<3>(cell, local_dst, local_src);
+                  else if (degree == 4)
+                    do_local_vmult<4>(cell, local_dst, local_src);
+                  else if (degree == 5)
+                    do_local_vmult<5>(cell, local_dst, local_src);
+                  else if (degree == 6)
+                    do_local_vmult<6>(cell, local_dst, local_src);
+                  else if (degree == 7)
+                    do_local_vmult<7>(cell, local_dst, local_src);
+                  else if (degree == 8)
+                    do_local_vmult<8>(cell, local_dst, local_src);
+                  else
+                    AssertThrow(false,
+                                ExcMessage("Degree " + std::to_string(degree) +
+                                           " not instantiated"));
+                  for (unsigned int v = 0; v < n_lanes; ++v)
+                    for (unsigned int j = 0; j < dofs_per_comp; ++j)
+                      cell_matrices[cell * n_lanes + v](j, i) = local_dst[j][v];
+                }
+              for (unsigned int v = 0; v < n_lanes; ++v)
+                cell_matrices[cell * n_lanes + v].compute_lu_factorization();
+            }
+        }
     }
 
     void
     vmult(LinearAlgebra::distributed::Vector<Number>       &dst,
           const LinearAlgebra::distributed::Vector<Number> &src) const
     {
-      Timer              time;
-      const unsigned int degree =
-        matrix_free.get_dof_handler(dof_index_velocity).get_fe().degree;
-      if (degree == 1)
-        do_vmult<1>(dst, src);
-      else if (degree == 2)
-        do_vmult<2>(dst, src);
-      else if (degree == 3)
-        do_vmult<3>(dst, src);
-      else if (degree == 4)
-        do_vmult<4>(dst, src);
-      else if (degree == 5)
-        do_vmult<5>(dst, src);
-      else if (degree == 6)
-        do_vmult<6>(dst, src);
-      else if (degree == 7)
-        do_vmult<7>(dst, src);
-      else if (degree == 8)
-        do_vmult<8>(dst, src);
-      else if (degree == 9)
-        do_vmult<9>(dst, src);
+      Timer time;
+      if (batched_solver_iterations < numbers::invalid_unsigned_int)
+        {
+          const unsigned int degree =
+            matrix_free.get_dof_handler(dof_index_velocity).get_fe().degree;
+          if (degree == 1)
+            do_vmult<1>(dst, src);
+          else if (degree == 2)
+            do_vmult<2>(dst, src);
+          else if (degree == 3)
+            do_vmult<3>(dst, src);
+          else if (degree == 4)
+            do_vmult<4>(dst, src);
+          else if (degree == 5)
+            do_vmult<5>(dst, src);
+          else if (degree == 6)
+            do_vmult<6>(dst, src);
+          else if (degree == 7)
+            do_vmult<7>(dst, src);
+          else if (degree == 8)
+            do_vmult<8>(dst, src);
+          else if (degree == 9)
+            do_vmult<9>(dst, src);
+          else
+            AssertThrow(false,
+                        ExcNotImplemented("Degree " + std::to_string(degree) +
+                                          " not instantiated"));
+        }
       else
-        AssertThrow(false,
-                    ExcNotImplemented("Degree " + std::to_string(degree) +
-                                      " not instantiated"));
+        {
+          const unsigned int *dof_indices_dg =
+            matrix_free.get_dof_info(dof_no_v)
+              .dof_indices_contiguous
+                [internal::MatrixFreeFunctions::DoFInfo::dof_access_cell]
+              .data();
+          // apply LU factorization of LAPACK matrices
+          const unsigned int      dofs_per_comp = cell_matrices[0].m();
+          LAPACKFullMatrix<float> local_sol(dofs_per_comp, dim);
+          for (unsigned int cell = 0; cell < cell_matrices.size(); ++cell)
+            {
+              const unsigned int idx = dof_indices_dg[cell];
+              for (unsigned int d = 0; d < dim; ++d)
+                for (unsigned int i = 0; i < dofs_per_comp; ++i)
+                  local_sol(i, d) = src.local_element(idx + d * dofs_per_comp + i);
+              cell_matrices[cell].solve(local_sol);
+              for (unsigned int d = 0; d < dim; ++d)
+                for (unsigned int i = 0; i < dofs_per_comp; ++i)
+                  dst.local_element(idx + d * dofs_per_comp + i) = local_sol(i, d);
+            }
+        }
       time_vmult += time.wall_time();
       ++n_vmult_evaluations;
     }
@@ -1659,8 +1734,51 @@ namespace BlockJacobi
     unsigned int                              n_complex_eigenvalues;
     AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> scaled_cell_velocity;
 
+    std::vector<LAPACKFullMatrix<float>> cell_matrices;
+
     mutable unsigned int n_vmult_evaluations;
     mutable double       time_vmult;
+
+    template <int degree>
+    void
+    do_local_vmult(const unsigned int                      cell_batch,
+                   AlignedVector<VectorizedArray<Number>> &dst,
+                   AlignedVector<VectorizedArray<Number>> &src) const
+    {
+      constexpr unsigned int dofs_per_comp = Utilities::pow(degree + 1, dim);
+      internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
+                                       dim,
+                                       degree + 1,
+                                       degree + 1,
+                                       VectorizedArray<Number>,
+                                       Number>
+        evaluator(
+          {},
+          {},
+          matrix_free.get_shape_info(dof_no_v, quad_no_v_mass).data[0].shape_values_eo);
+      for (unsigned int comp = 0; comp < dim; ++comp)
+        {
+          VectorizedArray<Number> *src_ptr = src.data() + comp * dofs_per_comp;
+          evaluator.template hessians<0, true, false>(src_ptr, src_ptr);
+          if constexpr (dim > 1)
+            evaluator.template hessians<1, true, false>(src_ptr, src_ptr);
+          if constexpr (dim > 2)
+            evaluator.template hessians<2, true, false>(src_ptr, src_ptr);
+
+          constexpr unsigned int n_q_points = degree + 1;
+          momentum_op.template apply_cellwise_operator_in_collocation_basis<n_q_points>(
+            cell_batch, src.data(), dst.data());
+          for (unsigned int comp = 0; comp < dim; ++comp)
+            {
+              VectorizedArray<Number> *dst_ptr = dst.data() + comp * dofs_per_comp;
+              evaluator.template hessians<0, false, false>(dst_ptr, dst_ptr);
+              if constexpr (dim > 1)
+                evaluator.template hessians<1, false, false>(dst_ptr, dst_ptr);
+              if constexpr (dim > 2)
+                evaluator.template hessians<2, false, false>(dst_ptr, dst_ptr);
+            }
+        }
+    }
   };
 
 } // namespace BlockJacobi

@@ -326,12 +326,12 @@ do_test(const unsigned int fe_degree,
     use_hmg_vel,
     use_cmg_vel,
     use_pmg_vel);
+  TrilinosWrappers::PreconditionILU preconditioner_ilu;
 
   DiagonalMatrix<LinearAlgebra::distributed::Vector<Number>>
     preconditioner_velocity_pointjacobi;
   DiagonalMatrix<LinearAlgebra::distributed::Vector<Number>>
     preconditioner_pressure_pointjacobi;
-
 
   PressureOperator<dim, Number> pressure_op;
   pressure_op.reinit(momentum_op.get_matrix_free(),
@@ -559,6 +559,21 @@ do_test(const unsigned int fe_degree,
           preconditioner_block_jacobi.reinit(speed_extrapolated,
                                              bdf.get_gamma0() / time_step);
           solver_mom.solve(momentum_op, vec_u, vec_u_rhs, preconditioner_block_jacobi);
+          n_iterations_vel = control_mom.last_step();
+        }
+      else if (momentum_preconditioner == MomentumPreconditioner::ilu)
+        {
+          if (time_step_number <= bdf_order || time_step_number % 5 == 0)
+            {
+              Timer time;
+              preconditioner_ilu.clear();
+              TrilinosWrappers::SparseMatrix momentum_system_matrix;
+              momentum_op.get_system_matrix(momentum_system_matrix);
+              preconditioner_ilu.initialize(momentum_system_matrix);
+              if (write_output && time_step_number % output_interval == 0)
+                pcout << "ILU setup time: " << time.wall_time() << std::endl;
+            }
+          solver_mom.solve(momentum_op, vec_u, vec_u_rhs, preconditioner_ilu);
           n_iterations_vel = control_mom.last_step();
         }
       else if (momentum_preconditioner == MomentumPreconditioner::none)

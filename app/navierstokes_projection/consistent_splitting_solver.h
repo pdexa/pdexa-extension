@@ -504,6 +504,8 @@ public:
         dof_no_v,
         quad_no_v,
         0);
+
+    system_matrix.compress(VectorOperation::add);
   }
 
   void
@@ -2048,6 +2050,8 @@ public:
         dof_no_p,
         quad_no_p,
         0);
+
+    system_matrix.compress(VectorOperation::add);
   }
 
   void
