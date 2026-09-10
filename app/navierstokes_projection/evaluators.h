@@ -1,4 +1,4 @@
-#pragma once 
+#pragma once
 #include <deal.II/base/quadrature_lib.h>
 
 using namespace dealii;
@@ -21,12 +21,11 @@ evaluate_function(const Function<dim>                       &function,
   return result;
 }
 
-
-
 template <int dim, typename Number>
 VectorizedArray<Number>
-evaluate_scalar_function(const Function<dim>                       &function,
-                         const Point<dim, VectorizedArray<Number>> &p_vectorized)
+evaluate_scalar_function(
+  const Function<dim>                       &function,
+  const Point<dim, VectorizedArray<Number>> &p_vectorized)
 {
   AssertDimension(function.n_components, 1);
   VectorizedArray<Number> result;
@@ -40,11 +39,11 @@ evaluate_scalar_function(const Function<dim>                       &function,
   return result;
 }
 
-
 template <int dim, typename number, int n_components = dim>
 Tensor<2, n_components, VectorizedArray<number>>
-evaluate_tensor_function(const Function<dim>                       &function,
-                         const Point<dim, VectorizedArray<number>> &p_vectorized)
+evaluate_tensor_function(
+  const Function<dim>                       &function,
+  const Point<dim, VectorizedArray<number>> &p_vectorized)
 {
   Tensor<2, n_components, VectorizedArray<number>> result;
   for (unsigned int v = 0; v < VectorizedArray<number>::size(); ++v)
