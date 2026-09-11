@@ -1,5 +1,12 @@
 
+#include <deal.II/base/aligned_vector.h>
+#include <deal.II/base/exception_macros.h>
+#include <deal.II/base/exceptions.h>
+#include <deal.II/base/types.h>
+#include <deal.II/base/vectorization.h>
+
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
+#include <deal.II/lac/full_matrix.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_control.h>
@@ -17,6 +24,9 @@
 #include <deal.II/multigrid/mg_transfer_global_coarsening.h>
 #include <deal.II/multigrid/mg_transfer_matrix_free.h>
 #include <deal.II/multigrid/multigrid.h>
+
+#include <memory>
+#include <vector>
 
 // #include "consistent_splitting_solver.h"
 
@@ -77,6 +87,7 @@ private:
     const std::pair<unsigned int, unsigned int> &cell_range) const
   {
     FEEvaluation<dim, -1, 0, dim, number> integrator(*matrix_free,
+                                                     //    cell_range,
                                                      dof_no_v,
                                                      quad_no_v_mass);
 
@@ -101,6 +112,444 @@ private:
   unsigned int                   dof_no_v;
   unsigned int                   quad_no_v;
   unsigned int                   quad_no_v_mass;
+};
+
+
+template <int dim, typename number>
+class MassOperator
+{
+public:
+  using VectorType = LinearAlgebra::distributed::Vector<number>;
+  typedef MassOperator<dim, number> This;
+
+  MassOperator() = default;
+
+  void
+  reinit(const MatrixFree<dim, number> &matrix_free,
+         const unsigned int             dof_no_v       = 0,
+         const unsigned int             quad_no_v      = 0,
+         const unsigned int             quad_no_v_mass = 1)
+  {
+    this->matrix_free    = &matrix_free;
+    this->dof_no_v       = dof_no_v;
+    this->quad_no_v      = quad_no_v;
+    this->quad_no_v_mass = quad_no_v_mass;
+  }
+
+  void
+  vmult(VectorType &dst, const VectorType &src) const
+  {
+    dst = 0;
+    dst.zero_out_ghost_values();
+    matrix_free->cell_loop(&This::do_cell_integral_range, this, dst, src, true);
+  }
+
+  void
+  compute_inverse_diagonal(VectorType &diagonal_vector) const
+  {
+    this->matrix_free->initialize_dof_vector(diagonal_vector, dof_no_v);
+
+    MatrixFreeTools::
+      compute_diagonal<dim, -1, 0, dim, number, VectorizedArray<number>>(
+        *matrix_free,
+        diagonal_vector,
+        [&](auto &phi) { do_cell_integral_local(phi); },
+        dof_no_v,
+        quad_no_v_mass);
+
+    for (unsigned int i = 0; i < diagonal_vector.locally_owned_size(); ++i)
+      {
+        if (std::abs(diagonal_vector.local_element(i)) > 1.0e-10)
+          diagonal_vector.local_element(i) =
+            1.0 / diagonal_vector.local_element(i);
+        else
+          diagonal_vector.local_element(i) = 1.0;
+      }
+  }
+
+private:
+  const MatrixFree<dim, number> *matrix_free;
+
+  unsigned int dof_no_v;
+  unsigned int quad_no_v;
+  unsigned int quad_no_v_mass;
+
+  void
+  do_cell_integral_range(
+    const MatrixFree<dim, number>               &matrix_free,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &range) const
+  {
+    FEEvaluation<dim, -1, 0, dim, number> integrator(matrix_free,
+                                                     range,
+                                                     dof_no_v,
+                                                     quad_no_v_mass);
+
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
+      {
+        integrator.reinit(cell);
+        integrator.read_dof_values(src);
+        do_cell_integral_local(integrator);
+        integrator.distribute_local_to_global(dst);
+      }
+  }
+
+  void
+  do_cell_integral_local(
+    FEEvaluation<dim, -1, 0, dim, number> &integrator) const
+  {
+    integrator.evaluate(EvaluationFlags::values);
+    // loop over quadrature points and compute the local volume flux
+    for (unsigned int q = 0; q < integrator.n_q_points; ++q)
+      integrator.submit_value(integrator.get_value(q), q);
+
+    // multiply by nabla v^h(x) and sum
+    integrator.integrate(EvaluationFlags::values);
+  }
+};
+
+
+template <int dim, typename number>
+class InverseMassOperator
+{
+public:
+  using VectorType = LinearAlgebra::distributed::Vector<number>;
+  typedef InverseMassOperator<dim, number> This;
+
+  InverseMassOperator() = default;
+
+  void
+  reinit(const MatrixFree<dim, number> &matrix_free,
+         number                         scaling_factor_in,
+         const unsigned int             dof_no_v,
+         const unsigned int             quad_no_v_mass,
+         const bool                     use_as_preconditioner)
+  {
+    scaling_factor              = scaling_factor_in;
+    this->matrix_free           = &matrix_free;
+    this->dof_no_v              = dof_no_v;
+    this->quad_no_v_mass        = quad_no_v_mass;
+    this->use_as_preconditioner = use_as_preconditioner;
+
+    this->fe_index_hypercube = numbers::invalid_unsigned_int;
+
+    this->is_dg = this->matrix_free->get_dof_handler(dof_no_v)
+                    .get_fe(0)
+                    .n_dofs_per_vertex() == 0;
+
+    if (is_dg)
+      {
+        this->all_cells_affine = true;
+
+        for (const auto &cell_type :
+             this->matrix_free->get_mapping_info().cell_type)
+          if (cell_type > dealii::internal::MatrixFreeFunctions::affine)
+            all_cells_affine = false;
+
+        all_cells_are_hypercube = this->matrix_free->get_dof_handler(dof_no_v)
+                                    .get_triangulation()
+                                    .all_reference_cells_are_hyper_cube();
+
+        if (all_cells_are_hypercube)
+          {
+            // nothing to do
+          }
+        else if (all_cells_affine || use_as_preconditioner)
+          {
+            // go over all fe_indices and build the mass matrices for all
+            // elements
+            const hp::FECollection<dim> fe_collection =
+              this->matrix_free->get_dof_handler(dof_no_v).get_fe_collection();
+            if (fe_collection.empty() == false)
+              {
+                const unsigned int n_fe_indices = fe_collection.size();
+                inverse_mass_matrix.resize(n_fe_indices);
+                for (unsigned int fe_index = 0; fe_index < n_fe_indices;
+                     ++fe_index)
+                  {
+                    const auto &fe_system = fe_collection[fe_index];
+                    Assert(fe_system.n_base_elements() == 1,
+                           ExcInternalError());
+                    Assert(fe_system.element_multiplicity(0) == dim,
+                           ExcInternalError());
+                    const auto &fe = fe_system.base_element(0);
+
+                    if (fe.reference_cell().is_hyper_cube())
+                      {
+                        Assert(this->fe_index_hypercube ==
+                                 numbers::invalid_unsigned_int,
+                               ExcInternalError());
+                        this->fe_index_hypercube = fe_index;
+                      }
+                    else
+                      {
+                        // create mass matrix
+                        const auto quad =
+                          fe.reference_cell().get_gauss_type_quadrature(
+                            fe.degree + 1);
+
+                        const unsigned int n_dofs_per_cell =
+                          fe.n_dofs_per_cell();
+                        FullMatrix<number> mass_matrix(n_dofs_per_cell,
+                                                       n_dofs_per_cell);
+                        mass_matrix = 0.;
+                        for (unsigned int q = 0; q < quad.size(); ++q)
+                          for (unsigned int i = 0; i < n_dofs_per_cell; ++i)
+                            for (unsigned int j = 0; j < n_dofs_per_cell; ++j)
+                              mass_matrix[i][j] +=
+                                fe.shape_value(i, quad.point(q)) *
+                                fe.shape_value(j, quad.point(q)) *
+                                quad.weight(q);
+
+                        inverse_mass_matrix[fe_index].resize(n_dofs_per_cell *
+                                                             n_dofs_per_cell);
+                        // get the inverse
+                        Householder<number> householder(mass_matrix);
+                        Vector<number>      e(n_dofs_per_cell);
+                        Vector<number>      x(n_dofs_per_cell);
+                        for (unsigned int j = 0; j < n_dofs_per_cell; ++j)
+                          {
+                            e    = 0.;
+                            e[j] = 1.;
+                            x    = 0.;
+                            householder.least_squares(x, e);
+
+                            for (unsigned int i = 0; i < n_dofs_per_cell; ++i)
+                              inverse_mass_matrix[fe_index]
+                                                 [i * n_dofs_per_cell + j] =
+                                                   x[i];
+                          }
+                      }
+                  }
+              }
+            else
+              {
+                inverse_mass_matrix.resize(1);
+                const auto &fe =
+                  this->matrix_free->get_dof_handler(dof_no_v).get_fe();
+
+                if (fe.reference_cell().is_hyper_cube())
+                  {
+                    DEAL_II_ASSERT_UNREACHABLE();
+                  }
+                else
+                  {
+                    // create mass matrix
+                    const auto quad =
+                      fe.reference_cell().get_gauss_type_quadrature(fe.degree +
+                                                                    1);
+                    const unsigned int n_dofs_per_cell = fe.n_dofs_per_cell();
+
+                    FullMatrix<number> mass_matrix(n_dofs_per_cell,
+                                                   n_dofs_per_cell);
+                    mass_matrix = 0.;
+                    for (unsigned int q = 0; q < quad.size(); ++q)
+                      for (unsigned int i = 0; i < n_dofs_per_cell; ++i)
+                        for (unsigned int j = 0; j < n_dofs_per_cell; ++j)
+                          mass_matrix[i][j] +=
+                            fe.shape_value(i, quad.point(q)) *
+                            fe.shape_value(j, quad.point(q)) * quad.weight(q);
+
+                    inverse_mass_matrix[0].resize(n_dofs_per_cell *
+                                                  n_dofs_per_cell);
+                    // get the inverse
+                    Householder<number> householder(mass_matrix);
+                    Vector<number>      e(n_dofs_per_cell);
+                    Vector<number>      x(n_dofs_per_cell);
+                    for (unsigned int j = 0; j < n_dofs_per_cell; ++j)
+                      {
+                        e    = 0.;
+                        e[j] = 1.;
+                        x    = 0.;
+                        householder.least_squares(x, e);
+
+                        for (unsigned int i = 0; i < n_dofs_per_cell; ++i)
+                          inverse_mass_matrix[0][i * n_dofs_per_cell + j] =
+                            x[i];
+                      }
+                  }
+              }
+          }
+        else
+          {
+            preconditioner =
+              std::make_unique<InverseMassOperator<dim, number>>();
+            preconditioner->reinit(
+              matrix_free, scaling_factor_in, dof_no_v, quad_no_v_mass, true);
+
+            massoperator = std::make_unique<MassOperator<dim, number>>();
+            massoperator->reinit(matrix_free, dof_no_v, 0, quad_no_v_mass);
+          }
+      }
+    else
+      {
+        massoperator = std::make_unique<MassOperator<dim, number>>();
+        massoperator->reinit(matrix_free, dof_no_v, 0, quad_no_v_mass);
+
+        preconditioner_mass = std::make_unique<DiagonalMatrix<VectorType>>();
+        massoperator->compute_inverse_diagonal(
+          preconditioner_mass->get_vector());
+      }
+  }
+
+  void
+  set_scaling_factor(number scaling_factor_in)
+  {
+    scaling_factor = scaling_factor_in;
+  }
+
+  void
+  vmult(VectorType &dst, const VectorType &src) const
+  {
+    if (is_dg)
+      {
+        dst.zero_out_ghost_values();
+
+        if (all_cells_are_hypercube)
+          {
+            matrix_free->cell_loop(&This::cell_loop_hypercube, this, dst, src);
+          }
+        else if (all_cells_affine || use_as_preconditioner)
+          {
+            matrix_free->cell_loop(&This::cell_loop_general, this, dst, src);
+          }
+        else
+          {
+            ReductionControl     control(100000, 1e-10, 1e-5);
+            SolverCG<VectorType> solver(control);
+            solver.solve(*massoperator, dst, src, *preconditioner);
+            dst *= scaling_factor;
+          }
+      }
+    else
+      {
+        ReductionControl     control(100000, 1e-10, 1e-5);
+        SolverCG<VectorType> solver(control);
+        solver.solve(*massoperator, dst, src, *preconditioner_mass);
+        dst *= scaling_factor;
+      }
+  }
+
+private:
+  void
+  cell_loop_hypercube(
+    const dealii::MatrixFree<dim, number> &,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, dim, number> integrator(*matrix_free,
+                                                     cell_range,
+                                                     dof_no_v,
+                                                     quad_no_v_mass);
+
+    MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, number>
+      inverse_mass(integrator);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        integrator.reinit(cell);
+        integrator.read_dof_values(src, 0);
+
+        inverse_mass.apply(integrator.begin_dof_values(),
+                           integrator.begin_dof_values());
+        for (unsigned int i = 0; i < integrator.dofs_per_cell; ++i)
+          integrator.begin_dof_values()[i] *= scaling_factor;
+        integrator.set_dof_values(dst, 0);
+      }
+  }
+
+  void
+  cell_loop_general(
+    const dealii::MatrixFree<dim, number> &,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    const unsigned int fe_index_from_matrix_free =
+      matrix_free->get_cell_active_fe_index(cell_range, dof_no_v);
+
+    const unsigned int fe_index =
+      fe_index_from_matrix_free == numbers::invalid_unsigned_int ?
+        0 :
+        fe_index_from_matrix_free;
+    if (fe_index == fe_index_hypercube)
+      {
+        cell_loop_hypercube(*matrix_free, dst, src, cell_range);
+        return;
+      }
+
+    FEEvaluation<dim, -1, 0, dim, number> integrator(*matrix_free,
+                                                     cell_range,
+                                                     dof_no_v,
+                                                     quad_no_v_mass);
+
+    const auto &mapping_data =
+      matrix_free->get_mapping_info().cell_data[quad_no_v_mass];
+    const number quadrature_weight =
+      mapping_data.descriptor[fe_index].quadrature_weights.data()[0];
+
+    AlignedVector<VectorizedArray<number>> values_dofs_inverse(
+      integrator.dofs_per_cell);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        // read dof values
+        integrator.reinit(cell);
+        integrator.read_dof_values(src);
+
+        // Apply inverse mass on components
+        dealii::internal::apply_matrix_vector_product<
+          dealii::internal::EvaluatorVariant::evaluate_general,
+          dealii::internal::EvaluatorQuantity::value,
+          /*transpose_matrix*/ false,
+          /*add*/ false,
+          /*consider_strides*/ false,
+          VectorizedArray<number>,
+          number,
+          dim>(inverse_mass_matrix[fe_index].data(),
+               integrator.begin_dof_values(),
+               values_dofs_inverse.data(),
+               integrator.dofs_per_component,
+               integrator.dofs_per_component,
+               1,
+               1);
+
+        // apply inverse jacobi matrix
+        const unsigned int offsets = integrator.get_mapping_data_index_offset();
+        const VectorizedArray<number> *j_value =
+          &mapping_data.JxW_values[offsets];
+
+        const VectorizedArray<number> j_inverse =
+          integrator.get_cell_type() <= internal::MatrixFreeFunctions::affine ?
+            1. / j_value[0] :
+            quadrature_weight / j_value[0];
+
+        for (unsigned int i = 0; i < integrator.dofs_per_cell; ++i)
+          integrator.begin_dof_values()[i] =
+            values_dofs_inverse[i] * j_inverse * scaling_factor;
+
+        integrator.set_dof_values(dst, 0);
+      }
+  }
+
+  const MatrixFree<dim, number> *matrix_free;
+  number                         scaling_factor;
+  unsigned int                   dof_no_v;
+  unsigned int                   quad_no_v_mass;
+  bool                           all_cells_affine;
+  bool                           all_cells_are_hypercube;
+  bool                           use_as_preconditioner;
+  bool                           is_dg;
+
+  unsigned int fe_index_hypercube;
+
+  std::unique_ptr<InverseMassOperator<dim, number>> preconditioner;
+  std::unique_ptr<MassOperator<dim, number>>        massoperator;
+  std::unique_ptr<DiagonalMatrix<VectorType>>       preconditioner_mass;
+
+  std::vector<AlignedVector<number>> inverse_mass_matrix;
 };
 
 template <typename Number>
@@ -707,11 +1156,11 @@ public:
                 level_constraints[level]);
         }
 
-        VectorTools::interpolate_boundary_values(dof_handlers[level],
-                                                 /* neumann_boundary_id */ 1,
-                                                 Functions::ZeroFunction<dim, number>(
-                                                   1),
-                                                 level_constraints[level]);
+        VectorTools::interpolate_boundary_values(
+          dof_handlers[level],
+          /* neumann_boundary_id */ 1,
+          Functions::ZeroFunction<dim, number>(1),
+          level_constraints[level]);
 
         level_constraints[level].close();
 

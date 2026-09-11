@@ -165,11 +165,14 @@ public:
       std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
       data);
 
-    FEEvaluation<dim, -1, 0, dim, number> eval_cell(matrix_free, 0, quad_no_v);
+    // TODO?
+    FEEvaluation<dim, -1, 0, dim, number> eval_cell(matrix_free,
+                                                    dof_no_v,
+                                                    quad_no_v);
     speeds_cells.reinit(matrix_free.n_cell_batches(), eval_cell.n_q_points);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_face(matrix_free,
                                                         true,
-                                                        0,
+                                                        dof_no_v,
                                                         quad_no_v);
     speeds_faces.reinit(matrix_free.n_inner_face_batches() +
                           matrix_free.n_boundary_face_batches(),
@@ -192,15 +195,15 @@ public:
       const auto reference_cells = dof_handler_u.get_fe().reference_cell();
 
       const auto quadrature =
-        reference_cells.get_gauss_type_quadrature(fe_degree_u +
-                                                                1);
+        reference_cells.get_gauss_type_quadrature(fe_degree_u + 1);
       dealii::FEValues<dim> fe_values(mapping,
                                       fe,
                                       quadrature,
                                       dealii::update_JxW_values);
 
       const auto face_quadrature =
-        reference_cells.face_reference_cell(0).get_gauss_type_quadrature(fe_degree_u + 1);
+        reference_cells.face_reference_cell(0).get_gauss_type_quadrature(
+          fe_degree_u + 1);
       dealii::FEFaceValues<dim> fe_face_values(mapping,
                                                fe,
                                                face_quadrature,
@@ -251,7 +254,7 @@ public:
   }
 
   virtual void
-  set_viscosity(number viscosity_in)
+  set_viscosity(const number viscosity_in)
   {
     viscosity = viscosity_in;
   }
@@ -314,7 +317,7 @@ public:
   }
 
   virtual void
-  set_time(number time_in)
+  set_time(const number time_in)
   {
     time = time_in;
   }
@@ -370,7 +373,10 @@ public:
     this->matrix_free.cell_loop(
       &MomentumOperator::local_vorticity_domain, this, dst, src, true);
 
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free, 0, 1);
+    // TODO
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free,
+                                                 dof_no_v,
+                                                 quad_no_v_mass);
     MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, number>
       mass_inv(eval_u);
     for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
@@ -411,7 +417,10 @@ public:
       MatrixFree<dim, number>::DataAccessOnFaces::gradients,
       MatrixFree<dim, number>::DataAccessOnFaces::gradients);
 
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free, 0, 1);
+    // TODO
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free,
+                                                 dof_no_v,
+                                                 quad_no_v_mass);
     MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, number>
       mass_inv(eval_u);
     for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
@@ -612,6 +621,7 @@ private:
     const std::pair<unsigned int, unsigned int> &range) const
   {
     FEEvaluation<dim, -1, 0, n_components, Number> integrator(matrix_free,
+                                                              range,
                                                               dof_no_v,
                                                               quad_no_v);
 
@@ -698,9 +708,9 @@ private:
     if (!is_dg)
       return;
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_inner(
-      matrix_free, true, dof_no_v, quad_no_v);
+      matrix_free, range, true, dof_no_v, quad_no_v);
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_outer(
-      matrix_free, false, dof_no_v, quad_no_v);
+      matrix_free, range, false, dof_no_v, quad_no_v);
 
     for (unsigned int face = range.first; face < range.second; ++face)
       {
@@ -855,7 +865,7 @@ private:
     const std::pair<unsigned int, unsigned int> &range) const
   {
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_inner(
-      matrix_free, true, dof_no_v, quad_no_v);
+      matrix_free, range, true, dof_no_v, quad_no_v);
     auto velocity_bc = dirichletBC_velocity_factory();
     velocity_bc->set_time(time);
 
@@ -1004,13 +1014,17 @@ private:
     const std::vector<const VectorType *>       &src,
     const std::pair<unsigned int, unsigned int> &range) const
   {
+    // TODO: use less integration points here??
     FEEvaluation<dim, -1, 0, n_components, Number> integrator(matrix_free,
+                                                              range,
                                                               dof_no_v,
                                                               quad_no_v);
     FEEvaluation<dim, -1, 0, n_components, Number> integrator_speed(matrix_free,
+                                                                    range,
                                                                     dof_no_v,
                                                                     quad_no_v);
     FEEvaluation<dim, -1, 0, 1, Number>            integrator_p(matrix_free,
+                                                     range,
                                                      dof_no_p,
                                                      quad_no_v);
 
@@ -1074,21 +1088,17 @@ private:
       return;
 
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_inner(
-      matrix_free, true, dof_no_v, quad_no_v);
+      matrix_free, range, true, dof_no_v, quad_no_v);
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_outer(
-      matrix_free, false, dof_no_v, quad_no_v);
+      matrix_free, range, false, dof_no_v, quad_no_v);
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_speed_inner(
-      matrix_free, true, dof_no_v, quad_no_v);
+      matrix_free, range, true, dof_no_v, quad_no_v);
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_speed_outer(
-      matrix_free, false, dof_no_v, quad_no_v);
-    FEFaceEvaluation<dim, -1, 0, 1, Number> integrator_inner_p(matrix_free,
-                                                               true,
-                                                               dof_no_p,
-                                                               quad_no_v);
-    FEFaceEvaluation<dim, -1, 0, 1, Number> integrator_outer_p(matrix_free,
-                                                               false,
-                                                               dof_no_p,
-                                                               quad_no_v);
+      matrix_free, range, false, dof_no_v, quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, 1, Number> integrator_inner_p(
+      matrix_free, range, true, dof_no_p, quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, 1, Number> integrator_outer_p(
+      matrix_free, range, false, dof_no_p, quad_no_v);
 
     for (unsigned int face = range.first; face < range.second; ++face)
       {
@@ -1157,13 +1167,11 @@ private:
     const std::pair<unsigned int, unsigned int> &range) const
   {
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_inner(
-      matrix_free, true, dof_no_v, quad_no_v);
+      matrix_free, range, true, dof_no_v, quad_no_v);
     FEFaceEvaluation<dim, -1, 0, n_components, Number> integrator_speed_inner(
-      matrix_free, true, dof_no_v, quad_no_v);
-    FEFaceEvaluation<dim, -1, 0, 1, Number> integrator_inner_p(matrix_free,
-                                                               true,
-                                                               dof_no_p,
-                                                               quad_no_v);
+      matrix_free, range, true, dof_no_v, quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, 1, Number> integrator_inner_p(
+      matrix_free, range, true, dof_no_p, quad_no_v);
 
     auto velocity_bc = dirichletBC_velocity_factory();
     velocity_bc->set_time(time);
@@ -1282,14 +1290,17 @@ private:
 
   void
   local_vorticity_domain(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &cell_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free,
+                                                 range,
+                                                 dof_no_v,
+                                                 quad_no_v_mass);
 
-    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
       {
         eval_u.reinit(cell);
         eval_u.gather_evaluate(src, EvaluationFlags::gradients);
@@ -1318,15 +1329,21 @@ private:
 
   void
   local_apply_leray_correction_cell(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &cell_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 1);
-    FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, 1, 1);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free,
+                                                 range,
+                                                 dof_no_v,
+                                                 quad_no_v_mass);
+    FEEvaluation<dim, -1, 0, 1, number>   eval_p(matrix_free,
+                                               range,
+                                               dof_no_p,
+                                               quad_no_v_mass);
 
-    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
       {
         eval_u.reinit(cell);
         eval_p.reinit(cell);
@@ -1344,17 +1361,21 @@ private:
 
   void
   local_apply_leray_correction_face(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
+      matrix_free, range, true, dof_no_p, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(
+      matrix_free, range, false, dof_no_p, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(
+      matrix_free, range, true, dof_no_v, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(
+      matrix_free, range, false, dof_no_v, quad_no_v_mass);
 
-    for (unsigned int face = face_range.first; face < face_range.second; ++face)
+    for (unsigned int face = range.first; face < range.second; ++face)
       {
         eval_p_minus.reinit(face);
         eval_p_plus.reinit(face);
@@ -1380,17 +1401,20 @@ private:
 
   void
   local_apply_leray_correction_boundary(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
+      matrix_free, range, true, dof_no_p, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(
+      matrix_free, range, true, dof_no_v, quad_no_v_mass);
 
-    for (unsigned int face = face_range.first; face < face_range.second; face++)
+    for (unsigned int face = range.first; face < range.second; face++)
       {
-        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
+        if (matrix_free.get_boundary_id(face) == 0 ||
+            matrix_free.get_boundary_id(face) == 2)
           {
             eval_u_minus.reinit(face);
 
@@ -1422,15 +1446,21 @@ private:
 
   void
   local_divergence_domain(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &cell_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, 1, 1);
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 1);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free,
+                                                 range,
+                                                 dof_no_v,
+                                                 quad_no_v_mass);
+    FEEvaluation<dim, -1, 0, 1, number>   eval_p(matrix_free,
+                                               range,
+                                               dof_no_p,
+                                               quad_no_v_mass);
 
-    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
       {
         eval_p.reinit(cell);
         eval_u.reinit(cell);
@@ -1451,19 +1481,23 @@ private:
 
   void
   local_divergence_inner_face(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
     if (!is_dg)
       return;
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
+      matrix_free, range, true, dof_no_p, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(
+      matrix_free, range, false, dof_no_p, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(
+      matrix_free, range, true, dof_no_v, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(
+      matrix_free, range, false, dof_no_v, quad_no_v_mass);
 
-    for (unsigned int face = face_range.first; face < face_range.second; face++)
+    for (unsigned int face = range.first; face < range.second; face++)
       {
         eval_p_minus.reinit(face);
         eval_p_plus.reinit(face);
@@ -1491,20 +1525,23 @@ private:
 
   void
   local_divergence_boundary_face(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
+      matrix_free, range, true, dof_no_p, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(
+      matrix_free, range, true, dof_no_v, quad_no_v_mass);
 
     auto velocity_bc = dirichletBC_velocity_factory();
     velocity_bc->set_time(time);
 
-    for (unsigned int face = face_range.first; face < face_range.second; face++)
+    for (unsigned int face = range.first; face < range.second; face++)
       {
-        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
+        if (matrix_free.get_boundary_id(face) == 0 ||
+            matrix_free.get_boundary_id(face) == 2)
           {
             eval_p_minus.reinit(face);
 
@@ -1543,9 +1580,10 @@ private:
     const MatrixFree<dim, number>               &matrix_free,
     std::vector<Number>                         &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &cell_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
     FEEvaluation<dim, -1, 0, n_components, Number> fe_eval(matrix_free,
+                                                           range,
                                                            dof_no_v,
                                                            quad_no_v);
 
@@ -1556,7 +1594,7 @@ private:
     Number max_vorticity = 0.;
 
     // Loop over all elements
-    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
       {
         fe_eval.reinit(cell);
         fe_eval.read_dof_values(src);
@@ -1706,7 +1744,8 @@ public:
                                       dealii::update_JxW_values);
 
       const auto face_quadrature =
-        reference_cells.face_reference_cell(0).get_gauss_type_quadrature(fe_degree + 1);
+        reference_cells.face_reference_cell(0).get_gauss_type_quadrature(
+          fe_degree + 1);
       dealii::FEFaceValues<dim> fe_face_values(*mapping,
                                                fe,
                                                face_quadrature,
@@ -1786,6 +1825,7 @@ public:
       {
         matrix_free->cell_loop(
           &PressureOperator::local_apply_domain, this, dst, src, true);
+
         for (const unsigned int i : matrix_free->get_constrained_dofs(dof_no_p))
           dst.local_element(i) = src.local_element(i);
       }
@@ -1835,9 +1875,7 @@ public:
   }
 
   void
-  compute_rhs(VectorType       &,
-              const VectorType &,
-              const VectorType &)
+  compute_rhs(VectorType &, const VectorType &, const VectorType &)
   {
     DEAL_II_NOT_IMPLEMENTED();
   }
@@ -2036,15 +2074,17 @@ private:
   std::function<std::unique_ptr<Function<dim>>()> body_force_factory;
 
   void
-  local_apply_domain(
-    const MatrixFree<dim, number>               &data,
-    VectorType                                  &dst,
-    const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &cell_range) const
+  local_apply_domain(const MatrixFree<dim, number>               &matrix_free,
+                     VectorType                                  &dst,
+                     const VectorType                            &src,
+                     const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEEvaluation<dim, -1, 0, 1, number> eval(data, dof_no_p, quad_no_p);
+    FEEvaluation<dim, -1, 0, 1, number> eval(matrix_free,
+                                             range,
+                                             dof_no_p,
+                                             quad_no_p);
 
-    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
       {
         eval.reinit(cell);
 
@@ -2062,24 +2102,20 @@ private:
 
   void
   local_apply_inner_face(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
     if (!is_dg)
       return;
 
-    FEFaceEvaluation<dim, -1, 0, 1, number> eval_minus(data,
-                                                       true,
-                                                       dof_no_p,
-                                                       quad_no_p);
-    FEFaceEvaluation<dim, -1, 0, 1, number> eval_plus(data,
-                                                      false,
-                                                      dof_no_p,
-                                                      quad_no_p);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_minus(
+      matrix_free, range, true, dof_no_p, quad_no_p);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_plus(
+      matrix_free, range, false, dof_no_p, quad_no_p);
 
-    for (unsigned int face = face_range.first; face < face_range.second; face++)
+    for (unsigned int face = range.first; face < range.second; face++)
       {
         eval_minus.reinit(face);
         eval_plus.reinit(face);
@@ -2125,17 +2161,15 @@ private:
 
   void
   local_apply_boundary_face(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number> eval_minus(data,
-                                                       true,
-                                                       dof_no_p,
-                                                       quad_no_p);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_minus(
+      matrix_free, range, true, dof_no_p, quad_no_p);
 
-    for (unsigned int face = face_range.first; face < face_range.second; face++)
+    for (unsigned int face = range.first; face < range.second; face++)
       {
         eval_minus.reinit(face);
         eval_minus.gather_evaluate(src,
@@ -2145,7 +2179,8 @@ private:
         const VectorizedArray<number> penalty_factor =
           eval_minus.read_cell_data(array_penalty_parameter);
 
-        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
+        if (matrix_free.get_boundary_id(face) == 0 ||
+            matrix_free.get_boundary_id(face) == 2)
           {
             // Do nothing
             for (const unsigned int q : eval_minus.quadrature_point_indices())
@@ -2154,7 +2189,7 @@ private:
                 eval_minus.submit_value({}, q);
               }
           }
-        else if (data.get_boundary_id(face) == 1)
+        else if (matrix_free.get_boundary_id(face) == 1)
           {
             for (const unsigned int q : eval_minus.quadrature_point_indices())
               {
@@ -2173,7 +2208,7 @@ private:
           AssertThrow(false,
                       ExcNotImplemented(
                         "Boundary id " +
-                        std::to_string(int(data.get_boundary_id(face))) +
+                        std::to_string(int(matrix_free.get_boundary_id(face))) +
                         " not known"));
 
         eval_minus.integrate_scatter(EvaluationFlags::values |
@@ -2272,19 +2307,21 @@ private:
   }
 
   void
-  local_rhs_domain(
-    const MatrixFree<dim, number> &data,
-    VectorType                    &dst,
-    const VectorType &,
-    const std::pair<unsigned int, unsigned int> &cell_range) const
+  local_rhs_domain(const MatrixFree<dim, number> &matrix_free,
+                   VectorType                    &dst,
+                   const VectorType &,
+                   const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEEvaluation<dim, -1, 0, 1, number> eval_p(data, 1, 1);
+    FEEvaluation<dim, -1, 0, 1, number> eval_p(matrix_free,
+                                               range,
+                                               dof_no_p,
+                                               quad_no_p);
 
     // AnalyticalRHS<dim> rhs(u_x_max, viscosity);
     auto rhs = body_force_factory();
     rhs->set_time(time);
 
-    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
       {
         eval_p.reinit(cell);
 
@@ -2302,22 +2339,23 @@ private:
   }
 
   void
-  local_rhs_inner_face(
-    const MatrixFree<dim, number> &data,
-    VectorType                    &dst,
-    const VectorType &,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+  local_rhs_inner_face(const MatrixFree<dim, number> &matrix_free,
+                       VectorType                    &dst,
+                       const VectorType &,
+                       const std::pair<unsigned int, unsigned int> &range) const
   {
     if (!is_dg)
       return;
 
-    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(data, false, 1, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
+      matrix_free, range, true, dof_no_p, quad_no_p);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(
+      matrix_free, range, false, dof_no_p, quad_no_p);
 
     auto rhs = body_force_factory();
     rhs->set_time(time);
 
-    for (unsigned int face = face_range.first; face < face_range.second; face++)
+    for (unsigned int face = range.first; face < range.second; face++)
       {
         eval_p_minus.reinit(face);
         eval_p_plus.reinit(face);
@@ -2340,19 +2378,15 @@ private:
 
   void
   local_rhs_boundary_face(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data,
-                                                         true,
-                                                         dof_no_p,
-                                                         quad_no_v_mass);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_vorticity(data,
-                                                             true,
-                                                             dof_no_v,
-                                                             quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
+      matrix_free, range, true, dof_no_p, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_vorticity(
+      matrix_free, range, true, dof_no_v, quad_no_v_mass);
 
     auto velocity_bc = dirichletBC_velocity_factory();
     velocity_bc->set_time(time);
@@ -2363,9 +2397,10 @@ private:
 
     BDFTimeIntegratorConstants integration_constants(bdf_order);
 
-    for (unsigned int face = face_range.first; face < face_range.second; face++)
+    for (unsigned int face = range.first; face < range.second; face++)
       {
-        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
+        if (matrix_free.get_boundary_id(face) == 0 ||
+            matrix_free.get_boundary_id(face) == 2)
           {
             eval_p_minus.reinit(face);
             eval_vorticity.reinit(face);
@@ -2460,15 +2495,21 @@ private:
 
   void
   local_convective_domain(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &cell_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, dof_no_p, quad_no_v);
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, dof_no_v, quad_no_v);
+    FEEvaluation<dim, -1, 0, 1, number>   eval_p(matrix_free,
+                                               range,
+                                               dof_no_p,
+                                               quad_no_v);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free,
+                                                 range,
+                                                 dof_no_v,
+                                                 quad_no_v);
 
-    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
       {
         eval_p.reinit(cell);
         eval_u.reinit(cell);
@@ -2492,31 +2533,23 @@ private:
 
   void
   local_convective_inner_face(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
     if (!is_dg)
       return;
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data,
-                                                         true,
-                                                         dof_no_p,
-                                                         quad_no_v);
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data,
-                                                        false,
-                                                        dof_no_p,
-                                                        quad_no_v);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data,
-                                                           true,
-                                                           dof_no_v,
-                                                           quad_no_v);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data,
-                                                          false,
-                                                          dof_no_v,
-                                                          quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
+      matrix_free, range, true, dof_no_p, quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(
+      matrix_free, range, false, dof_no_p, quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(
+      matrix_free, range, true, dof_no_v, quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(
+      matrix_free, range, false, dof_no_v, quad_no_v);
 
-    for (unsigned int face = face_range.first; face < face_range.second; face++)
+    for (unsigned int face = range.first; face < range.second; face++)
       {
         eval_p_minus.reinit(face);
         eval_p_plus.reinit(face);
@@ -2551,25 +2584,22 @@ private:
 
   void
   local_convective_boundary_face(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data,
-                                                         true,
-                                                         dof_no_p,
-                                                         quad_no_v);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data,
-                                                           true,
-                                                           dof_no_v,
-                                                           quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
+      matrix_free, range, true, dof_no_p, quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(
+      matrix_free, range, true, dof_no_v, quad_no_v);
     auto dirichlet_bc_velocity = dirichletBC_velocity_factory();
     dirichlet_bc_velocity->set_time(time);
 
-    for (unsigned int face = face_range.first; face < face_range.second; face++)
+    for (unsigned int face = range.first; face < range.second; face++)
       {
-        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
+        if (matrix_free.get_boundary_id(face) == 0 ||
+            matrix_free.get_boundary_id(face) == 2)
           {
             eval_p_minus.reinit(face);
 
@@ -2610,17 +2640,21 @@ private:
 
   void
   local_divergence_domain(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &cell_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEEvaluation<dim, -1, 0, 1, number> eval_p(data, dof_no_p, quad_no_v_mass);
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(data,
+    FEEvaluation<dim, -1, 0, 1, number>   eval_p(matrix_free,
+                                               range,
+                                               dof_no_p,
+                                               quad_no_v_mass);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free,
+                                                 range,
                                                  dof_no_v,
                                                  quad_no_v_mass);
 
-    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
       {
         eval_p.reinit(cell);
         eval_u.reinit(cell);
@@ -2641,31 +2675,23 @@ private:
 
   void
   local_divergence_inner_face(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
     if (!is_dg)
       return;
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data,
-                                                         true,
-                                                         dof_no_p,
-                                                         quad_no_v_mass);
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data,
-                                                        false,
-                                                        dof_no_p,
-                                                        quad_no_v_mass);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data,
-                                                           true,
-                                                           dof_no_v,
-                                                           quad_no_v_mass);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data,
-                                                          false,
-                                                          dof_no_v,
-                                                          quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
+      matrix_free, range, true, dof_no_p, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(
+      matrix_free, range, false, dof_no_p, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(
+      matrix_free, range, true, dof_no_v, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(
+      matrix_free, range, false, dof_no_v, quad_no_v_mass);
 
-    for (unsigned int face = face_range.first; face < face_range.second; face++)
+    for (unsigned int face = range.first; face < range.second; face++)
       {
         eval_p_minus.reinit(face);
         eval_p_plus.reinit(face);
@@ -2693,26 +2719,23 @@ private:
 
   void
   local_divergence_boundary_face(
-    const MatrixFree<dim, number>               &data,
+    const MatrixFree<dim, number>               &matrix_free,
     VectorType                                  &dst,
     const VectorType                            &src,
-    const std::pair<unsigned int, unsigned int> &face_range) const
+    const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data,
-                                                         true,
-                                                         dof_no_p,
-                                                         quad_no_v_mass);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data,
-                                                           true,
-                                                           dof_no_v,
-                                                           quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
+      matrix_free, range, true, dof_no_p, quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(
+      matrix_free, range, true, dof_no_v, quad_no_v_mass);
 
     auto velocity_bc = dirichletBC_velocity_factory();
     velocity_bc->set_time(time);
 
-    for (unsigned int face = face_range.first; face < face_range.second; face++)
+    for (unsigned int face = range.first; face < range.second; face++)
       {
-        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
+        if (matrix_free.get_boundary_id(face) == 0 ||
+            matrix_free.get_boundary_id(face) == 2)
           {
             eval_p_minus.reinit(face);
 

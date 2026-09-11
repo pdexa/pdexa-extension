@@ -8,6 +8,7 @@
 #include <deal.II/distributed/tria.h>
 
 #include <deal.II/dofs/dof_handler.h>
+
 #include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_simplex_p.h>
@@ -25,28 +26,27 @@
 
 #include <fstream>
 
-#include "preconditioners.h"
-#include "evaluators.h"
 #include "consistent_splitting_solver.h"
+#include "evaluators.h"
+#include "preconditioners.h"
 
 using namespace dealii;
 
-
-const bool use_neumann_boundary                      = true;
+const bool use_neumann_boundary                      = false;
 const bool use_skew_symmetric_convective_formulation = false;
 const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
-const bool use_traction_boundary_condition_for_PPE   = true;
+const bool use_traction_boundary_condition_for_PPE   = false;
 
-// Always use MG as preconditioner for the pressure
+const bool use_preconditioning_pressure = false;
 // const bool use_amg                       = false;
-const bool use_hmg                       = true;
-const bool use_pmg                       = true;
-const bool use_cmg                       = false;
+const bool use_hmg = true;
+const bool use_pmg = true;
+const bool use_cmg = true;
 // const bool use_pointjacobi_pressure      = false;
 const bool use_amg_as_coarse_grid_solver = false;
 
-// Always uses inverse mass, no need to set these variables
+const bool use_preconditioning_velocity = false;
 // const bool use_velocity_point_jacobi         = false;
 // const bool use_inverse_mass_velocity         = true;
 // const bool use_mg_velocity                   = false;
@@ -57,7 +57,6 @@ const bool use_amg_as_coarse_grid_solver = false;
 
 const double penalty_divergence = 1.0;
 const double penalty_continuity = 1.0;
-
 
 const double viscosity = 0.025;
 const double u_x_max   = 1.;
@@ -73,7 +72,8 @@ public:
   {}
 
   double
-  value(const dealii::Point<dim> &p, const unsigned int component = 0) const final
+  value(const dealii::Point<dim> &p,
+        const unsigned int        component = 0) const final
   {
     const double t      = this->get_time();
     const double pi     = dealii::numbers::PI;
@@ -88,7 +88,8 @@ public:
   }
 
   dealii::Tensor<1, dim, double>
-  gradient(const dealii::Point<dim> &p, const unsigned int component = 0) const final
+  gradient(const dealii::Point<dim> &p,
+           const unsigned int        component = 0) const final
   {
     const double                   t  = this->get_time();
     const double                   pi = dealii::numbers::PI;
@@ -111,8 +112,6 @@ private:
   const double u_x_max, viscosity;
 };
 
-
-
 template <int dim>
 class AnalyticalSolutionPressure : public dealii::Function<dim>
 {
@@ -124,7 +123,8 @@ public:
   {}
 
   double
-  value(const dealii::Point<dim> &p, const unsigned int /*component*/) const final
+  value(const dealii::Point<dim> &p,
+        const unsigned int /*component*/) const final
   {
     const double t  = this->get_time();
     const double pi = dealii::numbers::PI;
@@ -139,8 +139,6 @@ private:
   const double u_x_max, viscosity;
 };
 
-
-
 template <int dim>
 class AnalyticalRHS : public dealii::Function<dim>
 {
@@ -152,7 +150,8 @@ public:
   {}
 
   double
-  value(const dealii::Point<dim> &p, const unsigned int component = 0) const final
+  value(const dealii::Point<dim> &p,
+        const unsigned int        component = 0) const final
   {
     (void)p;
     (void)component;
@@ -164,9 +163,6 @@ private:
   const double u_x_max, viscosity;
 };
 
-
-
-
 template <int dim, typename Number>
 void
 do_test(const unsigned int fe_degree,
@@ -174,7 +170,8 @@ do_test(const unsigned int fe_degree,
         const unsigned int n_refinements_time)
 {
   ConditionalOStream pcout(std::cout,
-                           Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
+                           Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) ==
+                             0);
 
   FESystem<dim>  fe_u(FE_DGQ<dim>(fe_degree), dim);
   FE_DGQ<dim>    fe_p(fe_degree - 1);
@@ -188,8 +185,8 @@ do_test(const unsigned int fe_degree,
   if (use_neumann_boundary)
     {
       tria.begin()->face(0)->set_all_boundary_ids(1);
-      //tria.begin()->face(1)->set_all_boundary_ids(1);
-      //tria.begin()->face(2)->set_all_boundary_ids(1);
+      // tria.begin()->face(1)->set_all_boundary_ids(1);
+      // tria.begin()->face(2)->set_all_boundary_ids(1);
     }
   tria.refine_global(n_refinements);
 
@@ -197,9 +194,10 @@ do_test(const unsigned int fe_degree,
   dof_handler_u.distribute_dofs(fe_u);
   DoFHandler<dim> dof_handler_p(tria);
   dof_handler_p.distribute_dofs(fe_p);
-  pcout << "number of active_cells: " << tria.n_global_active_cells() << std::endl;
-  pcout << "Solving with " << fe_u.get_name() << " x " << fe_p.get_name() << " element"
+  pcout << "number of active_cells: " << tria.n_global_active_cells()
         << std::endl;
+  pcout << "Solving with " << fe_u.get_name() << " x " << fe_p.get_name()
+        << " element" << std::endl;
   pcout << "number of degrees of freedom: " << dof_handler_u.n_dofs() << " + "
         << dof_handler_p.n_dofs() << std::endl;
 
@@ -208,13 +206,14 @@ do_test(const unsigned int fe_degree,
     h_min = std::min(h_min, cell->minimum_vertex_distance());
 
   const Number time_step = std::pow(0.5, n_refinements_time);
-  // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD));
+  // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step,
+  // MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
 
-  const unsigned int bdf_order   = 4;
-  const unsigned int bdf_order_p = 3;
-  const unsigned int bdf_order_c = 3;
-  const unsigned int bdf_order_traction = 3;
+  const unsigned int bdf_order          = 2;
+  const unsigned int bdf_order_p        = 2;
+  const unsigned int bdf_order_c        = 2;
+  const unsigned int bdf_order_traction = 2;
 
   BDFTimeIntegratorConstants bdf(bdf_order);
   BDFTimeIntegratorConstants bdf_p(bdf_order_p);
@@ -223,23 +222,30 @@ do_test(const unsigned int fe_degree,
 
   MomentumOperator<dim, dim, Number> momentum_op;
   // set up operator
-  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, time_step, bdf_order, use_skew_symmetric_convective_formulation, use_divergence_formulation);
+  momentum_op.reinit(mapping,
+                     dof_handler_u,
+                     dof_handler_p,
+                     time_step,
+                     bdf_order,
+                     use_skew_symmetric_convective_formulation,
+                     use_divergence_formulation);
 
   momentum_op.set_viscosity(viscosity);
   momentum_op.set_time(0.0);
-  momentum_op.set_body_force_factory([=]() {
-    return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
+  momentum_op.set_body_force_factory(
+    [=]() { return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity); });
+  momentum_op.set_dirichletBC_pressure_factory([=]() {
+    return std::make_unique<AnalyticalSolutionPressure<dim>>(u_x_max,
+                                                             viscosity);
   });
-  momentum_op.set_dirichletBC_pressure_factory ([=]() {
-    return std::make_unique<AnalyticalSolutionPressure<dim>>(u_x_max, viscosity);
-  });
-  momentum_op.set_DirichletBC_velocity_factory ([=]() {
-    return std::make_unique<AnalyticalSolutionVelocity<dim>>(u_x_max, viscosity);
+  momentum_op.set_DirichletBC_velocity_factory([=]() {
+    return std::make_unique<AnalyticalSolutionVelocity<dim>>(u_x_max,
+                                                             viscosity);
   });
 
-  LinearAlgebra::distributed::Vector<Number> vec_u, vec_u_deriv, vec_u_rhs, vec_p,
-    vec_u_norm, speed_extrapolated, vec_vorticity, vec_p_rhs, vec_p_rhs_n, vec_p_norm,
-    vec_div_u;
+  LinearAlgebra::distributed::Vector<Number> vec_u, vec_u_deriv, vec_u_rhs,
+    vec_p, vec_u_norm, speed_extrapolated, vec_vorticity, vec_p_rhs,
+    vec_p_rhs_n, vec_p_norm, vec_div_u;
   momentum_op.initialize_dof_vector(vec_u, dof_no_v);
   momentum_op.initialize_dof_vector(vec_u_deriv, dof_no_v);
   momentum_op.initialize_dof_vector(vec_u_rhs, dof_no_v);
@@ -260,31 +266,67 @@ do_test(const unsigned int fe_degree,
   for (auto &vec : vec_p_old)
     momentum_op.initialize_dof_vector(vec, dof_no_p);
 
-  InverseMassPreconditioner<dim, Number> inverse_mass;
-  inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
+  // InverseMassPreconditioner<dim, Number> inverse_mass;
+  // inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
+  InverseMassOperator<dim, Number> inverse_mass;
+  inverse_mass.reinit(momentum_op.get_matrix_free(), time_step, 0, 1, false);
+  // InverseMassOperator<dim, Number> inverse_mass;
+  // if (use_preconditioning_velocity)
+  // {
+  //   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step, 0, 1,
+  //   false); MassOperator<dim, Number>mass_operator;
+  //   mass_operator.reinit(momentum_op.get_matrix_free());
+
+  //   for(auto&a: vec_u_old[0])
+  //    a = static_cast<double>(rand()) / RAND_MAX;
+
+  //    mass_operator.vmult(vec_u_old[1], vec_u_old[0]);
+  //    inverse_mass.vmult(vec_u_old[2], vec_u_old[1]);
+
+  //    vec_u_old[2] -= vec_u_old[0];
+  //    std::cout << "Error of " << vec_u_old[2].l2_norm() << std::endl;
+
+  //    InverseMassPreconditioner<dim, Number> inverse_mass_precond;
+  //    inverse_mass_precond.reinit(momentum_op.get_matrix_free(), time_step);
+
+  //     inverse_mass_precond.vmult(vec_u_old[2], vec_u_old[1]);
+
+  //    vec_u_old[2] -= vec_u_old[0];
+  //    std::cout << "Error of " << vec_u_old[2].l2_norm() << std::endl;
+  // }
 
   PressureOperator<dim, double> pressure_op;
-  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, use_leray_projection, use_traction_boundary_condition_for_PPE);
-  pressure_op.set_body_force_factory([=]() {
-    return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity);
-  });
+  pressure_op.reinit(momentum_op.get_matrix_free(),
+                     bdf_order,
+                     time_step,
+                     use_leray_projection,
+                     use_traction_boundary_condition_for_PPE);
+  pressure_op.set_body_force_factory(
+    [=]() { return std::make_unique<AnalyticalRHS<dim>>(u_x_max, viscosity); });
   pressure_op.set_viscosity(viscosity);
-  pressure_op.set_dirichletBC_pressure_factory ([=]() {
-    return std::make_unique<AnalyticalSolutionPressure<dim>>(u_x_max, viscosity);
+  pressure_op.set_dirichletBC_pressure_factory([=]() {
+    return std::make_unique<AnalyticalSolutionPressure<dim>>(u_x_max,
+                                                             viscosity);
   });
-  pressure_op.set_DirichletBC_velocity_factory ([=]() {
-    return std::make_unique<AnalyticalSolutionVelocity<dim>>(u_x_max, viscosity);
+  pressure_op.set_DirichletBC_velocity_factory([=]() {
+    return std::make_unique<AnalyticalSolutionVelocity<dim>>(u_x_max,
+                                                             viscosity);
   });
 
-  MultigridPreconditioner<dim, Number, Number> precondition_hmg(pressure_op,
-                                                                mapping.get_degree(),
-                                                                time_step,
-                                                                bdf_order,
-                                                               use_hmg,
-                                                               use_cmg,
-                                                               use_pmg,   
-                                                               use_amg_as_coarse_grid_solver,
-                                                               use_neumann_boundary);
+  std::unique_ptr<MultigridPreconditioner<dim, Number, Number>>
+    precondition_hmg;
+  if (use_preconditioning_pressure)
+    precondition_hmg =
+      std::make_unique<MultigridPreconditioner<dim, Number, Number>>(
+        pressure_op,
+        mapping.get_degree(),
+        time_step,
+        bdf_order,
+        use_hmg,
+        use_cmg,
+        use_pmg,
+        use_amg_as_coarse_grid_solver,
+        use_neumann_boundary);
 
   Number      current_time          = 0;
   std::size_t n_momentum_iterations = 0, n_pressure_iterations = 0;
@@ -300,12 +342,11 @@ do_test(const unsigned int fe_degree,
                                exact_velocity,
                                vec_u_old[bdf_order - 1 - i]);
 
-
       exact_pressure.set_time(current_time);
       VectorTools::interpolate(mapping,
-                              dof_handler_p,
-                              exact_pressure,
-                              vec_p_old[bdf_order - 1 - i]);
+                               dof_handler_p,
+                               exact_pressure,
+                               vec_p_old[bdf_order - 1 - i]);
 
       current_time += time_step;
     }
@@ -315,7 +356,9 @@ do_test(const unsigned int fe_degree,
   unsigned int time_step_number  = bdf.get_order() - 1;
   unsigned int n_performed_steps = 0;
 
-  const bool write_output = false;
+  const bool         write_output    = true;
+  const unsigned int output_interval = 10;
+
   while (current_time <= end_time)
     {
       current_time += time_step;
@@ -324,7 +367,7 @@ do_test(const unsigned int fe_degree,
       momentum_op.set_time(current_time);
 
       // Pressure step
-      vec_p = 0.;
+      vec_p     = 0.;
       vec_p_rhs = 0.;
       if (use_leray_projection)
         for (unsigned int i = 0; i < bdf.get_order(); ++i)
@@ -346,35 +389,48 @@ do_test(const unsigned int fe_degree,
         }
 
       speed_extrapolated = 0.;
-      for (unsigned int i = 0; i < bdf_p.get_order(); ++i) 
-        speed_extrapolated.add(bdf_p.get_beta(i), vec_u_old[i]); 
+      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
+        speed_extrapolated.add(bdf_p.get_beta(i), vec_u_old[i]);
 
       pressure_op.set_time(current_time);
       vec_p_rhs_n   = 0.;
       vec_vorticity = 0.;
       momentum_op.evaluate_vorticity(vec_vorticity, speed_extrapolated);
 
-      if(use_traction_boundary_condition_for_PPE)
-      {
-        speed_extrapolated = 0.;
-        for (unsigned int i = 0; i < bdf_traction.get_order(); ++i) 
-          speed_extrapolated.add(bdf_traction.get_beta(i), vec_u_old[i]); 
-        pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity, speed_extrapolated);
-      }
+      if (use_traction_boundary_condition_for_PPE)
+        {
+          speed_extrapolated = 0.;
+          for (unsigned int i = 0; i < bdf_traction.get_order(); ++i)
+            speed_extrapolated.add(bdf_traction.get_beta(i), vec_u_old[i]);
+          pressure_op.compute_rhs(vec_p_rhs_n,
+                                  vec_vorticity,
+                                  speed_extrapolated);
+        }
       else
         pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity);
       vec_p_rhs.add(1, vec_p_rhs_n);
 
-
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p_rhs);
 
-      const unsigned int iteration_count =
-        precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs);
+      unsigned int iteration_count;
+      if (use_preconditioning_pressure)
+        {
+          iteration_count =
+            precondition_hmg->solve(pressure_op, vec_p, vec_p_rhs);
+        }
+      else
+        {
+          ReductionControl control(10000, 1e-12, 1e-6);
+          SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
+          solver.solve(pressure_op, vec_p, vec_p_rhs, PreconditionIdentity());
+          iteration_count = control.last_step();
+        }
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p);
-      if (write_output)
-        pcout << "Pressure solver: " << iteration_count << " iterations" << std::endl;
+      if (write_output && (n_performed_steps - 1) % output_interval == 0)
+        pcout << "Pressure solver: " << iteration_count << " iterations"
+              << std::endl;
       n_pressure_iterations += iteration_count;
 
       // Momentum step
@@ -391,24 +447,32 @@ do_test(const unsigned int fe_degree,
       momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, vec_p);
 
       ReductionControl control_mom(10000, 1e-12, 1e-6);
-      SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData gmres_data;
-      gmres_data.max_basis_size        = 100;
-      gmres_data.right_preconditioning = true;
-      SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom,
-                                                                         gmres_data);
-      //SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
-      inverse_mass.set_scaling_factor(time_step / bdf.get_gamma0());
+      // SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData
+      //   gmres_data;
+      // gmres_data.max_basis_size        = 100;
+      // gmres_data.right_preconditioning = true;
+      // SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(
+      //   control_mom, gmres_data);
+      SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(
+        control_mom);
       vec_u.swap(speed_extrapolated); // = 0.;
-      solver_mom.solve(momentum_op, vec_u, vec_u_rhs, inverse_mass);
+      if (use_preconditioning_velocity)
+        {
+          inverse_mass.set_scaling_factor(time_step / bdf.get_gamma0());
+          solver_mom.solve(momentum_op, vec_u, vec_u_rhs, inverse_mass);
+        }
+      else
+        solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
 
-      if (write_output)
+      if (write_output && (n_performed_steps - 1) % output_interval == 0)
         pcout << "Momentum solver: " << control_mom.last_step() << " iterations"
               << std::endl;
 
       n_momentum_iterations += control_mom.last_step();
 
       // exact_velocity.set_time(current_time);
-      // VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
+      // VectorTools::interpolate(mapping, dof_handler_u, exact_velocity,
+      // vec_u);
 
       for (unsigned int i = bdf.get_order() - 1; i != 0; --i)
         {
@@ -419,7 +483,7 @@ do_test(const unsigned int fe_degree,
       vec_u_old[0].swap(vec_u);
       vec_p_old[0].swap(vec_p);
 
-      if (write_output)
+      if (write_output && (n_performed_steps - 1) % output_interval == 0)
         {
           Vector<double> error_per_cell;
           Vector<double> norm_per_cell;
@@ -434,7 +498,9 @@ do_test(const unsigned int fe_degree,
                                             QGauss<dim>(fe_u.degree + 3),
                                             VectorTools::L2_norm);
           const double velocity_error =
-            VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
+            VectorTools::compute_global_error(tria,
+                                              error_per_cell,
+                                              VectorTools::L2_norm);
 
           VectorTools::integrate_difference(mapping,
                                             dof_handler_p,
@@ -444,7 +510,9 @@ do_test(const unsigned int fe_degree,
                                             QGauss<dim>(fe_p.degree + 3),
                                             VectorTools::L2_norm);
           const double pressure_error =
-            VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
+            VectorTools::compute_global_error(tria,
+                                              error_per_cell,
+                                              VectorTools::L2_norm);
 
           vec_u_norm = 0.;
           VectorTools::integrate_difference(mapping,
@@ -455,7 +523,9 @@ do_test(const unsigned int fe_degree,
                                             QGauss<dim>(fe_u.degree + 3),
                                             VectorTools::L2_norm);
           const double velocity_norm =
-            VectorTools::compute_global_error(tria, norm_per_cell, VectorTools::L2_norm);
+            VectorTools::compute_global_error(tria,
+                                              norm_per_cell,
+                                              VectorTools::L2_norm);
 
           vec_p_norm = 0.;
           VectorTools::integrate_difference(mapping,
@@ -466,38 +536,52 @@ do_test(const unsigned int fe_degree,
                                             QGauss<dim>(fe_p.degree + 3),
                                             VectorTools::L2_norm);
           const double pressure_norm =
-            VectorTools::compute_global_error(tria, norm_per_cell, VectorTools::L2_norm);
+            VectorTools::compute_global_error(tria,
+                                              norm_per_cell,
+                                              VectorTools::L2_norm);
 
-
-          pcout << "L2 error velocity/pressure: " << velocity_error / velocity_norm << " "
+          pcout << "L2 error velocity/pressure: "
+                << velocity_error / velocity_norm << " "
                 << pressure_error / pressure_norm << std::endl;
           pcout << std::endl;
 
-          DataOut<dim> data_out;
+          if (false)
+            {
+              DataOut<dim> data_out;
 
-          DataOutBase::VtkFlags flags;
-          flags.write_higher_order_cells = true;
-          data_out.set_flags(flags);
+              DataOutBase::VtkFlags flags;
+              flags.write_higher_order_cells = true;
+              data_out.set_flags(flags);
 
-          data_out.add_data_vector(dof_handler_u, vec_u_old[0], "solution");
-          VectorTools::interpolate(mapping,
-                                   dof_handler_u,
-                                   exact_velocity,
-                                   speed_extrapolated);
-          data_out.add_data_vector(dof_handler_u, speed_extrapolated, "analytical");
-          data_out.add_data_vector(dof_handler_p, vec_p_old[0], "pressure");
-          VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p_rhs);
-          data_out.add_data_vector(dof_handler_p, vec_p_rhs, "pressure_analytical");
-          Vector<double> mpi_owner(tria.n_active_cells());
-          mpi_owner = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
-          data_out.add_data_vector(mpi_owner, "owner");
-          data_out.build_patches(mapping, fe_u.degree, DataOut<dim>::curved_inner_cells);
+              data_out.add_data_vector(dof_handler_u, vec_u_old[0], "solution");
+              VectorTools::interpolate(mapping,
+                                       dof_handler_u,
+                                       exact_velocity,
+                                       speed_extrapolated);
+              data_out.add_data_vector(dof_handler_u,
+                                       speed_extrapolated,
+                                       "analytical");
+              data_out.add_data_vector(dof_handler_p, vec_p_old[0], "pressure");
+              VectorTools::interpolate(mapping,
+                                       dof_handler_p,
+                                       exact_pressure,
+                                       vec_p_rhs);
+              data_out.add_data_vector(dof_handler_p,
+                                       vec_p_rhs,
+                                       "pressure_analytical");
+              Vector<double> mpi_owner(tria.n_active_cells());
+              mpi_owner = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
+              data_out.add_data_vector(mpi_owner, "owner");
+              data_out.build_patches(mapping,
+                                     fe_u.degree,
+                                     DataOut<dim>::curved_inner_cells);
 
-          const std::string filename =
-            "solution-L2-" + std::to_string(time_step_number) + ".vtu";
-          // "solution-L2-" + std::to_string(n_refinements) + "_p_" +
-          // std::to_string(degree) + ".vtu";
-          data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
+              const std::string filename =
+                "solution-L2-" + std::to_string(time_step_number) + ".vtu";
+              // "solution-L2-" + std::to_string(n_refinements) + "_p_" +
+              // std::to_string(degree) + ".vtu";
+              data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
+            }
         }
     }
 
@@ -526,7 +610,9 @@ do_test(const unsigned int fe_degree,
                                     QGauss<dim>(fe_p.degree + 3),
                                     VectorTools::L2_norm);
   const double pressure_error =
-    VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
+    VectorTools::compute_global_error(tria,
+                                      error_per_cell,
+                                      VectorTools::L2_norm);
 
   vec_u_norm = 0.;
   VectorTools::integrate_difference(mapping,
@@ -550,30 +636,33 @@ do_test(const unsigned int fe_degree,
                                     QGauss<dim>(fe_p.degree + 3),
                                     VectorTools::L2_norm);
   const double pressure_norm =
-    VectorTools::compute_global_error(tria, norm_per_cell, VectorTools::L2_norm);
+    VectorTools::compute_global_error(tria,
+                                      norm_per_cell,
+                                      VectorTools::L2_norm);
 
-  pcout << "L2 error velocity/pressure: " << velocity_error / velocity_norm << " "
-        << pressure_error / pressure_norm << std::endl;
+  pcout << "L2 error velocity/pressure: " << velocity_error / velocity_norm
+        << " " << pressure_error / pressure_norm << std::endl;
   pcout << "Average iteration count in " << n_performed_steps
         << " time steps for pressure / momentum: "
-        << static_cast<double>(n_pressure_iterations) / n_performed_steps << " / "
-        << static_cast<double>(n_momentum_iterations) / n_performed_steps << std::endl;
+        << static_cast<double>(n_pressure_iterations) / n_performed_steps
+        << " / "
+        << static_cast<double>(n_momentum_iterations) / n_performed_steps
+        << std::endl;
   pcout << std::endl;
 }
-
 
 int
 main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-   // for (unsigned int i = 1; i < 7; ++i)
-   //  do_test<2, double>(3, i, 14);
+  // for (unsigned int i = 1; i < 7; ++i)
+  //  do_test<2, double>(3, i, 14);
 
   // for (unsigned int i = 1; i < 7; ++i)
   //   do_test<2, double>(5, i, 14);
 
-  for (unsigned int i = 1; i < 15; ++i)
-    do_test<2, double>(5, 4, 14-i);
-  //do_test<2, double>(5, 4, 6);
+  // for (unsigned int i = 1; i < 15; ++i)
+  //   do_test<2, double>(5, 4, 14 - i);
+  do_test<3, double>(3, 3, 8);
 }
