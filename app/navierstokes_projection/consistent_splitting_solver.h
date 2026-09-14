@@ -1,6 +1,9 @@
 
 #include <deal.II/dofs/dof_handler.h>
 
+#include <deal.II/lac/householder.h>
+#include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/solver_control.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 
 #include <deal.II/matrix_free/fe_evaluation.h>
@@ -98,6 +101,521 @@ public:
   double                                    gamma0;
 };
 
+
+template <int dim, typename number>
+class InverseMassPreconditioner
+{
+public:
+  using VectorType = LinearAlgebra::distributed::Vector<number>;
+  typedef InverseMassPreconditioner<dim, number> This;
+
+  InverseMassPreconditioner() = default;
+
+  void
+  reinit(const MatrixFree<dim, number> &matrix_free,
+         number                         scaling_factor_in,
+         const unsigned int             dof_no_v       = 0,
+         const unsigned int             quad_no_v      = 0,
+         const unsigned int             quad_no_v_mass = 1)
+  {
+    scaling_factor       = scaling_factor_in;
+    this->matrix_free    = &matrix_free;
+    this->dof_no_v       = dof_no_v;
+    this->quad_no_v      = quad_no_v;
+    this->quad_no_v_mass = quad_no_v_mass;
+  }
+
+  void
+  set_scaling_factor(number scaling_factor_in)
+  {
+    scaling_factor = scaling_factor_in;
+  }
+
+  void
+  vmult(VectorType &dst, const VectorType &src) const
+  {
+    dst.zero_out_ghost_values();
+
+    matrix_free->cell_loop(&This::cell_loop_matrix_free_operator,
+                           this,
+                           dst,
+                           src);
+  }
+
+private:
+  void
+  cell_loop_matrix_free_operator(
+    const dealii::MatrixFree<dim, number> &,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, dim, number> integrator(*matrix_free,
+                                                     //    cell_range,
+                                                     dof_no_v,
+                                                     quad_no_v_mass);
+
+    MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, number>
+      inverse_mass(integrator);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        integrator.reinit(cell);
+        integrator.read_dof_values(src, 0);
+
+        inverse_mass.apply(integrator.begin_dof_values(),
+                           integrator.begin_dof_values());
+        for (unsigned int i = 0; i < integrator.dofs_per_cell; ++i)
+          integrator.begin_dof_values()[i] *= scaling_factor;
+        integrator.set_dof_values(dst, 0);
+      }
+  }
+
+  const MatrixFree<dim, number> *matrix_free;
+  number                         scaling_factor;
+  unsigned int                   dof_no_v;
+  unsigned int                   quad_no_v;
+  unsigned int                   quad_no_v_mass;
+};
+
+
+template <int dim, typename number>
+class MassOperator
+{
+public:
+  using VectorType = LinearAlgebra::distributed::Vector<number>;
+  typedef MassOperator<dim, number> This;
+
+  MassOperator() = default;
+
+  void
+  reinit(const MatrixFree<dim, number> &matrix_free,
+         const unsigned int             dof_no_v       = 0,
+         const unsigned int             quad_no_v      = 0,
+         const unsigned int             quad_no_v_mass = 1)
+  {
+    this->matrix_free    = &matrix_free;
+    this->dof_no_v       = dof_no_v;
+    this->quad_no_v      = quad_no_v;
+    this->quad_no_v_mass = quad_no_v_mass;
+  }
+
+  void
+  vmult(VectorType &dst, const VectorType &src) const
+  {
+    dst = 0;
+    dst.zero_out_ghost_values();
+    matrix_free->cell_loop(&This::do_cell_integral_range, this, dst, src, true);
+  }
+
+  void
+  compute_inverse_diagonal(VectorType &diagonal_vector) const
+  {
+    this->matrix_free->initialize_dof_vector(diagonal_vector, dof_no_v);
+
+    MatrixFreeTools::
+      compute_diagonal<dim, -1, 0, dim, number, VectorizedArray<number>>(
+        *matrix_free,
+        diagonal_vector,
+        [&](auto &phi) { do_cell_integral_local(phi); },
+        dof_no_v,
+        quad_no_v_mass);
+
+    for (unsigned int i = 0; i < diagonal_vector.locally_owned_size(); ++i)
+      {
+        if (std::abs(diagonal_vector.local_element(i)) > 1.0e-10)
+          diagonal_vector.local_element(i) =
+            1.0 / diagonal_vector.local_element(i);
+        else
+          diagonal_vector.local_element(i) = 1.0;
+      }
+  }
+
+private:
+  const MatrixFree<dim, number> *matrix_free;
+
+  unsigned int dof_no_v;
+  unsigned int quad_no_v;
+  unsigned int quad_no_v_mass;
+
+  void
+  do_cell_integral_range(
+    const MatrixFree<dim, number>               &matrix_free,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &range) const
+  {
+    FEEvaluation<dim, -1, 0, dim, number> integrator(matrix_free,
+                                                     range,
+                                                     dof_no_v,
+                                                     quad_no_v_mass);
+
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
+      {
+        integrator.reinit(cell);
+        integrator.read_dof_values(src);
+        do_cell_integral_local(integrator);
+        integrator.distribute_local_to_global(dst);
+      }
+  }
+
+  void
+  do_cell_integral_local(
+    FEEvaluation<dim, -1, 0, dim, number> &integrator) const
+  {
+    integrator.evaluate(EvaluationFlags::values);
+    // loop over quadrature points and compute the local volume flux
+    for (unsigned int q = 0; q < integrator.n_q_points; ++q)
+      integrator.submit_value(integrator.get_value(q), q);
+
+    // multiply by nabla v^h(x) and sum
+    integrator.integrate(EvaluationFlags::values);
+  }
+};
+
+
+template <int dim, typename number>
+class InverseMassOperator
+{
+public:
+  using VectorType = LinearAlgebra::distributed::Vector<number>;
+  typedef InverseMassOperator<dim, number> This;
+
+  InverseMassOperator() = default;
+
+  void
+  reinit(const MatrixFree<dim, number> &matrix_free,
+         number                         scaling_factor_in,
+         const unsigned int             dof_no_v,
+         const unsigned int             quad_no_v_mass,
+         const bool                     use_as_preconditioner)
+  {
+    scaling_factor              = scaling_factor_in;
+    this->matrix_free           = &matrix_free;
+    this->dof_no_v              = dof_no_v;
+    this->quad_no_v_mass        = quad_no_v_mass;
+    this->use_as_preconditioner = use_as_preconditioner;
+
+    this->fe_index_hypercube = numbers::invalid_unsigned_int;
+
+    this->is_dg = this->matrix_free->get_dof_handler(dof_no_v)
+                    .get_fe(0)
+                    .n_dofs_per_vertex() == 0;
+
+    if (is_dg)
+      {
+        this->all_cells_affine = true;
+
+        for (const auto &cell_type :
+             this->matrix_free->get_mapping_info().cell_type)
+          if (cell_type > dealii::internal::MatrixFreeFunctions::affine)
+            all_cells_affine = false;
+
+        all_cells_are_hypercube = this->matrix_free->get_dof_handler(dof_no_v)
+                                    .get_triangulation()
+                                    .all_reference_cells_are_hyper_cube();
+
+        if (all_cells_are_hypercube)
+          {
+            // nothing to do
+          }
+        else if (all_cells_affine || use_as_preconditioner)
+          {
+            // go over all fe_indices and build the mass matrices for all
+            // elements
+            const hp::FECollection<dim> fe_collection =
+              this->matrix_free->get_dof_handler(dof_no_v).get_fe_collection();
+            if (fe_collection.empty() == false)
+              {
+                const unsigned int n_fe_indices = fe_collection.size();
+                inverse_mass_matrix.resize(n_fe_indices);
+                for (unsigned int fe_index = 0; fe_index < n_fe_indices;
+                     ++fe_index)
+                  {
+                    const auto &fe_system = fe_collection[fe_index];
+                    Assert(fe_system.n_base_elements() == 1,
+                           ExcInternalError());
+                    Assert(fe_system.element_multiplicity(0) == dim,
+                           ExcInternalError());
+                    const auto &fe = fe_system.base_element(0);
+
+                    if (fe.reference_cell().is_hyper_cube())
+                      {
+                        Assert(this->fe_index_hypercube ==
+                                 numbers::invalid_unsigned_int,
+                               ExcInternalError());
+                        this->fe_index_hypercube = fe_index;
+                      }
+                    else
+                      {
+                        // create mass matrix
+                        const auto quad =
+                          fe.reference_cell().get_gauss_type_quadrature(
+                            fe.degree + 1);
+
+                        const unsigned int n_dofs_per_cell =
+                          fe.n_dofs_per_cell();
+                        FullMatrix<number> mass_matrix(n_dofs_per_cell,
+                                                       n_dofs_per_cell);
+                        mass_matrix = 0.;
+                        for (unsigned int q = 0; q < quad.size(); ++q)
+                          for (unsigned int i = 0; i < n_dofs_per_cell; ++i)
+                            for (unsigned int j = 0; j < n_dofs_per_cell; ++j)
+                              mass_matrix[i][j] +=
+                                fe.shape_value(i, quad.point(q)) *
+                                fe.shape_value(j, quad.point(q)) *
+                                quad.weight(q);
+
+                        inverse_mass_matrix[fe_index].resize(n_dofs_per_cell *
+                                                             n_dofs_per_cell);
+                        // get the inverse
+                        Householder<number> householder(mass_matrix);
+                        Vector<number>      e(n_dofs_per_cell);
+                        Vector<number>      x(n_dofs_per_cell);
+                        for (unsigned int j = 0; j < n_dofs_per_cell; ++j)
+                          {
+                            e    = 0.;
+                            e[j] = 1.;
+                            x    = 0.;
+                            householder.least_squares(x, e);
+
+                            for (unsigned int i = 0; i < n_dofs_per_cell; ++i)
+                              inverse_mass_matrix[fe_index]
+                                                 [i * n_dofs_per_cell + j] =
+                                                   x[i];
+                          }
+                      }
+                  }
+              }
+            else
+              {
+                inverse_mass_matrix.resize(1);
+                const auto &fe =
+                  this->matrix_free->get_dof_handler(dof_no_v).get_fe();
+
+                if (fe.reference_cell().is_hyper_cube())
+                  {
+                    DEAL_II_ASSERT_UNREACHABLE();
+                  }
+                else
+                  {
+                    // create mass matrix
+                    const auto quad =
+                      fe.reference_cell().get_gauss_type_quadrature(fe.degree +
+                                                                    1);
+                    const unsigned int n_dofs_per_cell = fe.n_dofs_per_cell();
+
+                    FullMatrix<number> mass_matrix(n_dofs_per_cell,
+                                                   n_dofs_per_cell);
+                    mass_matrix = 0.;
+                    for (unsigned int q = 0; q < quad.size(); ++q)
+                      for (unsigned int i = 0; i < n_dofs_per_cell; ++i)
+                        for (unsigned int j = 0; j < n_dofs_per_cell; ++j)
+                          mass_matrix[i][j] +=
+                            fe.shape_value(i, quad.point(q)) *
+                            fe.shape_value(j, quad.point(q)) * quad.weight(q);
+
+                    inverse_mass_matrix[0].resize(n_dofs_per_cell *
+                                                  n_dofs_per_cell);
+                    // get the inverse
+                    Householder<number> householder(mass_matrix);
+                    Vector<number>      e(n_dofs_per_cell);
+                    Vector<number>      x(n_dofs_per_cell);
+                    for (unsigned int j = 0; j < n_dofs_per_cell; ++j)
+                      {
+                        e    = 0.;
+                        e[j] = 1.;
+                        x    = 0.;
+                        householder.least_squares(x, e);
+
+                        for (unsigned int i = 0; i < n_dofs_per_cell; ++i)
+                          inverse_mass_matrix[0][i * n_dofs_per_cell + j] =
+                            x[i];
+                      }
+                  }
+              }
+          }
+        else
+          {
+            preconditioner =
+              std::make_unique<InverseMassOperator<dim, number>>();
+            preconditioner->reinit(
+              matrix_free, scaling_factor_in, dof_no_v, quad_no_v_mass, true);
+
+            massoperator = std::make_unique<MassOperator<dim, number>>();
+            massoperator->reinit(matrix_free, dof_no_v, 0, quad_no_v_mass);
+          }
+      }
+    else
+      {
+        massoperator = std::make_unique<MassOperator<dim, number>>();
+        massoperator->reinit(matrix_free, dof_no_v, 0, quad_no_v_mass);
+
+        preconditioner_mass = std::make_unique<DiagonalMatrix<VectorType>>();
+        massoperator->compute_inverse_diagonal(
+          preconditioner_mass->get_vector());
+      }
+  }
+
+  void
+  set_scaling_factor(number scaling_factor_in)
+  {
+    scaling_factor = scaling_factor_in;
+  }
+
+  void
+  vmult(VectorType &dst, const VectorType &src) const
+  {
+    if (is_dg)
+      {
+        dst.zero_out_ghost_values();
+
+        if (all_cells_are_hypercube)
+          {
+            matrix_free->cell_loop(&This::cell_loop_hypercube, this, dst, src);
+          }
+        else if (all_cells_affine || use_as_preconditioner)
+          {
+            matrix_free->cell_loop(&This::cell_loop_general, this, dst, src);
+          }
+        else
+          {
+            ReductionControl     control(100000, 1e-10, 1e-5);
+            SolverCG<VectorType> solver(control);
+            solver.solve(*massoperator, dst, src, *preconditioner);
+            dst *= scaling_factor;
+          }
+      }
+    else
+      {
+        ReductionControl     control(100000, 1e-10, 1e-5);
+        SolverCG<VectorType> solver(control);
+        solver.solve(*massoperator, dst, src, *preconditioner_mass);
+        dst *= scaling_factor;
+      }
+  }
+
+private:
+  void
+  cell_loop_hypercube(
+    const dealii::MatrixFree<dim, number> &,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, dim, number> integrator(*matrix_free,
+                                                     cell_range,
+                                                     dof_no_v,
+                                                     quad_no_v_mass);
+
+    MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, number>
+      inverse_mass(integrator);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        integrator.reinit(cell);
+        integrator.read_dof_values(src, 0);
+
+        inverse_mass.apply(integrator.begin_dof_values(),
+                           integrator.begin_dof_values());
+        for (unsigned int i = 0; i < integrator.dofs_per_cell; ++i)
+          integrator.begin_dof_values()[i] *= scaling_factor;
+        integrator.set_dof_values(dst, 0);
+      }
+  }
+
+  void
+  cell_loop_general(
+    const dealii::MatrixFree<dim, number> &,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    const unsigned int fe_index_from_matrix_free =
+      matrix_free->get_cell_active_fe_index(cell_range, dof_no_v);
+
+    const unsigned int fe_index =
+      fe_index_from_matrix_free == numbers::invalid_unsigned_int ?
+        0 :
+        fe_index_from_matrix_free;
+    if (fe_index == fe_index_hypercube)
+      {
+        cell_loop_hypercube(*matrix_free, dst, src, cell_range);
+        return;
+      }
+
+    FEEvaluation<dim, -1, 0, dim, number> integrator(*matrix_free,
+                                                     cell_range,
+                                                     dof_no_v,
+                                                     quad_no_v_mass);
+
+    const auto &mapping_data =
+      matrix_free->get_mapping_info().cell_data[quad_no_v_mass];
+    const number quadrature_weight =
+      mapping_data.descriptor[fe_index].quadrature_weights.data()[0];
+
+    AlignedVector<VectorizedArray<number>> values_dofs_inverse(
+      integrator.dofs_per_cell);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        // read dof values
+        integrator.reinit(cell);
+        integrator.read_dof_values(src);
+
+        // Apply inverse mass on components
+        dealii::internal::apply_matrix_vector_product<
+          dealii::internal::EvaluatorVariant::evaluate_general,
+          dealii::internal::EvaluatorQuantity::value,
+          /*transpose_matrix*/ false,
+          /*add*/ false,
+          /*consider_strides*/ false,
+          VectorizedArray<number>,
+          number,
+          dim>(inverse_mass_matrix[fe_index].data(),
+               integrator.begin_dof_values(),
+               values_dofs_inverse.data(),
+               integrator.dofs_per_component,
+               integrator.dofs_per_component,
+               1,
+               1);
+
+        // apply inverse jacobi matrix
+        const unsigned int offsets = integrator.get_mapping_data_index_offset();
+        const VectorizedArray<number> *j_value =
+          &mapping_data.JxW_values[offsets];
+
+        const VectorizedArray<number> j_inverse =
+          integrator.get_cell_type() <= internal::MatrixFreeFunctions::affine ?
+            1. / j_value[0] :
+            quadrature_weight / j_value[0];
+
+        for (unsigned int i = 0; i < integrator.dofs_per_cell; ++i)
+          integrator.begin_dof_values()[i] =
+            values_dofs_inverse[i] * j_inverse * scaling_factor;
+
+        integrator.set_dof_values(dst, 0);
+      }
+  }
+
+  const MatrixFree<dim, number> *matrix_free;
+  number                         scaling_factor;
+  unsigned int                   dof_no_v;
+  unsigned int                   quad_no_v_mass;
+  bool                           all_cells_affine;
+  bool                           all_cells_are_hypercube;
+  bool                           use_as_preconditioner;
+  bool                           is_dg;
+
+  unsigned int fe_index_hypercube;
+
+  std::unique_ptr<InverseMassOperator<dim, number>> preconditioner;
+  std::unique_ptr<MassOperator<dim, number>>        massoperator;
+  std::unique_ptr<DiagonalMatrix<VectorType>>       preconditioner_mass;
+
+  std::vector<AlignedVector<number>> inverse_mass_matrix;
+};
+
 const unsigned int dof_no_v = 0;
 const unsigned int dof_no_p = 1;
 
@@ -122,7 +640,33 @@ public:
          const DoFHandler<dim> &dof_handler_p,
          const number           time_step_in,
          const unsigned int     bdf_order_in,
-         const bool   use_skew_symmetric_convective_formulation = true,
+         const bool   use_skew_symmetric_convective_formulation = false,
+         const bool   use_divergence_formulation                = false,
+         const double upwind_factor                             = 1.0,
+         const number penalty_divergence_in                     = 1.0,
+         const number penalty_continuity_in                     = 1.0,
+         const number penalty_factor_const                      = 1.0)
+  {
+    reinit(hp::MappingCollection<dim>(mapping),
+           dof_handler_u,
+           dof_handler_p,
+           time_step_in,
+           bdf_order_in,
+           use_skew_symmetric_convective_formulation,
+           use_divergence_formulation,
+           upwind_factor,
+           penalty_divergence_in,
+           penalty_continuity_in,
+           penalty_factor_const);
+  }
+
+  void
+  reinit(const hp::MappingCollection<dim> &mapping,
+         const DoFHandler<dim>            &dof_handler_u,
+         const DoFHandler<dim>            &dof_handler_p,
+         const number                      time_step_in,
+         const unsigned int                bdf_order_in,
+         const bool   use_skew_symmetric_convective_formulation = false,
          const bool   use_divergence_formulation                = false,
          const double upwind_factor                             = 1.0,
          const number penalty_divergence_in                     = 1.0,
@@ -141,9 +685,45 @@ public:
 
     fe_degree_u                    = dof_handler_u.get_fe().degree;
     const unsigned int fe_degree_p = dof_handler_p.get_fe().degree;
+
+    const bool all_cells_are_hypercube =
+      dof_handler_u.get_triangulation().all_reference_cells_are_hyper_cube();
+    hp::QCollection<dim>     quadrature_collection_v;
+    hp::QCollection<dim>     quadrature_collection_mass;
+    hp::QCollection<dim>     quadrature_collection_p;
+    hp::QCollection<dim - 1> quadrature_collection_face;
+
     Quadrature<1> quadrature = QGauss<1>(fe_degree_u + (fe_degree_u + 2) / 2);
     Quadrature<1> quadrature_mass = QGauss<1>(fe_degree_u + 1);
     Quadrature<1> quadrature_p    = QGauss<1>(fe_degree_p + 1);
+
+    if (all_cells_are_hypercube == false)
+      {
+        for (const auto &ref_cell :
+             dof_handler_u.get_triangulation().get_reference_cells())
+          {
+            quadrature_collection_v.push_back(
+              ref_cell.get_gauss_type_quadrature(fe_degree_u +
+                                                 (fe_degree_u + 2) / 2));
+            quadrature_collection_mass.push_back(
+              ref_cell.get_gauss_type_quadrature(fe_degree_u + 1));
+            quadrature_collection_p.push_back(
+              ref_cell.get_gauss_type_quadrature(fe_degree_p + 1));
+
+            // also get face quadratures
+            for (const auto &f : ref_cell.face_indices())
+              {
+                const auto face_ref_cell = ref_cell.face_reference_cell(f);
+                quadrature_collection_face.push_back(
+                  face_ref_cell.get_gauss_type_quadrature(
+                    fe_degree_u + (fe_degree_u + 2) / 2));
+              }
+          }
+      }
+    else
+      {
+        quadrature_collection_mass.push_back(QGauss<dim>(fe_degree_u + 1));
+      }
 
     typename MatrixFree<dim, number>::AdditionalData data;
     data.mapping_update_flags = (update_gradients | update_JxW_values |
@@ -157,33 +737,54 @@ public:
 
     AffineConstraints<double> dummy;
     dummy.close();
+    if (all_cells_are_hypercube)
+      matrix_free.reinit(
+        mapping,
+        std::vector<const DoFHandler<dim> *>{&dof_handler_u, &dof_handler_p},
+        std::vector<const AffineConstraints<double> *>{&dummy, &dummy},
+        std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
+        data);
+    else
+      {
+        std::vector<hp::QCollection<dim>> q_collection_vector;
+        q_collection_vector.push_back(quadrature_collection_v);
+        q_collection_vector.push_back(quadrature_collection_mass);
+        q_collection_vector.push_back(quadrature_collection_p);
 
-    matrix_free.reinit(
-      mapping,
-      std::vector<const DoFHandler<dim> *>{&dof_handler_u, &dof_handler_p},
-      std::vector<const AffineConstraints<double> *>{&dummy, &dummy},
-      std::vector<Quadrature<1>>{{quadrature, quadrature_mass, quadrature_p}},
-      data);
+        matrix_free.reinit(
+          mapping,
+          std::vector<const DoFHandler<dim> *>{&dof_handler_u, &dof_handler_p},
+          std::vector<const AffineConstraints<double> *>{&dummy, &dummy},
+          q_collection_vector,
+          data);
+      }
 
-    // TODO?
     FEEvaluation<dim, -1, 0, dim, number> eval_cell(matrix_free,
                                                     dof_no_v,
                                                     quad_no_v);
-    speeds_cells.reinit(matrix_free.n_cell_batches(), eval_cell.n_q_points);
+    speeds_cells.reinit(matrix_free.n_cell_batches(),
+                        all_cells_are_hypercube ?
+                          eval_cell.n_q_points :
+                          quadrature_collection_v.max_n_quadrature_points());
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_face(matrix_free,
                                                         true,
                                                         dof_no_v,
                                                         quad_no_v);
     speeds_faces.reinit(matrix_free.n_inner_face_batches() +
                           matrix_free.n_boundary_face_batches(),
-                        eval_face.n_q_points);
-    speeds_outer_faces.reinit(matrix_free.n_inner_face_batches() +
-                                matrix_free.n_boundary_face_batches(),
-                              eval_face.n_q_points);
+                        all_cells_are_hypercube ?
+                          eval_face.n_q_points :
+                          quadrature_collection_face.max_n_quadrature_points());
+    speeds_outer_faces.reinit(
+      matrix_free.n_inner_face_batches() +
+        matrix_free.n_boundary_face_batches(),
+      all_cells_are_hypercube ?
+        eval_face.n_q_points :
+        quadrature_collection_face.max_n_quadrature_points());
 
     penalty_factor = penalty_factor_const *
                      (dof_handler_u.get_fe().degree + 1) *
-                     (dof_handler_u.get_fe().degree + dim) / dim;
+                     (dof_handler_u.get_fe().degree + dim) / double(dim);
     {
       unsigned int n_cells =
         matrix_free.n_cell_batches() + matrix_free.n_ghost_cell_batches();
@@ -191,23 +792,56 @@ public:
       penalty_factor_divergence.resize(n_cells);
       penalty_factor_continuity.resize(n_cells);
 
-      const dealii::FiniteElement<dim> &fe = dof_handler_u.get_fe();
-      const auto reference_cells = dof_handler_u.get_fe().reference_cell();
+      hp::FEValues<dim> hp_fe_values(mapping,
+                                     dof_handler_u.get_fe_collection(),
+                                     quadrature_collection_mass,
+                                     update_JxW_values);
 
-      const auto quadrature =
-        reference_cells.get_gauss_type_quadrature(fe_degree_u + 1);
-      dealii::FEValues<dim> fe_values(mapping,
-                                      fe,
-                                      quadrature,
-                                      dealii::update_JxW_values);
+      const QGauss<dim - 1>        quadrature_quad(fe_degree_u + 1);
+      const QGaussSimplex<dim - 1> quadrature_tri(fe_degree_u + 1);
+      const Quadrature<dim - 1>    quadrature_dummy(
+        std::vector<Point<dim - 1>>{Point<dim - 1>()});
 
-      const auto face_quadrature =
-        reference_cells.face_reference_cell(0).get_gauss_type_quadrature(
-          fe_degree_u + 1);
-      dealii::FEFaceValues<dim> fe_face_values(mapping,
-                                               fe,
-                                               face_quadrature,
-                                               dealii::update_JxW_values);
+      hp::QCollection<dim - 1> face_quadratures_quad;
+      hp::QCollection<dim - 1> face_quadratures_tri;
+
+      for (const auto &ref_cell :
+           dof_handler_u.get_triangulation().get_reference_cells())
+        {
+          bool has_tri_face  = false;
+          bool has_quad_face = false;
+          for (const auto &f : ref_cell.face_indices())
+            {
+              const auto face_ref_cell = ref_cell.face_reference_cell(f);
+              if (face_ref_cell.is_hyper_cube())
+                has_quad_face = true;
+              else
+                has_tri_face = true;
+            }
+
+          if (has_quad_face)
+            face_quadratures_quad.push_back(quadrature_quad);
+          else
+            face_quadratures_quad.push_back(quadrature_dummy);
+
+          if (has_tri_face)
+            face_quadratures_tri.push_back(quadrature_tri);
+          else
+            face_quadratures_tri.push_back(quadrature_dummy);
+        }
+
+
+      hp::FEFaceValues<dim> hp_fe_face_values_quad(
+        mapping,
+        dof_handler_u.get_fe_collection(),
+        face_quadratures_quad,
+        update_JxW_values);
+
+      hp::FEFaceValues<dim> hp_fe_face_values_tri(
+        mapping,
+        dof_handler_u.get_fe_collection(),
+        face_quadratures_tri,
+        update_JxW_values);
 
       for (unsigned int i = 0; i < n_cells; ++i)
         {
@@ -217,11 +851,13 @@ public:
             {
               typename dealii::DoFHandler<dim>::cell_iterator cell =
                 matrix_free.get_cell_iterator(i, v);
-              fe_values.reinit(cell);
+              hp_fe_values.reinit(cell);
+              const FEValues<dim> &fe_values =
+                hp_fe_values.get_present_fe_values();
 
               // calculate cell volume
               number volume = 0;
-              for (unsigned int q = 0; q < quadrature.size(); ++q)
+              for (unsigned int q = 0; q < fe_values.n_quadrature_points; ++q)
                 {
                   volume += fe_values.JxW(q);
                 }
@@ -230,12 +866,22 @@ public:
               number surface_area = 0;
               for (const unsigned int f : cell->face_indices())
                 {
-                  fe_face_values.reinit(cell, f);
+                  hp::FEFaceValues<dim> *hp_fe_face_values =
+                    cell->face(f)->reference_cell().is_hyper_cube() ?
+                      &hp_fe_face_values_quad :
+                      &hp_fe_face_values_tri;
+
+                  hp_fe_face_values->reinit(cell, f);
+                  const FEFaceValues<dim> &fe_face_values =
+                    hp_fe_face_values->get_present_fe_values();
+
                   const number factor = (cell->at_boundary(f) and
                                          not(cell->has_periodic_neighbor(f))) ?
                                           1. :
                                           0.5;
-                  for (unsigned int q = 0; q < face_quadrature.size(); ++q)
+                  for (unsigned int q = 0;
+                       q < fe_face_values.n_quadrature_points;
+                       ++q)
                     {
                       surface_area += fe_face_values.JxW(q) * factor;
                     }
@@ -245,6 +891,9 @@ public:
             }
         }
     }
+
+    inverse_mass_operator.reinit(
+      matrix_free, 1.0, dof_no_v, quad_no_v_mass, false);
   }
 
   virtual void
@@ -373,19 +1022,8 @@ public:
     this->matrix_free.cell_loop(
       &MomentumOperator::local_vorticity_domain, this, dst, src, true);
 
-    // TODO
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free,
-                                                 dof_no_v,
-                                                 quad_no_v_mass);
-    MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, number>
-      mass_inv(eval_u);
-    for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
-      {
-        eval_u.reinit(cell);
-        eval_u.read_dof_values(dst);
-        mass_inv.apply(eval_u.begin_dof_values(), eval_u.begin_dof_values());
-        eval_u.set_dof_values(dst);
-      }
+    const VectorType src_dst(dst);
+    this->inverse_mass_operator.vmult(dst, src_dst);
   }
 
   void
@@ -417,19 +1055,8 @@ public:
       MatrixFree<dim, number>::DataAccessOnFaces::gradients,
       MatrixFree<dim, number>::DataAccessOnFaces::gradients);
 
-    // TODO
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(matrix_free,
-                                                 dof_no_v,
-                                                 quad_no_v_mass);
-    MatrixFreeOperators::CellwiseInverseMassMatrix<dim, -1, dim, number>
-      mass_inv(eval_u);
-    for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
-      {
-        eval_u.reinit(cell);
-        eval_u.read_dof_values(dst);
-        mass_inv.apply(eval_u.begin_dof_values(), eval_u.begin_dof_values());
-        eval_u.set_dof_values(dst);
-      }
+    const VectorType src_dst(dst);
+    this->inverse_mass_operator.vmult(dst, src_dst);
   }
 
   const MatrixFree<dim, number> &
@@ -1664,6 +2291,8 @@ private:
 
   MatrixFree<dim, number> matrix_free;
 
+  InverseMassOperator<dim, number> inverse_mass_operator;
+
   number penalty_factor;
   number penalty_divergence;
   number penalty_continuity;
@@ -1724,32 +2353,67 @@ public:
 
     const unsigned int fe_degree =
       matrix_free->get_dof_handler(dof_no_p).get_fe().degree;
-    const double penalty_factor = 1.0 * (fe_degree + 1) * (fe_degree);
+    const double penalty_factor =
+      1.0 * (fe_degree + 1.0) * (fe_degree + dim) / double(dim);
     {
       unsigned int n_cells =
         matrix_free->n_cell_batches() + matrix_free->n_ghost_cell_batches();
       array_penalty_parameter.resize(n_cells);
 
-      const dealii::FiniteElement<dim> &fe =
-        matrix_free->get_dof_handler(dof_no_p).get_fe();
-      const auto reference_cells =
-        matrix_free->get_dof_handler(dof_no_p).get_fe().reference_cell();
-      const auto mapping = matrix_free->get_mapping_info().mapping;
+      hp::QCollection<dim> quadrature_collection_mass;
 
-      const auto quadrature =
-        reference_cells.get_gauss_type_quadrature(fe_degree + 1);
-      dealii::FEValues<dim> fe_values(*mapping,
-                                      fe,
-                                      quadrature,
-                                      dealii::update_JxW_values);
+      const QGauss<dim - 1>        quadrature_quad(fe_degree + 1);
+      const QGaussSimplex<dim - 1> quadrature_tri(fe_degree + 1);
+      const Quadrature<dim - 1>    quadrature_dummy(
+        std::vector<Point<dim - 1>>{Point<dim - 1>()});
 
-      const auto face_quadrature =
-        reference_cells.face_reference_cell(0).get_gauss_type_quadrature(
-          fe_degree + 1);
-      dealii::FEFaceValues<dim> fe_face_values(*mapping,
-                                               fe,
-                                               face_quadrature,
-                                               dealii::update_JxW_values);
+      hp::QCollection<dim - 1> face_quadratures_quad;
+      hp::QCollection<dim - 1> face_quadratures_tri;
+
+      for (const auto &ref_cell : matrix_free->get_dof_handler(dof_no_p)
+                                    .get_triangulation()
+                                    .get_reference_cells())
+        {
+          quadrature_collection_mass.push_back(
+            ref_cell.get_gauss_type_quadrature(fe_degree + 1));
+          bool has_tri_face  = false;
+          bool has_quad_face = false;
+          for (const auto &f : ref_cell.face_indices())
+            {
+              const auto face_ref_cell = ref_cell.face_reference_cell(f);
+              if (face_ref_cell.is_hyper_cube())
+                has_quad_face = true;
+              else
+                has_tri_face = true;
+            }
+
+          if (has_quad_face)
+            face_quadratures_quad.push_back(quadrature_quad);
+          else
+            face_quadratures_quad.push_back(quadrature_dummy);
+
+          if (has_tri_face)
+            face_quadratures_tri.push_back(quadrature_tri);
+          else
+            face_quadratures_tri.push_back(quadrature_dummy);
+        }
+
+      hp::FEValues<dim> hp_fe_values(
+        *matrix_free->get_mapping_info().mapping_collection,
+        matrix_free->get_dof_handler(dof_no_p).get_fe_collection(),
+        quadrature_collection_mass,
+        update_JxW_values);
+      hp::FEFaceValues<dim> hp_fe_face_values_quad(
+        *matrix_free->get_mapping_info().mapping_collection,
+        matrix_free->get_dof_handler(dof_no_p).get_fe_collection(),
+        face_quadratures_quad,
+        update_JxW_values);
+
+      hp::FEFaceValues<dim> hp_fe_face_values_tri(
+        *matrix_free->get_mapping_info().mapping_collection,
+        matrix_free->get_dof_handler(dof_no_p).get_fe_collection(),
+        face_quadratures_tri,
+        update_JxW_values);
 
       for (unsigned int i = 0; i < n_cells; ++i)
         {
@@ -1759,11 +2423,13 @@ public:
             {
               typename dealii::DoFHandler<dim>::cell_iterator cell =
                 matrix_free->get_cell_iterator(i, v, dof_no_p);
-              fe_values.reinit(cell);
+              hp_fe_values.reinit(cell);
+              const FEValues<dim> &fe_values =
+                hp_fe_values.get_present_fe_values();
 
               // calculate cell volume
               number volume = 0;
-              for (unsigned int q = 0; q < quadrature.size(); ++q)
+              for (unsigned int q = 0; q < fe_values.n_quadrature_points; ++q)
                 {
                   volume += fe_values.JxW(q);
                 }
@@ -1772,12 +2438,22 @@ public:
               number surface_area = 0;
               for (const unsigned int f : cell->face_indices())
                 {
-                  fe_face_values.reinit(cell, f);
+                  hp::FEFaceValues<dim> *hp_fe_face_values =
+                    cell->face(f)->reference_cell().is_hyper_cube() ?
+                      &hp_fe_face_values_quad :
+                      &hp_fe_face_values_tri;
+
+                  hp_fe_face_values->reinit(cell, f);
+                  const FEFaceValues<dim> &fe_face_values =
+                    hp_fe_face_values->get_present_fe_values();
+
                   const number factor = (cell->at_boundary(f) and
                                          not(cell->has_periodic_neighbor(f))) ?
                                           1. :
                                           0.5;
-                  for (unsigned int q = 0; q < face_quadrature.size(); ++q)
+                  for (unsigned int q = 0;
+                       q < fe_face_values.n_quadrature_points;
+                       ++q)
                     {
                       surface_area += fe_face_values.JxW(q) * factor;
                     }
