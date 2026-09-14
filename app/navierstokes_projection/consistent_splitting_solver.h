@@ -2315,7 +2315,7 @@ private:
     FEEvaluation<dim, -1, 0, 1, number> eval_p(matrix_free,
                                                range,
                                                dof_no_p,
-                                               quad_no_p);
+                                               quad_no_v_mass);
 
     // AnalyticalRHS<dim> rhs(u_x_max, viscosity);
     auto rhs = body_force_factory();
@@ -2348,9 +2348,9 @@ private:
       return;
 
     FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
-      matrix_free, range, true, dof_no_p, quad_no_p);
+      matrix_free, range, true, dof_no_p, quad_no_v_mass);
     FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(
-      matrix_free, range, false, dof_no_p, quad_no_p);
+      matrix_free, range, false, dof_no_p, quad_no_v_mass);
 
     auto rhs = body_force_factory();
     rhs->set_time(time);

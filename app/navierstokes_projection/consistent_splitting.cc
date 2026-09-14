@@ -38,7 +38,7 @@ const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
 const bool use_traction_boundary_condition_for_PPE   = false;
 
-const bool use_preconditioning_pressure = false;
+const bool use_preconditioning_pressure = true;
 // const bool use_amg                       = false;
 const bool use_hmg = true;
 const bool use_pmg = true;
@@ -266,10 +266,10 @@ do_test(const unsigned int fe_degree,
   for (auto &vec : vec_p_old)
     momentum_op.initialize_dof_vector(vec, dof_no_p);
 
-  // InverseMassPreconditioner<dim, Number> inverse_mass;
-  // inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
-  InverseMassOperator<dim, Number> inverse_mass;
-  inverse_mass.reinit(momentum_op.get_matrix_free(), time_step, 0, 1, false);
+   InverseMassPreconditioner<dim, Number> inverse_mass;
+   inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
+  //InverseMassOperator<dim, Number> inverse_mass;
+  //inverse_mass.reinit(momentum_op.get_matrix_free(), time_step, 0, 1, false);
   // InverseMassOperator<dim, Number> inverse_mass;
   // if (use_preconditioning_velocity)
   // {
@@ -313,20 +313,28 @@ do_test(const unsigned int fe_degree,
                                                              viscosity);
   });
 
-  std::unique_ptr<MultigridPreconditioner<dim, Number, Number>>
-    precondition_hmg;
-  if (use_preconditioning_pressure)
-    precondition_hmg =
-      std::make_unique<MultigridPreconditioner<dim, Number, Number>>(
-        pressure_op,
-        mapping.get_degree(),
-        time_step,
-        bdf_order,
-        use_hmg,
-        use_cmg,
-        use_pmg,
-        use_amg_as_coarse_grid_solver,
-        use_neumann_boundary);
+  //std::unique_ptr<MultigridPreconditioner<dim, Number, Number>> precondition_hmg;
+  // if (use_preconditioning_pressure)
+  //   precondition_hmg =
+  //     std::make_unique<MultigridPreconditioner<dim, Number, Number>>(
+  //       pressure_op,
+  //       mapping.get_degree(),
+  //       time_step,
+  //       bdf_order,
+  //       use_hmg,
+  //       use_cmg,
+  //       use_pmg,
+  //       use_amg_as_coarse_grid_solver,
+  //       use_neumann_boundary);
+  MultigridPreconditioner<dim, Number, Number> precondition_hmg(pressure_op,
+                                                                mapping.get_degree(),
+                                                                time_step,
+                                                                bdf_order,
+                                                               use_hmg,
+                                                               use_cmg,
+                                                               use_pmg,   
+                                                               use_amg_as_coarse_grid_solver,
+                                                               use_neumann_boundary);
 
   Number      current_time          = 0;
   std::size_t n_momentum_iterations = 0, n_pressure_iterations = 0;
@@ -417,7 +425,7 @@ do_test(const unsigned int fe_degree,
       if (use_preconditioning_pressure)
         {
           iteration_count =
-            precondition_hmg->solve(pressure_op, vec_p, vec_p_rhs);
+            precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs);
         }
       else
         {
