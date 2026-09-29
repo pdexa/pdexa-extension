@@ -2557,6 +2557,21 @@ public:
   }
 
   void
+  compute_analytical_rhs(VectorType &rhs) const
+  {
+    const VectorType dummy;
+    matrix_free->loop(&PressureOperator::do_rhs_cell_range,
+                      &PressureOperator::do_rhs_face_range,
+                      &PressureOperator::do_rhs_boundary_range,
+                      this,
+                      rhs,
+                      dummy,
+                      true,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+  }
+
+  void
   compute_convective_rhs(VectorType &dst, const VectorType &velocity)
   {
     matrix_free->loop(&PressureOperator::local_convective_domain,
@@ -2729,6 +2744,14 @@ public:
   }
 
   void
+  set_analytical_rhs_pressure_factory(
+    std::function<std::unique_ptr<Function<dim>>()>
+      &&analytical_rhs_pressure_in)
+  {
+    analytical_rhs_pressure_factory = std::move(analytical_rhs_pressure_in);
+  }
+
+  void
   set_viscosity(const number viscosity_in)
   {
     viscosity = viscosity_in;
@@ -2747,6 +2770,8 @@ private:
   bool         use_traction_boundary_condition;
   std::function<std::unique_ptr<Function<dim>>()> dirichletBC_velocity_factory;
   std::function<std::unique_ptr<Function<dim>>()> dirichletBC_pressure_factory;
+  std::function<std::unique_ptr<Function<dim>>()>
+    analytical_rhs_pressure_factory;
   std::function<std::unique_ptr<Function<dim>>()> body_force_factory;
 
   void
@@ -3168,6 +3193,80 @@ private:
           }
       }
   }
+
+
+
+  void
+  do_rhs_cell_range(const MatrixFree<dim, number> &matrix_free,
+                    VectorType                    &dst,
+                    const VectorType &,
+                    const std::pair<unsigned int, unsigned int> &range) const
+  {
+    FEEvaluation<dim, -1, 0, 1, number> eval_p_minus(matrix_free,
+                                                     range,
+                                                     dof_no_p,
+                                                     quad_no_p);
+
+    auto pressure_rhs = analytical_rhs_pressure_factory();
+
+    for (unsigned int cell = range.first; cell < range.second; ++cell)
+      {
+        eval_p_minus.reinit(cell);
+        for (unsigned int q = 0; q < eval_p_minus.n_q_points; ++q)
+          {
+            const auto rhs =
+              evaluate_scalar_function((*pressure_rhs),
+                                       eval_p_minus.quadrature_point(q));
+
+            eval_p_minus.submit_value(rhs, q);
+          }
+        eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+      }
+  }
+
+  void
+  do_rhs_face_range(const MatrixFree<dim, number> &,
+                    VectorType &,
+                    const VectorType &,
+                    const std::pair<unsigned int, unsigned int> &) const
+  {}
+
+  void
+  do_rhs_boundary_range(
+    const MatrixFree<dim, number> &matrix_free,
+    VectorType                    &dst,
+    const VectorType &,
+    const std::pair<unsigned int, unsigned int> &range) const
+  {
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(
+      matrix_free, range, true, dof_no_p, quad_no_p);
+
+    auto pressure_dbc = dirichletBC_pressure_factory();
+
+    for (unsigned int face = range.first; face < range.second; ++face)
+      {
+        eval_p_minus.reinit(face);
+
+        const VectorizedArray<number> sigma =
+          eval_p_minus.read_cell_data(array_penalty_parameter);
+
+        for (unsigned int q = 0; q < eval_p_minus.n_q_points; ++q)
+          {
+            const auto g =
+              evaluate_scalar_function((*pressure_dbc),
+                                       eval_p_minus.quadrature_point(q));
+
+            eval_p_minus.submit_normal_derivative(-g, q);
+            eval_p_minus.submit_value(2.0 * sigma * g, q);
+          }
+
+        eval_p_minus.integrate_scatter(EvaluationFlags::values |
+                                         EvaluationFlags::gradients,
+                                       dst);
+      }
+  }
+
+
 
   void
   local_convective_domain(
