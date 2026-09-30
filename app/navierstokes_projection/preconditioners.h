@@ -2,6 +2,7 @@
 #include <deal.II/base/aligned_vector.h>
 #include <deal.II/base/exception_macros.h>
 #include <deal.II/base/exceptions.h>
+#include <deal.II/base/mpi.h>
 #include <deal.II/base/types.h>
 #include <deal.II/base/vectorization.h>
 
@@ -947,15 +948,33 @@ public:
         mg_matrices[level].get_matrix_free().initialize_dof_vector(rhs,
                                                                    dof_no_p);
 
-        dealii::internal::set_initial_guess(rhs);
-        make_zero_mean(
-          mg_matrices[level].get_matrix_free().get_constrained_dofs(dof_no_p),
-          rhs);
-        solver.solve(mg_matrices[level],
-                     tmp,
-                     rhs,
-                     *smoother_data[level].preconditioner);
+        const auto &constrained_dofs =
+          mg_matrices[level].get_matrix_free().get_constrained_dofs(dof_no_p);
+        const auto partioner =
+          mg_matrices[level].get_matrix_free().get_vector_partitioner(dof_no_p);
 
+        std::set<types::global_dof_index> global_dofs;
+        for (const auto &d : constrained_dofs)
+          global_dofs.insert(partioner->local_to_global(d));
+        global_dofs =
+          Utilities::MPI::compute_set_union(global_dofs,
+                                            partioner->get_mpi_communicator());
+
+        if (mg_matrices[level]
+              .get_matrix_free()
+              .get_dof_handler(dof_no_p)
+              .n_dofs() != global_dofs.size())
+          {
+            dealii::internal::set_initial_guess(rhs);
+            make_zero_mean(
+              mg_matrices[level].get_matrix_free().get_constrained_dofs(
+                dof_no_p),
+              rhs);
+            solver.solve(mg_matrices[level],
+                         tmp,
+                         rhs,
+                         *smoother_data[level].preconditioner);
+          }
         smoother_data[level].eig_cg_n_iterations = 0;
         if (eigenvalue_tracker.values.empty())
           smoother_data[level].max_eigenvalue = 1.0;
