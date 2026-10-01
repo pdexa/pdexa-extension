@@ -285,11 +285,11 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
         {
           create_mesh_from_file(tria_serial, "reordered_mesh.bin", true);
 
-          std::cout << "write vtk";
-          std::ofstream out("reordered_mesh.vtk");
-          GridOut       grid_out;
-          grid_out.write_vtk(tria_serial, out);
-          std::cout << " ... done" << std::endl;
+          // std::cout << "write vtk";
+          // std::ofstream out("reordered_mesh.vtk");
+          // GridOut       grid_out;
+          // grid_out.write_vtk(tria_serial, out);
+          // std::cout << " ... done" << std::endl;
         }
       else
         DEAL_II_NOT_IMPLEMENTED();

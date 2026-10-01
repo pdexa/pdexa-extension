@@ -3,6 +3,7 @@
 #include <deal.II/base/exception_macros.h>
 #include <deal.II/base/logstream.h>
 #include <deal.II/base/mpi.h>
+#include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/tensor.h>
 
 #include "binary_mesh_reader.h"
@@ -55,27 +56,40 @@ check_prism_jacobian_determinant(
 
   const dealii::Point<3> &x5 = vertices[cell.vertices[3]];
 
-  const double r = 1. / 3.;
-  const double s = 1. / 3.;
-  const double t = 1. / 2.;
+  bool all_fine = true;
 
-  const dealii::Tensor<1, 3> dx_dr = (1.0 - t) * (x0 - x2) + t * (x3 - x5);
+  const dealii::QGaussSimplex<2> quad(4);
+  const dealii::QGauss<1> quad_z(4);
 
-  const dealii::Tensor<1, 3> dx_ds = (1.0 - t) * (x1 - x2) + t * (x4 - x5);
+  for(unsigned int q = 0; q < quad.size(); ++q)
+  for(unsigned int q_z = 0; q_z < quad_z.size(); ++q_z)
+    {
+      const double r = quad.point(q)[0];
+      const double s = quad.point(q)[1];
+      const double t = quad_z.point(q_z)[0];
 
-  const dealii::Point<3> bottom_point = r * x0 + s * x1 + (1.0 - r - s) * x2;
+      const dealii::Tensor<1, 3> dx_dr = (1.0 - t) * (x0 - x2) + t * (x3 - x5);
 
-  const dealii::Point<3> top_point = r * x3 + s * x4 + (1.0 - r - s) * x5;
+      const dealii::Tensor<1, 3> dx_ds = (1.0 - t) * (x1 - x2) + t * (x4 - x5);
 
-  const dealii::Tensor<1, 3> dx_dt = top_point - bottom_point;
+      const dealii::Point<3> bottom_point = r * x0 + s * x1 + (1.0 - r - s) * x2;
 
-  /*
-   * det(J) = (dx/dr x dx/ds) . dx/dt
-   */
-  const double det =
-    dealii::scalar_product(dealii::cross_product_3d(dx_dr, dx_ds), dx_dt);
+      const dealii::Point<3> top_point = r * x3 + s * x4 + (1.0 - r - s) * x5;
 
-  return det > 1e-12;
+      const dealii::Tensor<1, 3> dx_dt = top_point - bottom_point;
+
+      /*
+      * det(J) = (dx/dr x dx/ds) . dx/dt
+      */
+      const double det =
+        dealii::scalar_product(dealii::cross_product_3d(dx_dr, dx_ds), dx_dt);
+
+      if(!(det > 1e-12))
+        all_fine = false;
+
+    }
+
+  return all_fine;
 }
 
 using namespace dealii;
