@@ -1,9 +1,13 @@
 
 #include <deal.II/base/conditional_ostream.h>
 #include <deal.II/base/convergence_table.h>
+#include <deal.II/base/exception_macros.h>
+#include <deal.II/base/exceptions.h>
 #include <deal.II/base/logstream.h>
 #include <deal.II/base/mpi.h>
+#include <deal.II/base/point.h>
 #include <deal.II/base/timer.h>
+#include <deal.II/base/types.h>
 
 #include <deal.II/distributed/fully_distributed_tria.h>
 #include <deal.II/distributed/tria.h>
@@ -17,6 +21,7 @@
 #include <deal.II/fe/mapping_fe.h>
 #include <deal.II/fe/mapping_p1.h>
 
+#include <deal.II/grid/cell_data.h>
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_in.h>
 #include <deal.II/grid/grid_out.h>
@@ -27,19 +32,22 @@
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include "binary_mesh_reader.h"
 #include "consistent_splitting_solver.h"
 #include "preconditioners.h"
 
+
 using namespace dealii;
 
-const bool use_mixed_mesh      = true;
+const bool use_mixed_mesh      = false;
 const bool use_hyper_cube_mesh = false;
 const bool use_simplex_mesh    = false;
+const bool use_grid_in         = true;
 
 const bool use_preconditioning_pressure  = true;
 const bool use_hmg                       = true;
-const bool use_pmg                       = false;
-const bool use_cmg                       = false;
+const bool use_pmg                       = true;
+const bool use_cmg                       = true;
 const bool use_amg_as_coarse_grid_solver = false;
 
 const double FREQUENCY = 3.0 * dealii::numbers::PI;
@@ -273,6 +281,16 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
                                                               -L / 2.,
                                                               L / 2.);
         }
+      else if (use_grid_in)
+        {
+          create_mesh_from_file(tria_serial, "reordered_mesh.bin", true);
+
+          std::cout << "write vtk";
+          std::ofstream out("reordered_mesh.vtk");
+          GridOut       grid_out;
+          grid_out.write_vtk(tria_serial, out);
+          std::cout << " ... done" << std::endl;
+        }
       else
         DEAL_II_NOT_IMPLEMENTED();
 
@@ -288,8 +306,19 @@ do_test(const unsigned int fe_degree, const unsigned int n_refinements)
     [&](dealii::Triangulation<dim, dim> &tria_serial,
         const MPI_Comm                   comm,
         const unsigned int) {
-      dealii::GridTools::partition_triangulation_zorder(
-        dealii::Utilities::MPI::n_mpi_processes(comm), tria_serial);
+      std::vector<unsigned int> weights(tria_serial.n_active_cells(), 1);
+      for (const auto &cell : tria_serial.active_cell_iterators())
+        if (cell->reference_cell().is_hyper_cube())
+          weights[cell->active_cell_index()] = 1;
+        else if (cell->reference_cell().is_simplex())
+          weights[cell->active_cell_index()] = 10;
+        else if (cell->reference_cell() == ReferenceCells::Pyramid)
+          weights[cell->active_cell_index()] = 12;
+        else if (cell->reference_cell() == ReferenceCells::Wedge)
+          weights[cell->active_cell_index()] = 8;
+
+      dealii::GridTools::partition_triangulation(
+        dealii::Utilities::MPI::n_mpi_processes(comm), weights, tria_serial);
     };
 
   const unsigned int group_size = 32;
@@ -516,7 +545,7 @@ void
 get_convergence_tables(const unsigned int fe_degree)
 {
   ConvergenceTable convergence_table;
-  for (unsigned int n_refinements = 0; n_refinements < 7; ++n_refinements)
+  for (unsigned int n_refinements = 0; n_refinements < 4; ++n_refinements)
     {
       const auto data = do_test<3, double>(fe_degree, n_refinements);
 
@@ -565,6 +594,6 @@ main(int argc, char **argv)
 {
   Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
 
-  for (unsigned int degree = 1; degree < 6; ++degree)
+  for (unsigned int degree = 1; degree < 4; ++degree)
     get_convergence_tables(degree);
 }
