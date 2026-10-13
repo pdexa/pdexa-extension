@@ -105,23 +105,25 @@ public:
   double
   get_alpha(const unsigned int i)
   {
+    AssertIndexRange(i, alpha.size());
     return alpha[i];
   }
   double
   get_beta(const unsigned int i)
   {
+    AssertIndexRange(i, beta.size());
     return beta[i];
   }
   unsigned int
   get_order()
   {
-    return order;
+    return alpha.size();
   }
 
-  std::vector<double> alpha;
-  std::vector<double> beta;
-  double              gamma0;
-  unsigned int        order;
+  boost::container::small_vector<double, 6> alpha;
+  boost::container::small_vector<double, 6> beta;
+  double                                    gamma0;
+  unsigned int                              order;
 };
 
 
@@ -136,7 +138,7 @@ const unsigned int quad_no_p      = 2;
 const unsigned int quad_no_curl      = 3;
 
 template <int dim_, int n_components = dim_, typename Number = double>
-class MomentumOperator : public Subscriptor
+class MomentumOperator : public EnableObserverPointer
 {
 public:
   typedef MomentumOperator<dim_, n_components, Number> This;
@@ -155,6 +157,7 @@ public:
          const unsigned int     bdf_order_in,
          const number           penalty_factor_const = 1.0,
          const bool             use_periodic_boundary = false,
+         const std::vector<std::pair<dealii::types::boundary_id, dealii::types::boundary_id>> &periodic_boundary_ids = {},
          const bool             use_skew_symmetric_convective_formulation_in = false)
   {
     bdf_order = bdf_order_in;
@@ -166,7 +169,7 @@ public:
     const unsigned int fe_degree_u     = dof_handler_u.get_fe().degree;
     const unsigned int fe_degree_p     = dof_handler_p.get_fe().degree;
     const unsigned int fe_degree_curl     = dof_handler_curl.get_fe().degree;
-    Quadrature<1>      quadrature      = QGauss<1>(fe_degree_u + 2);
+    Quadrature<1>      quadrature      = QGauss<1>(fe_degree_u + (fe_degree_u + 2) / 2);
     Quadrature<1>      quadrature_mass = QGauss<1>(fe_degree_u + 1);
     Quadrature<1>      quadrature_p    = QGauss<1>(fe_degree_p + 1);
     Quadrature<1>      quadrature_curl      = QGauss<1>(fe_degree_curl + 1);
@@ -187,15 +190,17 @@ public:
     dummy.close();
     if(use_periodic_boundary)
     { 
-       std::vector<GridTools::PeriodicFacePair<typename DoFHandler<dim>::cell_iterator>>
+      AssertThrow(periodic_boundary_ids.size() != 0, dealii::ExcMessage("The number of periodic boundary pairs can not be zero "
+        "if periodic boundary conditions are used. Please specify the periodic boundary pairs."));
+      std::vector<GridTools::PeriodicFacePair<typename DoFHandler<dim>::cell_iterator>>
         periodicity_vector;
-      for (unsigned int d = 0; d < dim; ++d)
-        GridTools::collect_periodic_faces(
-          dof_handler_u, 2 * d, 2 * d + 1, d, periodicity_vector);
-      /*GridTools::collect_periodic_faces(
-        dof_handler_u, 1, 0, 0, periodicity_vector);
-      GridTools::collect_periodic_faces(
-        dof_handler_u, 3, 2, 1, periodicity_vector);*/
+
+      for (unsigned int d = 0; d < periodic_boundary_ids.size(); ++d)
+        {
+
+          GridTools::collect_periodic_faces(
+            dof_handler_u, periodic_boundary_ids[d].first, periodic_boundary_ids[d].second, d, periodicity_vector);
+        }
       
       constraint_u.clear();
       constraint_u.reinit(dof_handler_u.locally_owned_dofs(), DoFTools::extract_locally_relevant_dofs(dof_handler_u));
@@ -339,6 +344,18 @@ public:
   get_dirichletBC_pressure_factory()
   {
     return dirichletBC_pressure_factory;
+  }
+
+  void
+  set_mean_velocity_factory(std::function<std::unique_ptr<Function<dim>>()> &&mean_velocity_in)
+  {
+    mean_velocity_factory = std::move(mean_velocity_in);
+  }
+
+  std::function<std::unique_ptr<Function<dim>>()>
+  get_mean_velocity_factory()
+  {
+    return mean_velocity_factory;
   }
 
   virtual void
@@ -557,6 +574,34 @@ const AffineConstraints<double> &
   };
 
   void
+  calculate_perturbation_energy(VectorType &velocity,
+                   Number     &energy)
+  {
+    Number dst = 0.0;
+    this->matrix_free.cell_loop(&MomentumOperator::do_energy_perturbation_cell_integral_range,
+                                this,
+                                dst,
+                                velocity);
+
+    // sum over all MPI processes
+    energy      = dealii::Utilities::MPI::sum(dst, MPI_COMM_WORLD);
+  };
+
+  void
+  calculate_divergence_norm(VectorType &velocity,
+                   Number     &divergence_norm)
+  {
+    Number dst = 0.0;
+    this->matrix_free.cell_loop(&MomentumOperator::do_divNormSquares_cell_integral_range,
+                                this,
+                                dst,
+                                velocity);
+
+    // sum over all MPI processes
+    divergence_norm   = sqrt(dealii::Utilities::MPI::sum(dst, MPI_COMM_WORLD));
+  };
+
+  void
   cacheFunctions()
   {
     if (body_force_factory)
@@ -595,7 +640,9 @@ private:
                          const VectorType                            &src,
                          const std::pair<unsigned int, unsigned int> &range) const
   {
-    FEEvaluation<dim, -1, 0, n_components, Number> integrator(matrix_free, dof_no_v, quad_no_v);
+    FEEvaluation<dim, -1, 0, n_components, Number> integrator(matrix_free,
+                                                              dof_no_v,
+                                                              quad_no_v);
 
     for (unsigned int cell = range.first; cell < range.second; ++cell)
       {
@@ -760,10 +807,8 @@ private:
           -solution_jump * make_vectorized_array<number>(viscosity) * number(0.5), q);*/
       }
 
-    integrator_inner.integrate(EvaluationFlags::values |
-                                          EvaluationFlags::gradients);
-    integrator_outer.integrate(EvaluationFlags::values |
-                                          EvaluationFlags::gradients);
+    integrator_inner.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
+    integrator_outer.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
   }
 
 
@@ -791,12 +836,13 @@ private:
   void
   do_boundary_integral_local(FEFaceEvaluation<dim, -1, 0, n_components, Number> &integrator_inner) const
   {
+
     integrator_inner.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
     const VectorizedArray<number> sigma =
       integrator_inner.read_cell_data(array_penalty_parameter) * get_penalty_factor();
 
     // Dirichlet boundary
-    if (integrator_inner.boundary_id() == 0)
+    if (integrator_inner.boundary_id() == 0 || integrator_inner.boundary_id() == 2)
       {
         for (unsigned int q = 0; q < integrator_inner.n_q_points; ++q)
           {
@@ -840,15 +886,14 @@ private:
             //integrator_inner.submit_gradient(make_vectorized_array<number>(viscosity) * 0.5  * outer_product(-u_inner, normal), q);
           }
       }
-    else if (integrator_inner.boundary_id() == 1) 
+    else if (integrator_inner.boundary_id() == 1)
       {
-        //std::cout<<"neumann bc\n";
         // Nothing to do
         // Convective term cancels and viscous term is only inhomogenious
         for (const unsigned int q : integrator_inner.quadrature_point_indices())
           {
-            integrator_inner.submit_normal_derivative(
-              Tensor<1, dim, VectorizedArray<number>>(), q);
+            integrator_inner.submit_gradient(outer_product(
+              Tensor<1, dim, VectorizedArray<number>>(), integrator_inner.normal_vector(q)), q);
             if (!use_skew_symmetric_convective_formulation)
               integrator_inner.submit_value(Tensor<1, dim, VectorizedArray<number>>(),
                                             q);
@@ -902,7 +947,7 @@ private:
 
         integrator.gather_evaluate(*src[0], EvaluationFlags::values);
         integrator_speed.gather_evaluate(*src[1], EvaluationFlags::values);
-        integrator_p.gather_evaluate(*src[2], EvaluationFlags::values | EvaluationFlags::gradients);
+        integrator_p.gather_evaluate(*src[2], EvaluationFlags::values);
 
         for (unsigned int q = 0; q < integrator.n_q_points; ++q)
           {
@@ -910,7 +955,7 @@ private:
 
             const auto f = evaluate_function((*rhs), integrator.quadrature_point(q));
 
-            const auto grad_p = integrator_p.get_gradient(q);
+            //const auto grad_p = integrator_p.get_gradient(q);
             //const auto grad_p = integrator_p.get_value(q);
 
             const auto alpha_u = integrator.get_value(q);
@@ -983,15 +1028,6 @@ private:
             speeds_faces(face, q) =
               make_vectorized_array<number>(0.5) *
               (integrator_speed_inner.get_value(q) + integrator_speed_outer.get_value(q));
-
-
-             const Tensor<1, dim, VectorizedArray<number>> p_avg =
-             number(0.5)*(integrator_inner_p.get_value(q) +
-             integrator_outer_p.get_value(q)) * integrator_inner.normal_vector(q);
-            const Tensor<1, dim, VectorizedArray<number>> p_jump =
-              number(0.5) *
-              (integrator_inner_p.get_value(q) - integrator_outer_p.get_value(q)) *
-              normal;
 
 
              //integrator_inner.submit_value(-p_avg, q);
@@ -1118,7 +1154,6 @@ private:
 
                 integrator_inner.submit_gradient(outer_product(
                   Tensor<1, dim, VectorizedArray<number>>(), normal), q);
-                //integrator_inner.submit_value(-h_u, q); //since we have the average flux
                 integrator_inner.submit_value(h_u + pressure, q);
               }
           }
@@ -1166,6 +1201,166 @@ private:
       }
   }
 
+  void
+  do_energy_cell_integral_range(
+    const MatrixFree<dim, number>               &matrix_free,
+    std::vector<Number>                         &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, n_components, Number> fe_eval(matrix_free,
+                                                           dof_no_v,
+                                                           quad_no_v);
+
+    Number volume        = 0.;
+    Number energy        = 0.;
+    Number enstrophy     = 0.;
+    Number dissipation   = 0.;
+    Number max_vorticity = 0.;
+
+    // Loop over all elements
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        fe_eval.reinit(cell);
+        fe_eval.read_dof_values(src);
+        fe_eval.evaluate(dealii::EvaluationFlags::values |
+                         dealii::EvaluationFlags::gradients);
+
+        VectorizedArray<Number> volume_vec    = dealii::make_vectorized_array<Number>(0.);
+        VectorizedArray<Number> energy_vec    = dealii::make_vectorized_array<Number>(0.);
+        VectorizedArray<Number> enstrophy_vec = dealii::make_vectorized_array<Number>(0.);
+        VectorizedArray<Number> dissipation_vec =
+          dealii::make_vectorized_array<Number>(0.);
+        VectorizedArray<Number> max_vorticity_vec =
+          dealii::make_vectorized_array<Number>(0.);
+
+        for (unsigned int q = 0; q < fe_eval.n_q_points; ++q)
+          {
+            volume_vec += fe_eval.JxW(q);
+
+            auto velocity = fe_eval.get_value(q);
+            energy_vec += fe_eval.JxW(q) * dealii::make_vectorized_array<Number>(0.5) *
+                          velocity * velocity;
+
+            auto velocity_gradient = fe_eval.get_gradient(q);
+            dissipation_vec += fe_eval.JxW(q) *
+                               dealii::make_vectorized_array<Number>(viscosity) *
+                               scalar_product(velocity_gradient, velocity_gradient);
+
+            dealii::Tensor<1, dim == 3 ? dim : 1, VectorizedArray<Number>> omega =
+              fe_eval.get_curl(q);
+
+            VectorizedArray<Number> norm_omega = omega * omega;
+
+            enstrophy_vec +=
+              fe_eval.JxW(q) * dealii::make_vectorized_array<Number>(0.5) * norm_omega;
+
+            max_vorticity_vec = std::max(max_vorticity_vec, std::sqrt(norm_omega));
+          }
+
+        // sum over entries of dealii::VectorizedArray, but only over those
+        // that are "active"
+        for (unsigned int v = 0; v < matrix_free.n_active_entries_per_cell_batch(cell);
+             ++v)
+          {
+            volume += volume_vec[v];
+            energy += energy_vec[v];
+            enstrophy += enstrophy_vec[v];
+            dissipation += dissipation_vec[v];
+
+            max_vorticity = std::max(max_vorticity, max_vorticity_vec[v]);
+          }
+      }
+
+    dst.at(0) += volume;
+    dst.at(1) += energy;
+    dst.at(2) += enstrophy;
+    dst.at(3) += dissipation;
+    dst.at(4) = std::max(dst.at(4), max_vorticity);
+  }
+
+  void
+  do_divNormSquares_cell_integral_range(
+    const MatrixFree<dim, number>               &matrix_free,
+    Number                                      &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, n_components, Number> fe_eval(matrix_free,
+                                                           dof_no_v,
+                                                           quad_no_v);
+
+    Number divSq        = 0.;
+
+    // Loop over all elements
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        fe_eval.reinit(cell);
+        fe_eval.read_dof_values(src);
+        fe_eval.evaluate(dealii::EvaluationFlags::gradients);
+
+        VectorizedArray<Number> divSq_vec    = dealii::make_vectorized_array<Number>(0.);
+
+        for (unsigned int q = 0; q < fe_eval.n_q_points; ++q)
+          {
+
+            auto divVel = fe_eval.get_divergence(q);
+            divSq_vec += fe_eval.JxW(q) * divVel * divVel;
+          }
+
+        // sum over entries of dealii::VectorizedArray, but only over those
+        // that are "active"
+        for (unsigned int v = 0; v < matrix_free.n_active_entries_per_cell_batch(cell);
+             ++v)
+          divSq += divSq_vec[v];
+      }
+
+    dst += divSq;
+  }
+
+  void
+  do_energy_perturbation_cell_integral_range(
+    const MatrixFree<dim, number>               &matrix_free,
+    Number                                      &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, n_components, Number> fe_eval(matrix_free,
+                                                           dof_no_v,
+                                                           quad_no_v);
+
+    Number energy        = 0.;
+
+    auto mean_velocity = mean_velocity_factory();
+
+    // Loop over all elements
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        fe_eval.reinit(cell);
+        fe_eval.read_dof_values(src);
+        fe_eval.evaluate(dealii::EvaluationFlags::values);
+
+        VectorizedArray<Number> energy_vec    = dealii::make_vectorized_array<Number>(0.);
+
+        for (unsigned int q = 0; q < fe_eval.n_q_points; ++q)
+          {
+
+            auto velocity = fe_eval.get_value(q);
+            auto mean_u = evaluate_function((*mean_velocity), fe_eval.quadrature_point(q));
+            energy_vec += fe_eval.JxW(q) *
+                          (velocity - mean_u) * (velocity - mean_u);
+          }
+
+        // sum over entries of dealii::VectorizedArray, but only over those
+        // that are "active"
+        for (unsigned int v = 0; v < matrix_free.n_active_entries_per_cell_batch(cell);
+             ++v)
+          energy += energy_vec[v];
+      }
+
+    dst += energy;
+  }
+
   MatrixFree<dim, number> matrix_free;
 
   Number penalty_factor;
@@ -1175,6 +1370,7 @@ private:
   number time_step;
 
   number time;
+
 
   unsigned int bdf_order;
   unsigned int fe_degree_u;
@@ -1192,6 +1388,7 @@ private:
   std::function<std::unique_ptr<Function<dim>>()> dirichletBC_velocity_factory;
   std::function<std::unique_ptr<Function<dim>>()> dirichletBC_pressure_factory;
   std::function<std::unique_ptr<Function<dim>>()> body_force_factory;
+  std::function<std::unique_ptr<Function<dim>>()> mean_velocity_factory;
 
   std::unique_ptr<Function<dim>> velocity_bc_cached;
   std::unique_ptr<Function<dim>> pressure_bc_cached;
@@ -1219,7 +1416,7 @@ public:
     use_leray_projection = use_leray_projection_in;
 
     const unsigned int fe_degree = matrix_free->get_dof_handler(dof_no_p).get_fe().degree;
-    const double       penalty_factor = 1.0 * (fe_degree + 1) * (fe_degree);
+    const double       penalty_factor = 2.0 * (fe_degree + 1) * (fe_degree);
     {
       unsigned int n_cells =
         matrix_free->n_cell_batches() + matrix_free->n_ghost_cell_batches();
@@ -1335,15 +1532,42 @@ public:
   }
 
   void
-  compute_rhs(VectorType &dst, const VectorType &velocity, const VectorType &vorticity, 
-              const VectorType &alphaVelocity)
+  compute_rhs(VectorType &dst, const VectorType &vorticity)
   {
     matrix_free->loop(&PressureOperator::local_rhs_domain,
                       &PressureOperator::local_rhs_inner_face,
                       &PressureOperator::local_rhs_boundary_face,
                       this,
                       dst,
-                      std::vector<const VectorType *>{&velocity, &vorticity, &alphaVelocity},
+                      vorticity,
+                      true,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+  }
+
+  void
+  compute_convective_rhs(VectorType &dst, const VectorType &velocity)
+  {
+    matrix_free->loop(&PressureOperator::local_convective_domain,
+                      &PressureOperator::local_convective_inner_face,
+                      &PressureOperator::local_convective_boundary_face,
+                      this,
+                      dst,
+                      velocity,
+                      true,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients,
+                      MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+  }
+
+  void
+  compute_divergence(VectorType &dst, const VectorType &velocity)
+  {
+    matrix_free->loop(&PressureOperator::local_divergence_domain,
+                      &PressureOperator::local_divergence_inner_face,
+                      &PressureOperator::local_divergence_boundary_face,
+                      this,
+                      dst,
+                      velocity,
                       true,
                       MatrixFree<dim, number>::DataAccessOnFaces::gradients,
                       MatrixFree<dim, number>::DataAccessOnFaces::gradients);
@@ -1718,13 +1942,12 @@ private:
   }
 
   void
-  local_rhs_domain(const MatrixFree<dim, number>               &data,
-                   VectorType                                  &dst,
-                   const std::vector<const VectorType *>       &src,
+  local_rhs_domain(const MatrixFree<dim, number> &data,
+                   VectorType                    &dst,
+                   const VectorType &,
                    const std::pair<unsigned int, unsigned int> &cell_range) const
   {
     FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, 1, 1);
-    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, 0, 1);
 
     auto rhs = body_force_factory();
     rhs->set_time(time);
@@ -1732,126 +1955,61 @@ private:
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
         eval_p.reinit(cell);
-        eval_u.reinit(cell);
-
-        eval_u.gather_evaluate(*src[0],
-                               EvaluationFlags::values | EvaluationFlags::gradients);
 
         // loop over quadrature points and compute the local volume flux
         for (const unsigned int q : eval_p.quadrature_point_indices())
           {
             const auto f = evaluate_function((*rhs), eval_p.quadrature_point(q));
-
-            const auto convective_flux = eval_u.get_gradient(q) * eval_u.get_value(q);
-            
-            if (use_leray_projection)
-              {
-                const auto div_u = 1. / time_step * eval_u.get_divergence(q);
-                eval_p.submit_value(-div_u, q);
-              }
-            else
-              {
-                eval_p.submit_value({}, q);
-              }
-            
-            eval_p.submit_gradient(f - convective_flux, q);
+            eval_p.submit_gradient(f, q);
           }
 
         // multiply by nabla v^h(x) and sum
-        eval_p.integrate_scatter(EvaluationFlags::values | EvaluationFlags::gradients,
-                                 dst);
+        eval_p.integrate_scatter(EvaluationFlags::gradients, dst);
       }
   }
 
   void
-  local_rhs_inner_face(const MatrixFree<dim, number>               &data,
-                       VectorType                                  &dst,
-                       const std::vector<const VectorType *>       &src,
+  local_rhs_inner_face(const MatrixFree<dim, number> &data,
+                       VectorType                    &dst,
+                       const VectorType &,
                        const std::pair<unsigned int, unsigned int> &face_range) const
   {
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data, false, 1, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data, false, 0, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_alphau_minus(data, true, 0, 1);
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_alphau_plus(data, false, 0, 1);
+
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(data, true, 1, 1);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(data, false, 1, 1);
 
     auto rhs = body_force_factory();
     rhs->set_time(time);
-
-    BDFTimeIntegratorConstants integration_constants(bdf_order);
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
         eval_p_minus.reinit(face);
         eval_p_plus.reinit(face);
-        eval_u_minus.reinit(face);
-        eval_u_plus.reinit(face);
-        eval_alphau_minus.reinit(face);
-        eval_alphau_plus.reinit(face);
-
-        eval_u_minus.gather_evaluate(*src[0],
-                                     EvaluationFlags::values |
-                                       EvaluationFlags::gradients);
-        eval_u_plus.gather_evaluate(*src[0],
-                                    EvaluationFlags::values | EvaluationFlags::gradients);
-        eval_alphau_minus.gather_evaluate(*src[2],
-                                     EvaluationFlags::values);
-        eval_alphau_plus.gather_evaluate(*src[2],
-                                    EvaluationFlags::values);
 
         for (const unsigned int q : eval_p_minus.quadrature_point_indices())
           {
             const auto f = evaluate_function((*rhs), eval_p_minus.quadrature_point(q));
 
             const auto normal = eval_p_minus.normal_vector(q);
+            const auto flux   = f * normal;
 
-            const auto flux = f * normal;
-            const auto gradu_u_minus =
-              eval_u_minus.get_gradient(q) * eval_u_minus.get_value(q);
-            const auto gradu_u_plus =
-              eval_u_plus.get_gradient(q) * eval_u_plus.get_value(q);
-            
-
-            VectorizedArray<number> div_factor;
-            if (use_leray_projection)
-              {
-                div_factor = 1. / (2. * time_step) *
-                              (eval_u_minus.get_value(q) - eval_u_plus.get_value(q)) *
-                              normal;
-                //div_factor = 0;
-              }
-            else
-              {
-                div_factor = 0.;
-              }
-
-              const auto convective_flux =
-                number(0.5) * (gradu_u_minus + gradu_u_plus) * normal;
-              eval_p_minus.submit_value(convective_flux - flux + div_factor, q);
-              eval_p_plus.submit_value(flux - convective_flux + div_factor, q);
-              eval_p_minus.submit_gradient({}, q);
-              eval_p_plus.submit_gradient({}, q);
+            eval_p_minus.submit_value(-flux, q);
+            eval_p_plus.submit_value(flux, q);
           }
 
-        eval_p_minus.integrate_scatter(EvaluationFlags::values |
-                                         EvaluationFlags::gradients,
-                                       dst);
-        eval_p_plus.integrate_scatter(EvaluationFlags::values |
-                                        EvaluationFlags::gradients,
-                                      dst);
+        eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+        eval_p_plus.integrate_scatter(EvaluationFlags::values, dst);
       }
   }
 
   void
   local_rhs_boundary_face(const MatrixFree<dim, number>               &data,
                           VectorType                                  &dst,
-                          const std::vector<const VectorType *>       &src,
+                          const VectorType                            &src,
                           const std::pair<unsigned int, unsigned int> &face_range) const
   {
     FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data, true, 1, 1);
     FEFaceEvaluation<dim, -1, 0, dim, number> eval_vorticity(data, true, dof_no_curl, 1); //need changes with Hdiv projection
-    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data, true, 0, 1);
 
     auto velocity_bc = dirichletBC_velocity_factory();
     velocity_bc->set_time(time);
@@ -1864,17 +2022,12 @@ private:
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
-        if (data.get_boundary_id(face) == 0)
+        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
           {
             eval_p_minus.reinit(face);
             eval_vorticity.reinit(face);
-            eval_u_minus.reinit(face);
 
-            eval_vorticity.gather_evaluate(*src[1], EvaluationFlags::gradients);
-            //eval_vorticity.gather_evaluate(*src[1], EvaluationFlags::values);
-            eval_u_minus.gather_evaluate(*src[0],
-                                         EvaluationFlags::values |
-                                           EvaluationFlags::gradients);
+            eval_vorticity.gather_evaluate(src, EvaluationFlags::gradients);
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
@@ -1886,71 +2039,39 @@ private:
                 auto u_plus =
                   make_vectorized_array(integration_constants.get_gamma0() / time_step) *
                   g;
-
-                for (unsigned int i = 0; i < integration_constants.get_order(); ++i)
-                  {
-                    velocity_bc->set_time(time - (i + 1) * time_step);
-                    u_plus -=
-                      make_vectorized_array(integration_constants.get_alpha(i) /
-                                            time_step) *
-                      evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
-                  }
+                
+                if(!use_leray_projection)
+                  for (unsigned int i = 0; i < integration_constants.get_order(); ++i)
+                    {
+                      velocity_bc->set_time(time - (i + 1) * time_step);
+                      u_plus -=
+                        make_vectorized_array(integration_constants.get_alpha(i) /
+                                              time_step) *
+                        evaluate_function((*velocity_bc), eval_p_minus.quadrature_point(q));
+                    }
+                
                 const auto flux = (-u_plus) * normal;
 
                 //Tensor<1, dim, VectorizedArray<number>> curl_omega =
-                //auto curl_omega = CurlCompute<dim, FEFaceEvaluation<dim, -1, 0, dim, number>>::compute(
-                //   eval_vorticity, q);
-                auto curl_omega =
-                      make_vectorized_array<number>(4.0 * numbers::PI * numbers::PI) * g;
+                auto curl_omega = CurlCompute<dim, FEFaceEvaluation<dim, -1, 0, dim, number>>::compute(
+                   eval_vorticity, q);
+                //auto curl_omega =
+                //      make_vectorized_array<number>(4.0 * numbers::PI * numbers::PI) * g;
                 //auto laplace_u = eval_vorticity.get_value(q);
                 //auto laplac_u = eval_u_minus.get_laplacian(q);
                 //auto laplace_u = evaluate_function(analytical_laplacian_u,
                 //                               eval_p_minus.quadrature_point(q));
 
                 const auto curl_flux = (-viscosity) * normal * curl_omega;
-                //const auto laplacian_u_flux = viscosity * normal * laplace_u;
-                //std::cout<<"point: "<<eval_p_minus.quadrature_point(q)<<"\n";
-                //std::cout<<"laplac_u: "<<laplace_u<<"\n";
-                //std::cout<<"exact laplac_u: "<<evaluate_function(analytical_laplacian_u,
-                //                               eval_p_minus.quadrature_point(q))<<"\n";
 
-                const auto u      = eval_u_minus.get_value(q);
-                const auto grad_u = eval_u_minus.get_gradient(q);
-
-                //const auto convective_value_flux = -(grad_u *u) * normal;
-                const auto convective_value_flux = (grad_u * (g - u)) * normal;
-                VectorizedArray<number> div_u;
-                if (use_leray_projection)
-                  {
-                    div_u = 1. / time_step * (u - g) * normal;
-                    //div_u = 0;
-                  }
-                else
-                  {
-                    div_u = 0.;
-                  }
-                //std::cout<<"convective_value_flux: "<<convective_value_flux<<std::endl;
-                eval_p_minus.submit_value(flux + curl_flux + convective_value_flux +
-                                            div_u,
-                                          q);
-                /*eval_p_minus.submit_value(flux + laplacian_u_flux + convective_value_flux +
-                                            div_u,
-                                          q);*/
-                //eval_p_minus.submit_value(flux + curl_flux + div_u, q);
-                eval_p_minus.submit_gradient({}, q);
-                //std::cout<<"div_u: "<<div_u<<std::endl;
+                eval_p_minus.submit_value(flux + curl_flux, q);
               }
 
-            eval_p_minus.integrate_scatter(EvaluationFlags::values |
-                                             EvaluationFlags::gradients,
-                                           dst);
+            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
           }
         else
           {
             eval_p_minus.reinit(face);
-            eval_u_minus.reinit(face);
-
-            eval_u_minus.gather_evaluate(*src[0], EvaluationFlags::values);
 
             for (const unsigned int q : eval_p_minus.quadrature_point_indices())
               {
@@ -1960,14 +2081,6 @@ private:
 
                 const auto flux = -f * normal;
 
-                velocity_bc->set_time(time);
-                const auto grad_u =
-                  evaluate_tensor_function((*velocity_bc),
-                                           eval_p_minus.quadrature_point(q));
-                const auto u_plus          = eval_u_minus.get_value(q);
-                const auto convective_flux = (grad_u * u_plus) * normal;
-
-
                 const auto g_p =
                   evaluate_scalar_function((*pressure_bc),
                                            eval_p_minus.quadrature_point(q));
@@ -1976,13 +2089,281 @@ private:
                   eval_p_minus.read_cell_data(array_penalty_parameter);
                 const auto penalty = penalty_factor * 2. * g_p;
 
-                eval_p_minus.submit_value(flux + convective_flux + penalty, q);
+                eval_p_minus.submit_value(flux + penalty, q);
                 eval_p_minus.submit_normal_derivative(-g_p, q);
               }
 
             eval_p_minus.integrate_scatter(EvaluationFlags::values |
                                              EvaluationFlags::gradients,
                                            dst);
+          }
+      }
+  }
+
+
+
+  void
+  local_convective_domain(const MatrixFree<dim, number>               &data,
+                          VectorType                                  &dst,
+                          const VectorType                            &src,
+                          const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, dof_no_p, 1);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, dof_no_v, 1);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        eval_p.reinit(cell);
+        eval_u.reinit(cell);
+
+        eval_u.gather_evaluate(src, EvaluationFlags::values | EvaluationFlags::gradients);
+
+        // loop over quadrature points and compute the local volume flux
+        for (const unsigned int q : eval_p.quadrature_point_indices())
+          {
+            const auto convective_flux = -eval_u.get_gradient(q) * eval_u.get_value(q);
+            eval_p.submit_gradient(convective_flux, q);
+          }
+
+        // multiply by nabla v^h(x) and sum
+        eval_p.integrate_scatter(EvaluationFlags::gradients, dst);
+      }
+  }
+
+  void
+  local_convective_inner_face(
+    const MatrixFree<dim, number>               &data,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &face_range) const
+  {
+    if (!is_dg)
+      return;
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(data, true, dof_no_p, quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_plus(data, false, dof_no_p, quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data,
+                                                           true,
+                                                           dof_no_v,
+                                                           quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data,
+                                                          false,
+                                                          dof_no_v,
+                                                          quad_no_v);
+
+    for (unsigned int face = face_range.first; face < face_range.second; face++)
+      {
+        eval_p_minus.reinit(face);
+        eval_p_plus.reinit(face);
+        eval_u_minus.reinit(face);
+        eval_u_plus.reinit(face);
+
+        eval_u_minus.gather_evaluate(src,
+                                     EvaluationFlags::values |
+                                       EvaluationFlags::gradients);
+        eval_u_plus.gather_evaluate(src,
+                                    EvaluationFlags::values | EvaluationFlags::gradients);
+
+        for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+          {
+            const auto normal = eval_p_minus.normal_vector(q);
+            const auto gradu_u_minus =
+              eval_u_minus.get_gradient(q) * eval_u_minus.get_value(q);
+            const auto gradu_u_plus =
+              eval_u_plus.get_gradient(q) * eval_u_plus.get_value(q);
+            const auto convective_flux =
+              number(0.5) * (gradu_u_minus + gradu_u_plus) * normal;
+
+            eval_p_minus.submit_value(convective_flux, q);
+            eval_p_plus.submit_value(-convective_flux, q);
+          }
+
+        eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+        eval_p_plus.integrate_scatter(EvaluationFlags::values, dst);
+      }
+  }
+
+
+  void
+  local_convective_boundary_face(
+    const MatrixFree<dim, number>               &data,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &face_range) const
+  {
+    FEFaceEvaluation<dim, -1, 0, 1, number> eval_p_minus(data, true, dof_no_p, quad_no_v);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data,
+                                                           true,
+                                                           dof_no_v,
+                                                           quad_no_v);
+
+    auto dirichlet_bc_velocity = dirichletBC_velocity_factory();
+    dirichlet_bc_velocity->set_time(time);
+    for (unsigned int face = face_range.first; face < face_range.second; face++)
+      {
+        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
+          {
+            eval_p_minus.reinit(face);
+
+            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+              {
+                eval_p_minus.submit_value({}, q);
+              }
+
+            eval_p_minus.integrate_scatter(EvaluationFlags::values,
+                                           dst);
+          }
+        else
+          {
+            eval_p_minus.reinit(face);
+            eval_u_minus.reinit(face);
+
+            eval_u_minus.gather_evaluate(src, EvaluationFlags::values
+                                         | EvaluationFlags::gradients);
+
+            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+              {
+                const auto normal = eval_p_minus.normal_vector(q);
+
+                dirichlet_bc_velocity->set_time(time);
+                const auto grad_u = eval_u_minus.get_gradient(q);
+                  // evaluate_tensor_function((*dirichlet_bc_velocity),
+                  //                         eval_p_minus.quadrature_point(q));
+                const auto u_plus          = eval_u_minus.get_value(q);
+                const auto convective_flux = (grad_u * u_plus) * normal;
+
+                eval_p_minus.submit_value(convective_flux, q);
+              }
+
+            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+          }
+      }
+  }
+
+  void
+  local_divergence_domain(const MatrixFree<dim, number>               &data,
+                          VectorType                                  &dst,
+                          const VectorType                            &src,
+                          const std::pair<unsigned int, unsigned int> &cell_range) const
+  {
+    FEEvaluation<dim, -1, 0, 1, number>   eval_p(data, dof_no_p, quad_no_v_mass);
+    FEEvaluation<dim, -1, 0, dim, number> eval_u(data, dof_no_v, quad_no_v_mass);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
+      {
+        eval_p.reinit(cell);
+        eval_u.reinit(cell);
+
+        eval_u.gather_evaluate(src, EvaluationFlags::values);
+
+        // loop over quadrature points and compute the local volume flux
+        for (const unsigned int q : eval_p.quadrature_point_indices())
+          {
+            const auto u = - eval_u.get_value(q);
+            eval_p.submit_gradient(u, q);
+          }
+
+        // multiply by nabla v^h(x) and sum
+        eval_p.integrate_scatter(EvaluationFlags::gradients, dst);
+      }
+  }
+
+  void
+  local_divergence_inner_face(
+    const MatrixFree<dim, number>               &data,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &face_range) const
+  {
+    if (!is_dg)
+      return;
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data,
+                                                         true,
+                                                         dof_no_p,
+                                                         quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_plus(data,
+                                                        false,
+                                                        dof_no_p,
+                                                        quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data,
+                                                           true,
+                                                           dof_no_v,
+                                                           quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_plus(data,
+                                                          false,
+                                                          dof_no_v,
+                                                          quad_no_v_mass);
+
+    for (unsigned int face = face_range.first; face < face_range.second; face++)
+      {
+        eval_p_minus.reinit(face);
+        eval_p_plus.reinit(face);
+        eval_u_minus.reinit(face);
+        eval_u_plus.reinit(face);
+
+        eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
+        eval_u_plus.gather_evaluate(src, EvaluationFlags::values);
+
+        for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+          {
+            const auto normal = eval_p_minus.normal_vector(q);
+            const auto div_factor =
+              0.5 * (eval_u_minus.get_value(q) + eval_u_plus.get_value(q)) * normal;
+
+            eval_p_minus.submit_value(div_factor, q);
+            eval_p_plus.submit_value(-div_factor, q);
+          }
+
+        eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+        eval_p_plus.integrate_scatter(EvaluationFlags::values, dst);
+      }
+  }
+
+  void
+  local_divergence_boundary_face(
+    const MatrixFree<dim, number>               &data,
+    VectorType                                  &dst,
+    const VectorType                            &src,
+    const std::pair<unsigned int, unsigned int> &face_range) const
+  {
+    FEFaceEvaluation<dim, -1, 0, 1, number>   eval_p_minus(data,
+                                                         true,
+                                                         dof_no_p,
+                                                         quad_no_v_mass);
+    FEFaceEvaluation<dim, -1, 0, dim, number> eval_u_minus(data,
+                                                           true,
+                                                           dof_no_v,
+                                                           quad_no_v_mass);
+
+    auto velocity_bc = dirichletBC_velocity_factory();
+    velocity_bc->set_time(time);
+
+    for (unsigned int face = face_range.first; face < face_range.second; face++)
+      {
+        if (data.get_boundary_id(face) == 0 || data.get_boundary_id(face) == 2)
+          {
+            eval_p_minus.reinit(face);
+
+            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+              {
+                eval_p_minus.submit_value({}, q);
+              }
+
+            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
+          }
+        else
+          {
+            eval_p_minus.reinit(face);
+            eval_u_minus.reinit(face);
+
+            eval_u_minus.gather_evaluate(src, EvaluationFlags::values);
+
+            for (const unsigned int q : eval_p_minus.quadrature_point_indices())
+              {
+                const auto value_flux = eval_u_minus.get_value(q) * eval_u_minus.normal_vector(q);
+                eval_p_minus.submit_value(value_flux, q);
+              }
+
+            eval_p_minus.integrate_scatter(EvaluationFlags::values, dst);
           }
       }
   }
