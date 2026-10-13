@@ -1,4 +1,6 @@
 
+#pragma once
+
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_cg.h>
@@ -18,16 +20,10 @@
 #include <deal.II/multigrid/mg_transfer_matrix_free.h>
 #include <deal.II/multigrid/multigrid.h>
 
+#include "consistent_splitting_solver.h"
 
-// #include "consistent_splitting_solver.h"
 
 using namespace dealii;
-
-template <int dim1, int n_components, typename Number>
-class MomentumOperator;
-
-template <int dim, typename Number>
-class PressureOperator;
 
 
 template <int dim, typename number>
@@ -1083,7 +1079,7 @@ namespace BlockJacobi
             average_velocity[d] * ((1.0 - blend_factor_eig[d]) * eigenvalues[0][i] +
                                    blend_factor_eig[d] * eigenvalues[1][i]);
 
-      for (int i2 = 0, c = 0; i2 < n_eigenvalues; ++i2)
+      for (int i2 = 0, c = 0; i2 < (dim > 2 ? n_eigenvalues : 1); ++i2)
         for (int i1 = 0; i1 < n_eigenvalues; ++i1)
           {
             std::array<vcomplex, 4> diagonal_element_yz;
@@ -1142,8 +1138,8 @@ namespace BlockJacobi
     vmult(Vector<Number> &dst, const Vector<Number> &src) const
     {
       constexpr unsigned int n_lanes = VectorizedArray<Number>::size();
-      AssertDimension(n_lanes * data_array.size(), dst.size());
-      AssertDimension(n_lanes * data_array.size(), src.size());
+      AssertDimension(n_lanes * data_array.size(), dst.size() / n_components);
+      AssertDimension(n_lanes * data_array.size(), src.size() / n_components);
       apply(reinterpret_cast<const VectorizedArray<Number> *>(src.begin()),
             reinterpret_cast<VectorizedArray<Number> *>(dst.begin()));
     }
@@ -1178,7 +1174,7 @@ namespace BlockJacobi
 
           constexpr int n_pairs = Utilities::pow(2, dim);
 
-          for (int i2 = 0, j2 = 0, c = 0; i2 < n_eigenvalues;
+          for (int i2 = 0, j2 = 0, c = 0; i2 < (dim > 2 ? n_eigenvalues : 1);
                j2 += (dim > 2 && i2 < n_complex_eigenvalues ? 2 : 1), ++i2)
             for (int i1 = 0, j1 = 0; i1 < n_eigenvalues;
                  j1 += (i1 < n_complex_eigenvalues ? 2 : 1), ++i1)
@@ -1343,20 +1339,48 @@ namespace BlockJacobi
   };
 
 
+  template <int dim, int degree, typename Number>
+  class CellwiseOperatorMomentum
+  {
+  public:
+    CellwiseOperatorMomentum(const MomentumOperator<dim, dim, Number> &momentum_op,
+                             const unsigned int                        cell_batch_index)
+      : momentum_op(momentum_op)
+      , cell_batch_index(cell_batch_index)
+    {}
+
+    void
+    vmult(Vector<Number> &dst, const Vector<Number> &src) const
+    {
+      constexpr unsigned int n_q_points = degree + 1;
+      momentum_op.template apply_cellwise_operator_in_collocation_basis<n_q_points>(
+        cell_batch_index,
+        (const VectorizedArray<Number> *)src.begin(),
+        (VectorizedArray<Number> *)dst.begin());
+    }
+
+  private:
+    const MomentumOperator<dim, dim, Number> &momentum_op;
+    const unsigned int                        cell_batch_index;
+  };
+
+
 
   template <int dim, typename Number>
   class PreconditionerMomentum
   {
   public:
-    static constexpr bool do_batched_solver = false;
-    using VectorType                        = LinearAlgebra::distributed::Vector<Number>;
-    PreconditionerMomentum(const MatrixFree<dim, Number> &matrix_free,
-                           const unsigned int             velocity_dof_handler_in_mf,
-                           const unsigned int             batched_solver_iterations,
-                           const double                   diffusivity)
-      : matrix_free(matrix_free)
+    using VectorType = LinearAlgebra::distributed::Vector<Number>;
+    PreconditionerMomentum(const MomentumOperator<dim, dim, Number> &momentum_op,
+                           const unsigned int velocity_dof_handler_in_mf,
+                           const unsigned int batched_solver_iterations,
+                           const double       diffusivity)
+      : matrix_free(momentum_op.get_matrix_free())
+      , momentum_op(momentum_op)
       , dof_index_velocity(velocity_dof_handler_in_mf)
       , batched_solver_iterations(batched_solver_iterations)
+      , n_vmult_evaluations(0)
+      , time_vmult(0)
     {
       const double flux_alpha = 0.5;
       scaled_cell_velocity.resize_fast(matrix_free.n_cell_batches());
@@ -1366,7 +1390,7 @@ namespace BlockJacobi
 
       QGauss<1>               gauss_quad(fe.degree + 1);
       QGaussLobatto<1>        lobatto_quad(gauss_quad.size());
-      FE_DGQArbitraryNodes<1> fe_1d(do_batched_solver ?
+      FE_DGQArbitraryNodes<1> fe_1d(batched_solver_iterations > 0 ?
                                       static_cast<Quadrature<1> &>(gauss_quad) :
                                       static_cast<Quadrature<1> &>(lobatto_quad));
       for (unsigned int c = 0; c < 2; ++c)
@@ -1438,6 +1462,17 @@ namespace BlockJacobi
     }
 
     void
+    print_compute_times(const MPI_Comm comm, const double total_solver_time)
+    {
+      if (n_vmult_evaluations > 0)
+        helper::print_time(time_vmult,
+                           "Block Jacobi momentum " +
+                             std::to_string(n_vmult_evaluations) + "x",
+                           comm,
+                           total_solver_time);
+    }
+
+    void
     reinit(const VectorType &velocity, const Number inverse_dt)
     {
       FEEvaluation<dim, -1, 0, dim, Number> evaluator(matrix_free, dof_index_velocity);
@@ -1456,36 +1491,114 @@ namespace BlockJacobi
           scaled_cell_velocity[cell] = integrated_velocity / volume;
         }
       this->inverse_dt = inverse_dt;
+
+      // create dense matrices for the 'true' block Jacobi method
+      if (batched_solver_iterations == numbers::invalid_unsigned_int)
+        {
+          const unsigned int     dofs_per_comp = evaluator.dofs_per_component;
+          constexpr unsigned int n_lanes       = VectorizedArray<Number>::size();
+          cell_matrices.resize(matrix_free.n_cell_batches() * n_lanes,
+                               LAPACKFullMatrix<float>(dofs_per_comp, dofs_per_comp));
+          AlignedVector<VectorizedArray<Number>> local_src(evaluator.dofs_per_cell);
+          AlignedVector<VectorizedArray<Number>> local_dst(local_src.size());
+          const unsigned int                     degree =
+            matrix_free.get_dof_handler(dof_index_velocity).get_fe().degree;
+
+          for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
+            {
+              for (unsigned int v = 0; v < n_lanes; ++v)
+                cell_matrices[cell * n_lanes + v] = 0;
+              for (unsigned int i = 0; i < dofs_per_comp; ++i)
+                {
+                  local_src.fill(0.);
+                  local_src[i] = 1.;
+
+                  if (degree == 1)
+                    do_local_vmult<1>(cell, local_dst, local_src);
+                  else if (degree == 2)
+                    do_local_vmult<2>(cell, local_dst, local_src);
+                  else if (degree == 3)
+                    do_local_vmult<3>(cell, local_dst, local_src);
+                  else if (degree == 4)
+                    do_local_vmult<4>(cell, local_dst, local_src);
+                  else if (degree == 5)
+                    do_local_vmult<5>(cell, local_dst, local_src);
+                  else if (degree == 6)
+                    do_local_vmult<6>(cell, local_dst, local_src);
+                  else if (degree == 7)
+                    do_local_vmult<7>(cell, local_dst, local_src);
+                  else if (degree == 8)
+                    do_local_vmult<8>(cell, local_dst, local_src);
+                  else
+                    AssertThrow(false,
+                                ExcMessage("Degree " + std::to_string(degree) +
+                                           " not instantiated"));
+                  for (unsigned int v = 0; v < n_lanes; ++v)
+                    for (unsigned int j = 0; j < dofs_per_comp; ++j)
+                      cell_matrices[cell * n_lanes + v](j, i) = local_dst[j][v];
+                }
+              for (unsigned int v = 0; v < n_lanes; ++v)
+                cell_matrices[cell * n_lanes + v].compute_lu_factorization();
+            }
+        }
     }
 
     void
     vmult(LinearAlgebra::distributed::Vector<Number>       &dst,
           const LinearAlgebra::distributed::Vector<Number> &src) const
     {
-      const unsigned int degree =
-        matrix_free.get_dof_handler(dof_index_velocity).get_fe().degree;
-      if (degree == 1)
-        do_vmult<1>(dst, src);
-      else if (degree == 2)
-        do_vmult<2>(dst, src);
-      else if (degree == 3)
-        do_vmult<3>(dst, src);
-      else if (degree == 4)
-        do_vmult<4>(dst, src);
-      else if (degree == 5)
-        do_vmult<5>(dst, src);
-      else if (degree == 6)
-        do_vmult<6>(dst, src);
-      else if (degree == 7)
-        do_vmult<7>(dst, src);
-      else if (degree == 8)
-        do_vmult<8>(dst, src);
-      else if (degree == 9)
-        do_vmult<9>(dst, src);
+      Timer time;
+      if (batched_solver_iterations < numbers::invalid_unsigned_int)
+        {
+          const unsigned int degree =
+            matrix_free.get_dof_handler(dof_index_velocity).get_fe().degree;
+          if (degree == 1)
+            do_vmult<1>(dst, src);
+          else if (degree == 2)
+            do_vmult<2>(dst, src);
+          else if (degree == 3)
+            do_vmult<3>(dst, src);
+          else if (degree == 4)
+            do_vmult<4>(dst, src);
+          else if (degree == 5)
+            do_vmult<5>(dst, src);
+          else if (degree == 6)
+            do_vmult<6>(dst, src);
+          else if (degree == 7)
+            do_vmult<7>(dst, src);
+          else if (degree == 8)
+            do_vmult<8>(dst, src);
+          else if (degree == 9)
+            do_vmult<9>(dst, src);
+          else
+            AssertThrow(false,
+                        ExcNotImplemented("Degree " + std::to_string(degree) +
+                                          " not instantiated"));
+        }
       else
-        AssertThrow(false,
-                    ExcNotImplemented("Degree " + std::to_string(degree) +
-                                      " not instantiated"));
+        {
+          const unsigned int *dof_indices_dg =
+            matrix_free.get_dof_info(dof_no_v)
+              .dof_indices_contiguous
+                [internal::MatrixFreeFunctions::DoFInfo::dof_access_cell]
+              .data();
+          // apply LU factorization of LAPACK matrices
+          const unsigned int      dofs_per_comp = cell_matrices[0].m();
+          LAPACKFullMatrix<float> local_sol(dofs_per_comp, dim);
+          for (unsigned int cell = 0; cell < cell_matrices.size(); ++cell)
+            {
+              const unsigned int idx = dof_indices_dg[cell];
+              for (unsigned int d = 0; d < dim; ++d)
+                for (unsigned int i = 0; i < dofs_per_comp; ++i)
+                  local_sol(i, d) = src.local_element(idx + d * dofs_per_comp + i);
+              cell_matrices[cell].solve(local_sol);
+              for (unsigned int d = 0; d < dim; ++d)
+                for (unsigned int i = 0; i < dofs_per_comp; ++i)
+                  dst.local_element(idx + d * dofs_per_comp + i) = local_sol(i, d);
+            }
+        }
+      time_vmult += time.wall_time();
+      ++n_vmult_evaluations;
     }
 
     template <int degree>
@@ -1495,23 +1608,28 @@ namespace BlockJacobi
     {
       FEEvaluation<dim, degree, degree + 1, dim, Number> eval(matrix_free);
       MyVectorMemory<Vector<Number>>                     memory;
-      Vector<Number> local_src(eval.dofs_per_cell * VectorizedArray<Number>::size());
-      Vector<Number> local_dst(local_src);
+      constexpr unsigned int n_lanes = VectorizedArray<Number>::size();
+      Vector<Number>         local_src(eval.dofs_per_cell * n_lanes);
+      Vector<Number>         local_dst(local_src.size());
 
       IterationNumberControl control(batched_solver_iterations, 1e-18, false, false);
       typename SolverGMRES<Vector<Number>>::AdditionalData gmres_data;
-      gmres_data.right_preconditioning = true;
+      gmres_data.right_preconditioning = false;
       gmres_data.orthogonalization_strategy =
         LinearAlgebra::OrthogonalizationStrategy::classical_gram_schmidt;
-      gmres_data.max_basis_size = batched_solver_iterations;
+      gmres_data.max_basis_size = std::max(1u, batched_solver_iterations);
       gmres_data.batched_mode   = true;
       SolverGMRES<Vector<Number>> gmres(control, memory, gmres_data);
+
       CellwisePreconditionerFDM<dim, dim, degree, Number> cell_fdm;
+      const unsigned int                                 *dof_indices_dg =
+        matrix_free.get_dof_info(dof_no_v)
+          .dof_indices_contiguous[internal::MatrixFreeFunctions::DoFInfo::dof_access_cell]
+          .data();
 
       for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell)
         {
           eval.reinit(cell);
-          eval.read_dof_values(src);
           cell_fdm.reinit(eigenvectors,
                           inverse_eigenvectors,
                           eigenvalues,
@@ -1520,21 +1638,147 @@ namespace BlockJacobi
                           scaled_cell_velocity[cell],
                           inverse_dt);
 
-          cell_fdm.apply(eval.begin_dof_values(), eval.begin_dof_values());
+          if (batched_solver_iterations == 0)
+            {
+              eval.reinit(cell);
+              eval.read_dof_values(src);
+              cell_fdm.apply(eval.begin_dof_values(), eval.begin_dof_values());
+              eval.set_dof_values(dst);
+            }
+          else
+            {
+              CellwiseOperatorMomentum<dim, degree, Number> local_operator(momentum_op,
+                                                                           cell);
 
-          eval.set_dof_values(dst);
+              constexpr unsigned int dofs_per_comp = Utilities::pow(degree + 1, dim);
+              internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
+                                               dim,
+                                               degree + 1,
+                                               degree + 1,
+                                               VectorizedArray<Number>,
+                                               Number>
+                evaluator({},
+                          {},
+                          matrix_free.get_shape_info(dof_no_v, quad_no_v_mass)
+                            .data[0]
+                            .inverse_shape_values_eo);
+
+              for (unsigned int comp = 0; comp < dim; ++comp)
+                {
+                  VectorizedArray<Number> *src_ptr =
+                    (VectorizedArray<Number> *)local_src.data() + comp * dofs_per_comp;
+                  if (matrix_free.n_active_entries_per_cell_batch(cell) == n_lanes)
+                    vectorized_load_and_transpose(dofs_per_comp,
+                                                  src.begin() + comp * dofs_per_comp,
+                                                  dof_indices_dg + cell * n_lanes,
+                                                  src_ptr);
+                  else
+                    AssertThrow(false,
+                                ExcMessage(
+                                  "Currently only fully populated lanes supported"));
+
+
+                  // For transforming to collocation basis, select 'apply'
+                  // method with hessian slot because values assume symmetries
+                  // that do not exist in the inverse shapes
+
+                  evaluator.template hessians<0, true, false>(src_ptr, src_ptr);
+                  if constexpr (dim > 1)
+                    evaluator.template hessians<1, true, false>(src_ptr, src_ptr);
+                  if constexpr (dim > 2)
+                    evaluator.template hessians<2, true, false>(src_ptr, src_ptr);
+                }
+
+              VectorizedArray<Number> *dst_ptr =
+                (VectorizedArray<Number> *)local_dst.data();
+              for (unsigned int i = 0; i < dim * dofs_per_comp; ++i)
+                dst_ptr[i] = VectorizedArray<Number>();
+
+              gmres.solve(local_operator, local_dst, local_src, cell_fdm);
+
+              // transform from collocation basis back to given basis
+              for (unsigned int comp = 0; comp < dim; ++comp)
+                {
+                  evaluator.template hessians<0, false, false>(
+                    dst_ptr + comp * dofs_per_comp, dst_ptr + comp * dofs_per_comp);
+                  if constexpr (dim > 1)
+                    evaluator.template hessians<1, false, false>(
+                      dst_ptr + comp * dofs_per_comp, dst_ptr + comp * dofs_per_comp);
+                  if constexpr (dim > 2)
+                    evaluator.template hessians<2, false, false>(
+                      dst_ptr + comp * dofs_per_comp, dst_ptr + comp * dofs_per_comp);
+
+                  if (matrix_free.n_active_entries_per_cell_batch(cell) == n_lanes)
+                    vectorized_transpose_and_store(false,
+                                                   dofs_per_comp,
+                                                   dst_ptr + comp * dofs_per_comp,
+                                                   dof_indices_dg + cell * n_lanes,
+                                                   dst.begin() + comp * dofs_per_comp);
+                  else
+                    AssertThrow(false,
+                                ExcMessage(
+                                  "Currently only fully populated lanes supported"));
+                }
+            }
         }
     }
 
   private:
-    const MatrixFree<dim, Number>     &matrix_free;
-    const unsigned int                 dof_index_velocity;
-    const unsigned int                 batched_solver_iterations;
-    Number                             inverse_dt;
-    std::array<FullMatrix<double>, 2>  eigenvectors, inverse_eigenvectors;
-    std::array<std::vector<double>, 2> eigenvalues;
-    unsigned int                       n_complex_eigenvalues;
+    const MatrixFree<dim, Number>            &matrix_free;
+    const MomentumOperator<dim, dim, Number> &momentum_op;
+    const unsigned int                        dof_index_velocity;
+    const unsigned int                        batched_solver_iterations;
+    Number                                    inverse_dt;
+    std::array<FullMatrix<double>, 2>         eigenvectors, inverse_eigenvectors;
+    std::array<std::vector<double>, 2>        eigenvalues;
+    unsigned int                              n_complex_eigenvalues;
     AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> scaled_cell_velocity;
+
+    std::vector<LAPACKFullMatrix<float>> cell_matrices;
+
+    mutable unsigned int n_vmult_evaluations;
+    mutable double       time_vmult;
+
+    template <int degree>
+    void
+    do_local_vmult(const unsigned int                      cell_batch,
+                   AlignedVector<VectorizedArray<Number>> &dst,
+                   AlignedVector<VectorizedArray<Number>> &src) const
+    {
+      constexpr unsigned int dofs_per_comp = Utilities::pow(degree + 1, dim);
+      internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
+                                       dim,
+                                       degree + 1,
+                                       degree + 1,
+                                       VectorizedArray<Number>,
+                                       Number>
+        evaluator(
+          {},
+          {},
+          matrix_free.get_shape_info(dof_no_v, quad_no_v_mass).data[0].shape_values_eo);
+      for (unsigned int comp = 0; comp < dim; ++comp)
+        {
+          VectorizedArray<Number> *src_ptr = src.data() + comp * dofs_per_comp;
+          evaluator.template hessians<0, true, false>(src_ptr, src_ptr);
+          if constexpr (dim > 1)
+            evaluator.template hessians<1, true, false>(src_ptr, src_ptr);
+          if constexpr (dim > 2)
+            evaluator.template hessians<2, true, false>(src_ptr, src_ptr);
+
+          constexpr unsigned int n_q_points = degree + 1;
+          momentum_op.template apply_cellwise_operator_in_collocation_basis<n_q_points>(
+            cell_batch, src.data(), dst.data());
+          for (unsigned int comp = 0; comp < dim; ++comp)
+            {
+              VectorizedArray<Number> *dst_ptr = dst.data() + comp * dofs_per_comp;
+              evaluator.template hessians<0, false, false>(dst_ptr, dst_ptr);
+              if constexpr (dim > 1)
+                evaluator.template hessians<1, false, false>(dst_ptr, dst_ptr);
+              if constexpr (dim > 2)
+                evaluator.template hessians<2, false, false>(dst_ptr, dst_ptr);
+            }
+        }
+    }
   };
 
 } // namespace BlockJacobi
