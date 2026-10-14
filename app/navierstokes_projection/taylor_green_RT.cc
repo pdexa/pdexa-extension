@@ -32,7 +32,7 @@
 #include <typeinfo>
 
 
-#include "consistent_splitting_solver_RT_stabiliazed.h"
+#include "consistent_splitting_solver_RT.h"
 #include "evaluators.h"
 #include "preconditioners.h"
 
