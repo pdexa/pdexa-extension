@@ -1,0 +1,863 @@
+
+#include <deal.II/base/conditional_ostream.h>
+#include <deal.II/base/logstream.h>
+#include <deal.II/base/mpi.h>
+#include <deal.II/base/timer.h>
+
+#include <deal.II/distributed/fully_distributed_tria.h>
+#include <deal.II/distributed/tria.h>
+
+#include <deal.II/dofs/dof_handler.h>
+#include <deal.II/dofs/dof_tools.h>
+
+#include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_raviart_thomas.h>
+#include <deal.II/fe/fe_simplex_p.h>
+#include <deal.II/fe/fe_system.h>
+#include <deal.II/fe/mapping_fe.h>
+
+#include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_in.h>
+#include <deal.II/grid/grid_out.h>
+#include <deal.II/grid/grid_tools.h>
+#include <deal.II/grid/manifold_lib.h>
+
+#include <deal.II/numerics/data_out.h>
+#include <deal.II/numerics/matrix_creator.h>
+#include <deal.II/numerics/vector_tools.h>
+
+#include <fstream>
+
+#include "preconditioners.h"
+#include "evaluators.h"
+#include "consistent_splitting_solver_RT.h"
+#include "Orr_Sommerfeld_Eigenvector.h"
+
+
+using namespace dealii;
+
+
+const bool use_neumann_boundary                      = false;
+const bool use_pure_neummann_boundary                 = false;
+const bool use_skew_symmetric_convective_formulation = false;
+const bool use_divergence_formulation                = false;
+const bool use_leray_projection                      = true;
+
+const bool use_amg                       = false;
+const bool use_hmg                       = true;
+const bool use_pmg                       = false;
+const bool use_cmg                       = false;
+const bool use_pointjacobi_pressure      = false;
+const bool use_amg_as_coarse_grid_solver = false;
+
+const bool use_velocity_point_jacobi         = false;
+const bool use_inverse_mass_velocity         = false;
+const bool use_mg_velocity                   = false;
+const bool use_cmg_vel                       = false;
+const bool use_pmg_vel                       = false;
+const bool use_hmg_vel                       = false;
+const bool use_amg_as_coarse_grid_solver_vel = false;
+
+const double Re = 7500;
+const double u_max = 1.0;
+const double alpha = 1.0;
+const double H = 1.;
+const double viscosity = (u_max * H) / Re;
+const double epsilon = 1e-5;
+const double Left         = 0.;
+const double Right        = (2 * dealii::numbers::PI) / alpha; ;
+
+template <int dim>
+class AnalyticalSolutionVelocity : public dealii::Function<dim>
+{
+public:
+  AnalyticalSolutionVelocity(double const                              H,
+                             double const                              MAX_VELOCITY,
+                             double const                              ALPHA,
+                             double const                              EPSILON,
+                             dealii::FE_DGQ<1> const &                 FE,
+                             std::complex<double> const &              OMEGA,
+                             std::vector<std::complex<double>> const & EIG_VEC)
+    : dealii::Function<dim>(dim, 0.0),
+      H(H),
+      MAX_VELOCITY(MAX_VELOCITY),
+      ALPHA(ALPHA),
+      EPSILON(EPSILON),
+      FE(FE),
+      OMEGA(OMEGA),
+      EIG_VEC(EIG_VEC)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & p, unsigned int const component = 0) const final
+  {
+    double t      = this->get_time();
+    double result = 0.0;
+
+    double const x = p[0] / H;
+    // transform from interval [-H,H] (-> y) to unit interval [0,1] (-> eta)
+    double const eta = 0.5 * (p[1] / H + 1.0);
+
+    Assert(eta <= 1.0 + 1.e-12 and eta >= 0.0 - 1.e-12,
+           dealii::ExcMessage("Point in reference coordinates is invalid."));
+
+    double cos = std::cos(ALPHA * x - OMEGA.real() * t);
+    double sin = std::sin(ALPHA * x - OMEGA.real() * t);
+
+    double amplification = std::exp(OMEGA.imag() * t);
+
+    std::complex<double> exp(cos, sin);
+
+    if(component == 0)
+    {
+      double base = MAX_VELOCITY * (1.0 - pow(p[1] / H, 2.0));
+
+      // d(psi)/dy = d(psi)/d(eta) * d(eta)/dy
+      // evaluate derivative d(psi)/d(eta) in eta(y)
+      std::complex<double> dpsi = 0;
+      for(unsigned int i = 0; i < FE.get_degree() + 1; ++i)
+        dpsi += EIG_VEC[i] * FE.shape_grad(i, dealii::Point<1>(eta))[0];
+
+      // multiply by d(eta)/dy to obtain derivative d(psi)/dy in physical space
+      dpsi *= 0.5 / H;
+
+      std::complex<double> perturbation_complex = dpsi * exp * amplification;
+      double               perturbation         = perturbation_complex.real();
+
+      result = base + EPSILON * perturbation;
+    }
+    else if(component == 1)
+    {
+      // evaluate function psi in y
+      std::complex<double> psi = 0;
+      for(unsigned int i = 0; i < FE.get_degree() + 1; ++i)
+        psi += EIG_VEC[i] * FE.shape_value(i, dealii::Point<1>(eta));
+
+      std::complex<double> i(0, 1);
+      std::complex<double> perturbation_complex = -i * ALPHA * psi * exp * amplification;
+      double               perturbation         = perturbation_complex.real();
+
+      result = EPSILON * perturbation;
+    }
+    else
+    {
+      Assert(false, dealii::ExcMessage("Orr-Sommerfeld problem is a 2-dimensional problem."));
+    }
+
+    return result;
+  }
+
+  dealii::Tensor<1, dim, double>
+  gradient(const dealii::Point<dim> &, const unsigned int) const final
+  {
+    DEAL_II_NOT_IMPLEMENTED();
+  }
+
+private:
+  double const H            = 1.0;
+  double const MAX_VELOCITY = 1.0;
+  double const ALPHA        = 1.0;
+  double const EPSILON      = 1.0e-5;
+
+  dealii::FE_DGQ<1> const &                 FE;
+  std::complex<double> const &              OMEGA;
+  std::vector<std::complex<double>> const & EIG_VEC;
+};
+
+template <int dim>
+class AnalyticalMeanFlowVelocity : public dealii::Function<dim>
+{
+public:
+  AnalyticalMeanFlowVelocity(double const                              H,
+                             double const                              MAX_VELOCITY)
+    : dealii::Function<dim>(dim, 0.0),
+      H(H),
+      MAX_VELOCITY(MAX_VELOCITY)
+  {
+  }
+
+  double
+  value(dealii::Point<dim> const & p, unsigned int const component = 0) const final
+  {
+    double result = 0.0;
+
+    if(component == 0)
+      result = MAX_VELOCITY * (1.0 - pow(p[1] / H, 2.0));
+    else if(component == 1)
+      result = 0;
+    else
+      Assert(false, dealii::ExcMessage("Orr-Sommerfeld problem is a 2-dimensional problem."));
+
+    return result;
+  }
+
+
+private:
+  double const H            = 1.0;
+  double const MAX_VELOCITY = 1.0;
+};
+
+
+template <int dim>
+class AnalyticalSolutionPressure : public dealii::Function<dim>
+{
+public:
+  AnalyticalSolutionPressure(const double viscosity, const double u_max, const double H)
+    : dealii::Function<dim>(1 /*n_components*/, 0.0)
+    , u_max(u_max)
+    , viscosity(viscosity)
+    , H(H)
+  {}
+
+  double
+  value(const dealii::Point<dim> &p, const unsigned int /*component*/) const final
+  {
+    (void) p;
+    double result = 0.0;
+    return result;
+  }
+
+private:
+  const double   u_max, viscosity, H;
+};
+
+
+
+template <int dim>
+class AnalyticalRHS : public dealii::Function<dim>
+{
+public:
+  AnalyticalRHS(double const viscosity, double const max_velocity, double const H)
+    : dealii::Function<dim>(dim, 0.0), nu(viscosity), U_max(max_velocity), H(H)
+  {}
+
+  double
+  value(dealii::Point<dim> const & /*p*/, unsigned int const component = 0) const final
+  {
+    double result = 0.0;
+
+    // mean flow is driven by a constant body force since we use
+    // periodic BC's in streamwise direction.
+    // Body force is derived by a balance of forces in streamwise direction
+    //   f * L * 2H = tau * 2 * L (2H = height, L = length, factor 2 = upper and lower wall)
+    // with tau = nu du/dy|_{y=-H} = nu * U_max * (-2y/H^2)|_{y=-H} = 2 * nu * U_max / H
+    if(component == 0)
+      result = 2. * nu * U_max / (H * H);
+    else if(component  == 1)
+      result = 0.0;
+    return result;
+  }
+
+private:
+  double const nu, U_max, H;
+};
+
+
+
+
+
+
+
+template <int dim, typename Number>
+void
+do_test(const unsigned int fe_degree,
+        const unsigned int n_refinements)
+{
+  ConditionalOStream pcout(std::cout,
+                           Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
+  
+  std::ostringstream filename;
+  filename << "Orr-Sommerfeld_convergence_"
+	        <<"_k"<<fe_degree
+          <<"_l"<<n_refinements
+             << ".txt";
+  std::ofstream fout(filename.str());
+  ConditionalOStream pfout(fout,
+                           Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
+  //pfout<<"t/T0\tE(t)/E(0)\texp(2*omega_i*t)\n";
+
+  Timer                time_setup;
+  FESystem<dim>  fe_curl(FE_DGQ<dim>(fe_degree + 1), dim);
+  FE_RaviartThomasNodal<dim>    fe_u(fe_degree);
+  FE_DGQ<dim>          fe_p(fe_degree);
+  MappingQGeneric<dim> mapping(fe_degree);
+
+  parallel::distributed::Triangulation<dim> tria(
+    MPI_COMM_WORLD, Triangulation<dim>::limit_level_difference_at_vertices);
+
+  pcout << "Setup tria" << std::endl;
+  
+
+  
+
+  std::vector<unsigned int> repetitions({1, 1});
+  dealii::Point<dim>        point1(Left, -H), point2(Right, H);
+  dealii::GridGenerator::subdivided_hyper_rectangle(tria, repetitions, point1, point2);
+
+  pcout << "Setup boundary" << std::endl;
+
+  const bool periodic_boundary = true;
+  std::vector<std::pair<dealii::types::boundary_id, dealii::types::boundary_id>> periodic_boundary_ids;
+  if (periodic_boundary)
+    {
+      std::vector<dealii::GridTools::PeriodicFacePair<
+                                                   typename dealii::Triangulation<
+                                                     dim>::cell_iterator>> periodic_face_pairs;
+      // periodicity in x-direction
+      for(auto cell : tria.cell_iterators())
+      {
+        for(auto const & f : cell->face_indices())
+        {
+          if((std::fabs(cell->face(f)->center()(0) - 0.0) < 1e-12))
+            cell->face(f)->set_boundary_id(0 + 10);
+          if((std::fabs(cell->face(f)->center()(0) - Right) < 1e-12))
+            cell->face(f)->set_boundary_id(1 + 10);
+        }
+      }
+      periodic_boundary_ids.emplace_back(0 + 10, 1 + 10);
+      dealii::GridTools::collect_periodic_faces(tria, 0 + 10, 1 + 10, 0, periodic_face_pairs);
+      tria.add_periodicity(periodic_face_pairs);
+    }
+  
+  pcout << "Refine tria" << std::endl;
+
+  tria.refine_global(n_refinements);
+
+  // Orr-Sommerfeld solver: calculates unstable eigenvalue (OMEGA) of
+  // Orr-Sommerfeld equation for Poiseuille flow and corresponding eigenvector (EIG_VEC).
+  // do not use more than 300 due to conditioning of polynomials
+  unsigned int const DEGREE_OS_SOLVER = 200;
+
+  double PI = dealii::numbers::PI;
+
+  dealii::FE_DGQ<1> FE = dealii::FE_DGQ<1>(DEGREE_OS_SOLVER);
+
+  std::complex<double> OMEGA;
+
+  std::vector<std::complex<double>> EIG_VEC =
+    std::vector<std::complex<double>>(DEGREE_OS_SOLVER + 1);
+  compute_eigenvector(EIG_VEC, OMEGA, Re, alpha, FE);
+  double t0       = 2.0 * PI * alpha / OMEGA.real();
+  double end_time = 2.0 * t0;
+  double omega_i = OMEGA.imag();
+
+  DoFHandler<dim> dof_handler_u(tria);
+  dof_handler_u.distribute_dofs(fe_u);
+
+  DoFHandler<dim> dof_handler_p(tria);
+  dof_handler_p.distribute_dofs(fe_p);
+
+
+  DoFHandler<dim> dof_handler_curl(tria);
+  dof_handler_curl.distribute_dofs(fe_curl);
+
+  pcout << "number of active_cells: " << tria.n_global_active_cells() << std::endl;
+  pcout << "Solving with " << fe_u.get_name() << " x " << fe_p.get_name() << " element"
+        << std::endl;
+  pcout << "number of degrees of freedom: " << dof_handler_u.n_dofs() << " + "
+        << dof_handler_p.n_dofs() << std::endl;
+
+  double h_min = std::numeric_limits<double>::max();
+  for (const auto &cell : dof_handler_u.active_cell_iterators())
+    h_min = std::min(h_min, cell->minimum_vertex_distance());
+  double time_step_size = 1.;
+  //for (unsigned int i = 0; i < n_refinements_time; ++i)
+  //  time_step_size *= 0.5;
+  const double Cr = 0.2;
+  const double local_time_step =
+    Cr * time_step_size / std::pow(fe_degree, 1.5) * h_min / u_max; //CFL condition
+
+  const Number time_step =
+    dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD); // time_step_size
+  pcout << "Time step size: " << time_step << std::endl;
+
+  //end_time = std::min(end_time, 4. * time_step); //need tochange end_time
+  pcout << "End time: " << end_time << std::endl;
+
+  const unsigned int energy_output_interval = 5000;//static_cast<unsigned int>(end_time / time_step / 500.0);
+  pcout<< "Output interval for energy: " << energy_output_interval << std::endl;
+
+  const unsigned int bdf_order   = 3;
+  const unsigned int bdf_order_p = 2;
+
+  MomentumOperator<dim, dim, Number> momentum_op;
+  momentum_op.set_body_force_factory([=]() {
+    return std::make_unique<AnalyticalRHS<dim>>(viscosity, u_max, H);
+  });
+  momentum_op.set_dirichletBC_pressure_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionPressure<dim>>(viscosity, u_max, H);
+  });
+  momentum_op.set_DirichletBC_velocity_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionVelocity<dim>>(H, u_max, alpha, epsilon, FE, OMEGA, EIG_VEC);
+  });
+  // set up operator
+  momentum_op.set_time(0.0);
+  momentum_op.reinit(mapping, dof_handler_u, dof_handler_p, dof_handler_curl, time_step, bdf_order,
+                       1.0, periodic_boundary, periodic_boundary_ids);
+  
+  momentum_op.set_viscosity(viscosity);
+  
+
+  LinearAlgebra::distributed::Vector<Number> vec_u, vec_u_deriv, vec_u_rhs, vec_p,
+    vec_u_norm, speed_extrapolated, vec_vorticity, vec_p_rhs, vec_p_rhs_n, vec_p_norm,
+    vec_div_u, inverse_diagonal;
+  momentum_op.initialize_dof_vector(vec_u, dof_no_v);
+  momentum_op.initialize_dof_vector(vec_u_deriv, dof_no_v);
+  momentum_op.initialize_dof_vector(vec_u_rhs, dof_no_v);
+  momentum_op.initialize_dof_vector(vec_p, dof_no_p);
+  momentum_op.initialize_dof_vector(vec_u_norm, dof_no_v);
+  momentum_op.initialize_dof_vector(speed_extrapolated, dof_no_v);
+  momentum_op.initialize_dof_vector(vec_vorticity, dof_no_curl);
+  momentum_op.initialize_dof_vector(vec_p_rhs, dof_no_p);
+  momentum_op.initialize_dof_vector(vec_p_rhs_n, dof_no_p);
+  momentum_op.initialize_dof_vector(vec_p_norm, dof_no_p);
+  momentum_op.initialize_dof_vector(vec_div_u, dof_no_p);
+
+  std::vector<LinearAlgebra::distributed::Vector<Number>> vec_u_old(bdf_order);
+  for (auto &vec : vec_u_old)
+    momentum_op.initialize_dof_vector(vec, dof_no_v);
+
+  InverseMassPreconditioner<dim, Number> inverse_mass;
+  inverse_mass.reinit(momentum_op.get_matrix_free(), time_step);
+
+
+  DiagonalMatrix<LinearAlgebra::distributed::Vector<Number>>
+    preconditioner_velocity_pointjacobi;
+  DiagonalMatrix<LinearAlgebra::distributed::Vector<Number>>
+    preconditioner_pressure_pointjacobi;
+
+
+  PressureOperator<dim, Number> pressure_op;
+  pressure_op.reinit(momentum_op.get_matrix_free(), bdf_order, time_step, use_leray_projection);
+  pressure_op.set_body_force_factory([=]() {
+    return std::make_unique<AnalyticalRHS<dim>>(viscosity, u_max, H);
+  });
+  pressure_op.set_time_step(time_step);
+  pressure_op.set_viscosity(viscosity);
+  pressure_op.set_dirichletBC_pressure_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionPressure<dim>>(viscosity, u_max, H);
+  });
+  pressure_op.set_DirichletBC_velocity_factory ([=]() {
+    return std::make_unique<AnalyticalSolutionVelocity<dim>>(H, u_max, alpha, epsilon, FE, OMEGA, EIG_VEC);
+  });
+
+  TrilinosWrappers::SparseMatrix pressure_system_matrix;
+  if (use_amg)
+    pressure_op.get_system_matrix(AffineConstraints<double>(), pressure_system_matrix);
+  TrilinosWrappers::PreconditionAMG precondition_amg;
+
+  TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
+  amg_data.smoother_sweeps = 1;
+  amg_data.n_cycles        = 1;
+  amg_data.smoother_type   = "ILU";
+
+  if (use_amg)
+    precondition_amg.initialize(pressure_system_matrix, amg_data);
+
+  MultigridPreconditioner<dim, Number, Number> precondition_hmg(pressure_op,
+                                                               mapping.get_degree(),
+                                                               time_step,
+                                                               bdf_order,
+                                                               use_hmg,
+                                                               use_cmg,
+                                                               use_pmg,   
+                                                               use_amg_as_coarse_grid_solver,
+                                                               use_neumann_boundary);
+
+  Number current_time = 0;
+
+  AnalyticalSolutionVelocity<dim> exact_velocity(H, u_max, alpha, epsilon, FE, OMEGA, EIG_VEC);
+  AnalyticalSolutionPressure<dim> exact_pressure(viscosity, u_max, H);
+
+  exact_velocity.set_time(current_time);
+  VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u_old[0]);
+  exact_pressure.set_time(current_time);
+  VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
+
+  Number energy0;
+
+  {
+    momentum_op.set_mean_velocity_factory([=]() {
+      return std::make_unique<AnalyticalMeanFlowVelocity<dim>>(H, u_max);
+    });
+    momentum_op.calculate_perturbation_energy(vec_u_old[0], energy0);
+    /*momentum_op.calculate_energy(
+      vec_u_old[0], energy, enstrophy, dissipation, max_vorticity);*/
+    pcout << "Energy at t=0: " << energy0 << " "
+          << std::endl;
+    //pfout << 0 << "\t" << energy0/energy0 
+    //<<" \t" << exp(2 * omega_i * 0)<< std::endl;
+  }
+
+  const unsigned int output_interval  = 1;//end_time / time_step;
+  unsigned int       time_step_number = 0;
+
+  const bool write_output = true;
+
+  const double setup_time = time_setup.wall_time();
+  pcout << "Setup time: " << setup_time << std::endl;
+  Timer time_loop;
+  while (current_time <= end_time)
+    {
+      Timer time_single_step;
+
+      current_time += time_step;
+      ++time_step_number;
+      momentum_op.set_time(current_time);
+
+      const unsigned int current_bdf_order =
+        time_step_number < bdf_order ? time_step_number : bdf_order;
+      BDFTimeIntegratorConstants bdf(current_bdf_order);
+      momentum_op.set_bdf_order(current_bdf_order);
+      pressure_op.set_bdf_order(current_bdf_order);
+      BDFTimeIntegratorConstants bdf_p(time_step_number < bdf_order_p ? time_step_number :
+                                                                        bdf_order_p);
+
+      // Pressure step
+      vec_p_rhs = 0.;
+      if (use_leray_projection)
+        for (unsigned int i = 0; i < bdf.get_order(); ++i)
+          {
+            pressure_op.set_time(current_time - (i + 1) * time_step);
+            vec_div_u = 0.;
+            pressure_op.compute_divergence(vec_div_u, vec_u_old[i]);
+            vec_p_rhs.add(-bdf.get_alpha(i) / time_step, vec_div_u);
+          }
+      pressure_op.set_time(current_time);
+
+      for (unsigned int i = 0; i < bdf.get_order(); ++i)
+        {
+          pressure_op.set_time(current_time - (i + 1) * time_step);
+          vec_p_rhs_n = 0.;
+          pressure_op.compute_convective_rhs(vec_p_rhs_n, vec_u_old[i]);
+          vec_p_rhs.add(bdf.get_beta(i), vec_p_rhs_n);
+        }
+
+      speed_extrapolated = 0.;
+      for (unsigned int i = 0; i < bdf_p.get_order(); ++i)
+        speed_extrapolated.add(bdf_p.get_beta(i), vec_u_old[i]);
+
+
+      pressure_op.set_time(current_time);
+      vec_p_rhs_n   = 0.;
+      vec_vorticity = 0.;
+      momentum_op.evaluate_vorticity(vec_vorticity, speed_extrapolated);
+      pressure_op.compute_rhs(vec_p_rhs_n, vec_vorticity);
+      vec_p_rhs.add(1, vec_p_rhs_n);
+
+      unsigned int iteration_count;
+      if (!use_neumann_boundary && !use_pure_neummann_boundary)
+        VectorTools::subtract_mean_value(vec_p_rhs);
+      ReductionControl control(10000, 1e-14, 1e-6);
+      SolverCG<LinearAlgebra::distributed::Vector<double>> solver(control);
+      // vec_p = 0.;
+      if (use_amg)
+        {
+          solver.solve(pressure_system_matrix, vec_p, vec_p_rhs, precondition_amg);
+          iteration_count = control.last_step();
+        }
+      else if (use_cmg || use_hmg || use_pmg)
+        {
+          iteration_count = precondition_hmg.solve(pressure_op, vec_p, vec_p_rhs);
+        }
+      else if (use_pointjacobi_pressure)
+        {
+          pressure_op.compute_inverse_diagonal(
+            preconditioner_pressure_pointjacobi.get_vector());
+
+          solver.solve(pressure_op,
+                       vec_p,
+                       vec_p_rhs,
+                       preconditioner_pressure_pointjacobi);
+          iteration_count = control.last_step();
+        }
+      else
+        {
+          solver.solve(pressure_op, vec_p, vec_p_rhs, PreconditionIdentity());
+          iteration_count = control.last_step();
+        }
+      if (!use_neumann_boundary && !use_pure_neummann_boundary)
+        VectorTools::subtract_mean_value(vec_p);
+      if (write_output && time_step_number % energy_output_interval == 0)
+        pcout << "Pressure solver: " << iteration_count << " iterations" << std::endl;
+
+      // exact_pressure.set_time(current_time);
+      // VectorTools::interpolate(mapping, dof_handler_p, exact_pressure, vec_p);
+
+      // Momentum step
+      vec_u_deriv        = 0.;
+      speed_extrapolated = 0.;
+
+      for (unsigned int i = 0; i < bdf.get_order(); ++i)
+        {
+          vec_u_deriv.add(bdf.get_alpha(i) / time_step, vec_u_old[i]);
+          speed_extrapolated.add(bdf.get_beta(i), vec_u_old[i]);
+        }
+
+      vec_u_rhs = 0.;
+      momentum_op.rhs(vec_u_rhs, vec_u_deriv, speed_extrapolated, vec_p);
+
+      // IterationNumberControl control_mom(10000, 1e-12 * vec_u_rhs.l2_norm());
+      ReductionControl control_mom(10000, 1e-14, 1e-6);
+      SolverGMRES<LinearAlgebra::distributed::Vector<double>> solver_mom(control_mom);
+
+      vec_u.swap(speed_extrapolated); // = 0.;
+      unsigned int n_iterations_vel;
+      if (use_inverse_mass_velocity)
+        {
+          inverse_mass.set_scaling_factor(time_step / bdf.get_gamma0());
+          solver_mom.solve(momentum_op, vec_u, vec_u_rhs, inverse_mass);
+          n_iterations_vel = control_mom.last_step();
+        }
+      else if (use_velocity_point_jacobi)
+        {
+          momentum_op.compute_inverse_diagonal(
+            preconditioner_velocity_pointjacobi.get_vector());
+          solver_mom.solve(momentum_op,
+                           vec_u,
+                           vec_u_rhs,
+                           preconditioner_velocity_pointjacobi);
+          n_iterations_vel = control_mom.last_step();
+        }
+      else
+        {
+          //pcout<<"momentum solver without preconditioner"<<std::endl;
+          solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
+          n_iterations_vel = control_mom.last_step();
+        }
+
+      if (write_output && time_step_number % energy_output_interval == 0)
+        pcout << "Momentum solver: " << n_iterations_vel << " iterations" << std::endl;
+
+      // exact_velocity.set_time(current_time);
+      // VectorTools::interpolate(mapping, dof_handler_u, exact_velocity, vec_u);
+
+      for (unsigned int i = bdf_order - 1; i != 0; --i)
+        {
+          std::swap(vec_u_old[i], vec_u_old[i - 1]);
+        }
+
+      vec_u_old[0].swap(vec_u);
+
+      if(write_output && time_step_number % energy_output_interval == 0)
+        {
+          pcout << "Time step: " << time_step_number << " at t=" << current_time
+                << std::endl;
+          if(periodic_boundary)
+            {
+              momentum_op.get_constraints().distribute(vec_u_old[0]);
+            }
+          double single_step = time_single_step.wall_time();
+          pcout << "Time single step: " << single_step << std::endl;
+
+          {
+            Number energy;
+
+            momentum_op.calculate_perturbation_energy(
+              vec_u_old[0], energy);
+            //if(time_step_number % 500 == 0)
+            pcout << "Energy at t=" << current_time/end_time
+                  << ": " << energy/energy0 << std::endl;
+            //pfout << current_time/t0 << "\t" << energy/energy0  
+            //<<" \t" << exp(2 * omega_i * current_time)<< std::endl;
+          }
+        }
+
+      if (write_output && time_step_number % output_interval == 0)
+        {
+          if(periodic_boundary)
+            {
+              momentum_op.get_constraints().distribute(vec_u_old[0]);
+            }
+
+          Vector<double> error_per_cell;
+          Vector<double> norm_per_cell;
+          exact_velocity.set_time(current_time);
+          exact_pressure.set_time(current_time);
+
+          vec_u_old[0].update_ghost_values();
+          VectorTools::integrate_difference(mapping,
+                                            dof_handler_u,
+                                            vec_u_old[0],
+                                            exact_velocity,
+                                            error_per_cell,
+                                            QGauss<dim>(fe_u.degree + 3),
+                                            VectorTools::L2_norm);
+          vec_u_old[0].zero_out_ghost_values();
+          const double velocity_error =
+            VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
+          
+          VectorTools::interpolate(mapping,
+                                            dof_handler_p,
+                                            exact_pressure,
+                                            vec_p_norm);
+          vec_p.add( vec_p_norm.mean_value());
+
+
+          VectorTools::integrate_difference(mapping,
+                                            dof_handler_p,
+                                            vec_p,
+                                            exact_pressure,
+                                            error_per_cell,
+                                            QGauss<dim>(fe_p.degree + 3),
+                                            VectorTools::L2_norm);
+          const double pressure_error =
+            VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
+
+          vec_p_norm = 0.;
+          vec_u_norm = 0.;
+          vec_u_norm.update_ghost_values();
+          VectorTools::integrate_difference(mapping,
+                                            dof_handler_u,
+                                            vec_u_norm,
+                                            exact_velocity,
+                                            norm_per_cell,
+                                            QGauss<dim>(fe_u.degree + 3),
+                                            VectorTools::L2_norm);
+          vec_u_norm.zero_out_ghost_values();
+          const double velocity_norm =
+            VectorTools::compute_global_error(tria, norm_per_cell, VectorTools::L2_norm); 
+          
+          VectorTools::integrate_difference(mapping,
+                                            dof_handler_p,
+                                            vec_p_norm,
+                                            exact_pressure,
+                                            norm_per_cell,
+                                            QGauss<dim>(fe_p.degree + 3),
+                                            VectorTools::L2_norm);
+          const double pressure_norm =
+            VectorTools::compute_global_error(tria, norm_per_cell, VectorTools::L2_norm);
+          pcout << "L2 norm velocity/pressure: " << velocity_error/velocity_norm << " "
+                << pressure_error << std::endl;
+
+          DataOut<dim> data_out;
+
+          DataOutBase::VtkFlags flags;
+          flags.write_higher_order_cells = true;
+          data_out.set_flags(flags);
+          
+          VectorTools::interpolate(mapping,
+                                            dof_handler_u,
+                                            exact_velocity,
+                                            vec_u_norm);
+          VectorTools::interpolate(mapping,
+                                            dof_handler_p,
+                                            exact_pressure,
+                                            vec_p_norm);
+
+          data_out.add_data_vector(dof_handler_u, vec_u_old[0], "velocity");
+          data_out.add_data_vector(dof_handler_p, vec_p, "pressure");
+          data_out.add_data_vector(dof_handler_u, vec_u_norm, "velocity_analytical");
+          data_out.add_data_vector(dof_handler_p, vec_p_norm, "pressure_analytical");
+          Vector<double> mpi_owner(tria.n_active_cells());
+          mpi_owner = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
+          data_out.add_data_vector(mpi_owner, "owner");
+          data_out.build_patches(mapping, fe_u.degree, DataOut<dim>::curved_inner_cells);
+
+          const std::string filename =
+            "solution-Orr-Sommerfeld-RT-" + std::to_string(time_step_number) + ".vtu";
+          // "solution-L2-" + std::to_string(n_refinements) + "_p_" +
+          // std::to_string(degree) + ".vtu";
+          data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
+
+          pcout << std::endl;
+        }
+    }
+
+  Vector<double> error_per_cell;
+  Vector<double> norm_per_cell;
+  exact_velocity.set_time(current_time);
+  exact_pressure.set_time(current_time);
+
+  vec_u_old[0].update_ghost_values();
+  VectorTools::integrate_difference(mapping,
+                                    dof_handler_u,
+                                    vec_u_old[0],
+                                    exact_velocity,
+                                    error_per_cell,
+                                    QGauss<dim>(fe_u.degree + 3),
+                                    VectorTools::L2_norm); // H1_seminorm);
+  vec_u_old[0].zero_out_ghost_values();
+  const double velocity_error =
+    VectorTools::compute_global_error(tria,
+                                      error_per_cell,
+                                      VectorTools::L2_norm); // H1_seminorm);
+    
+  if(std::abs(vec_p.mean_value()) < 1e-18)
+  {
+    VectorTools::interpolate(mapping,
+                              dof_handler_p,
+                              exact_pressure,
+                              vec_p_norm);
+    vec_p.add( vec_p_norm.mean_value());
+
+  }
+
+  VectorTools::integrate_difference(mapping,
+                                    dof_handler_p,
+                                    vec_p,
+                                    exact_pressure,
+                                    error_per_cell,
+                                    QGauss<dim>(fe_p.degree + 3),
+                                    VectorTools::L2_norm);
+  const double pressure_error =
+    VectorTools::compute_global_error(tria, error_per_cell, VectorTools::L2_norm);
+  
+  vec_p_norm = 0.;
+  vec_u_norm = 0.;
+  vec_u_norm.update_ghost_values();
+  VectorTools::integrate_difference(mapping,
+                                    dof_handler_u,
+                                    vec_u_norm,
+                                    exact_velocity,
+                                    norm_per_cell,
+                                    QGauss<dim>(fe_u.degree + 3),
+                                    VectorTools::L2_norm); // H1_seminorm);
+  vec_u_norm.zero_out_ghost_values();
+  const double velocity_norm =
+    VectorTools::compute_global_error(tria, norm_per_cell, VectorTools::L2_norm); 
+  
+  VectorTools::integrate_difference(mapping,
+                                    dof_handler_p,
+                                    vec_p_norm,
+                                    exact_pressure,
+                                    norm_per_cell,
+                                    QGauss<dim>(fe_p.degree + 3),
+                                    VectorTools::L2_norm);
+  const double pressure_norm =
+    VectorTools::compute_global_error(tria, norm_per_cell, VectorTools::L2_norm);
+  pcout << "L2 norm velocity/pressure: " << velocity_error/velocity_norm << " "
+        << pressure_error << std::endl;
+
+
+  //pcout << "L2 norm velocity/pressure: " << velocity_error << " " << pressure_error
+  //      << std::endl;
+  
+  pfout<<"N_DoF_u\tN_DoF_p\tperturbation energy error\n";
+  {
+    Number energy;
+
+    momentum_op.calculate_perturbation_energy(
+      vec_u_old[0], energy);
+    pcout << "Energy at t=" << current_time/end_time
+                  << ": " <<std::exp(2 * omega_i * current_time) - energy/energy0 << std::endl;
+    pfout << dof_handler_u.n_dofs() << "\t" << dof_handler_p.n_dofs() << "\t" 
+          << std::abs(std::exp(2 * omega_i * current_time) - energy/energy0) << std::endl;
+    //pfout << current_time/t0 << "\t" << energy/energy0  
+    //        <<" \t" << exp(2 * omega_i * current_time)<< std::endl;
+  }
+
+  const double loop_time = time_loop.wall_time();
+  pcout << "Time loop time: " << loop_time << std::endl;
+  pcout << std::endl;
+}
+
+
+int
+main(int argc, char **argv)
+{
+  Utilities::MPI::MPI_InitFinalize mpi(argc, argv, 1);
+  do_test<2, double>(5, 6);
+}
