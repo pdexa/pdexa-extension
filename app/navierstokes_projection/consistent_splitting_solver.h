@@ -213,7 +213,7 @@ public:
   compute_inverse_diagonal(VectorType &diagonal_vector) const
   {
     this->matrix_free->initialize_dof_vector(diagonal_vector, dof_no_v);
-
+    diagonal_vector = 0.0;
     MatrixFreeTools::
       compute_diagonal<dim, -1, 0, dim, number, VectorizedArray<number>>(
         *matrix_free,
@@ -473,11 +473,13 @@ public:
 
         if (all_cells_are_hypercube)
           {
-            matrix_free->cell_loop(&This::cell_loop_hypercube, this, dst, src);
+            matrix_free->cell_loop(
+              &This::cell_loop_hypercube, this, dst, src, true);
           }
         else if (all_cells_affine || use_as_preconditioner)
           {
-            matrix_free->cell_loop(&This::cell_loop_general, this, dst, src);
+            matrix_free->cell_loop(
+              &This::cell_loop_general, this, dst, src, true);
           }
         else
           {
@@ -1022,10 +1024,12 @@ public:
   void
   evaluate_vorticity(VectorType &dst, const VectorType &src) const
   {
-    this->matrix_free.cell_loop(
-      &MomentumOperator::local_vorticity_domain, this, dst, src, true);
+    VectorType src_dst(dst); // TODO:make faster
 
-    const VectorType src_dst(dst);
+    this->matrix_free.cell_loop(
+      &MomentumOperator::local_vorticity_domain, this, src_dst, src, true);
+
+    dst = 0.0;
     this->inverse_mass_operator.vmult(dst, src_dst);
   }
 
@@ -1065,18 +1069,20 @@ public:
   void
   apply_leray_correction(VectorType &dst, const VectorType &src) const
   {
+    VectorType src_dst(dst);
+
     this->matrix_free.loop(
       &MomentumOperator::local_apply_leray_correction_cell,
       &MomentumOperator::local_apply_leray_correction_face,
       &MomentumOperator::local_apply_leray_correction_boundary,
       this,
-      dst,
+      src_dst,
       src,
       true,
       MatrixFree<dim, number>::DataAccessOnFaces::gradients,
       MatrixFree<dim, number>::DataAccessOnFaces::gradients);
 
-    const VectorType src_dst(dst);
+    dst = 0.0;
     this->inverse_mass_operator.vmult(dst, src_dst);
   }
 
@@ -2612,6 +2618,8 @@ public:
               const VectorType &vorticity,
               const VectorType &divergence)
   {
+    DEAL_II_NOT_IMPLEMENTED();
+
     matrix_free->loop(&PressureOperator::local_rhs_domain_viscous,
                       &PressureOperator::local_rhs_inner_face_viscous,
                       &PressureOperator::local_rhs_boundary_face_viscous,
@@ -2626,6 +2634,8 @@ public:
   void
   compute_analytical_rhs(VectorType &rhs) const
   {
+    DEAL_II_NOT_IMPLEMENTED();
+
     const VectorType dummy;
     matrix_free->loop(&PressureOperator::do_rhs_cell_range,
                       &PressureOperator::do_rhs_face_range,

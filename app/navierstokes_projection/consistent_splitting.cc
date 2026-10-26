@@ -1,5 +1,6 @@
 
 #include <deal.II/base/conditional_ostream.h>
+#include <deal.II/base/exceptions.h>
 #include <deal.II/base/logstream.h>
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/timer.h>
@@ -26,6 +27,7 @@
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <cmath>
 #include <fstream>
 
 #include "consistent_splitting_solver.h"
@@ -34,7 +36,7 @@
 
 using namespace dealii;
 
-const bool use_neumann_boundary                      = false;
+const bool use_neumann_boundary                      = true;
 const bool use_skew_symmetric_convective_formulation = false;
 const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
@@ -351,7 +353,7 @@ do_test(const unsigned int fe_degree,
         }
       else if (use_grid_in)
         {
-          const bool reorder_grid = true;
+          const bool reorder_grid = false;
           if (reorder_grid)
             {
               dealii::Triangulation<dim, dim> tria_in;
@@ -401,16 +403,99 @@ do_test(const unsigned int fe_degree,
             {
               dealii::GridIn<dim> grid_in;
               grid_in.attach_triangulation(tria_serial);
-              std::ifstream input_file("fluent_tet_to_hex_reordered.vtk");
+              std::ifstream input_file("fluent_hex_core_reordered.vtk");
               grid_in.read_vtk(input_file);
-              // const std::string input_file("fluent_tet_to_hex_reordered.e");
+              // const std::string input_file("fluent_hex_core_reordered.e");
               // grid_in.read_exodusii(input_file);
             }
         }
       else
         DEAL_II_NOT_IMPLEMENTED();
 
-      if (use_neumann_boundary)
+      if (use_neumann_boundary && use_grid_in)
+        {
+          dealii::Point<dim> normal;
+          double             y_coordinate;
+
+          typename Triangulation<dim, dim>::cell_iterator coarse_cell(
+            &tria_serial, 0, 203915);
+
+          for (const auto &f : coarse_cell->face_indices())
+            {
+              const auto face = coarse_cell->face(f);
+              if (face->at_boundary())
+                {
+                  Tensor<1, 3, double> a, b, c;
+                  const auto           A = face->vertex(1) - face->vertex(0);
+                  const auto           B = face->vertex(2) - face->vertex(0);
+                  for (unsigned int d = 0; d < dim; ++d)
+                    {
+                      a[d] = A[d];
+                      b[d] = B[d];
+                    }
+
+                  c            = dealii::cross_product_3d(a, b);
+                  double norma = 0.0;
+                  for (unsigned int d = 0; d < dim; ++d)
+                    norma += c[d] * c[d];
+                  for (unsigned int d = 0; d < dim; ++d)
+                    normal[d] = c[d] / std::sqrt(norma);
+                  y_coordinate = face->vertex(0)[1];
+                  // std::cout << face->vertex(0) << " " << face->vertex(1) << "
+                  // " << face->vertex(2) << " with normal " << c << std::endl;
+                }
+            }
+
+          for (auto &cell : tria_serial.active_cell_iterators())
+            {
+              if (cell->at_boundary())
+                for (const auto &f : cell->face_indices())
+                  if (cell->face(f)->at_boundary() &&
+                      std::abs(cell->face(f)->center()[1] - y_coordinate) < 5.0)
+                    {
+                      // std::cout << "found possible face" << std::endl;
+                      auto face = cell->face(f);
+                      {
+                        Tensor<1, 3, double> a, b, c;
+                        const auto A = face->vertex(1) - face->vertex(0);
+                        const auto B = face->vertex(2) - face->vertex(0);
+                        for (unsigned int d = 0; d < dim; ++d)
+                          {
+                            a[d] = A[d];
+                            b[d] = B[d];
+                          }
+                        c            = dealii::cross_product_3d(a, b);
+                        double norma = 0.0;
+                        for (unsigned int d = 0; d < dim; ++d)
+                          norma += c[d] * c[d];
+                        for (unsigned int d = 0; d < dim; ++d)
+                          c[d] = c[d] / std::sqrt(norma);
+
+                        double dot_result = 0.0;
+                        for (unsigned int d = 0; d < dim; ++d)
+                          dot_result += c[d] * normal[d];
+
+                        // std::cout << "result of dot product is: " <<
+                        // dot_result << std::endl;
+                        if (std::abs(std::abs(dot_result) - 1.0) < 0.02)
+                          {
+                            face->set_boundary_id(1);
+                            Assert(cell->material_id() == 0,
+                                   ExcInternalError());
+                            cell->set_material_id(1);
+                          }
+                      }
+                    }
+            }
+
+
+          std::cout << "write vtk boundary";
+          std::ofstream out("fluent_hex_core_reordered_boundary_in.vtk");
+          GridOut       grid_out;
+          grid_out.write_vtk(tria_serial, out);
+          std::cout << " ... done" << std::endl;
+        }
+      else if (use_neumann_boundary)
         {
           tria_serial.begin()->face(0)->set_all_boundary_ids(1);
           // tria.begin()->face(1)->set_all_boundary_ids(1);
@@ -582,7 +667,12 @@ do_test(const unsigned int fe_degree,
   for (const auto &cell : dof_handler_u.active_cell_iterators())
     h_min = std::min(h_min, cell->minimum_vertex_distance());
 
-  const Number time_step = std::pow(0.5, n_refinements_time);
+  const double CFL = 1.0;
+  const double local_time_step =
+    CFL * h_min / u_x_max / std::pow(fe_degree, 1.5);
+  const Number time_step =
+    std::pow(0.5, n_refinements_time) *
+    dealii::Utilities::MPI::min(local_time_step, MPI_COMM_WORLD);
   // std::min(5.0 * 1e-5, dealii::Utilities::MPI::min(local_time_step,
   // MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
@@ -605,7 +695,11 @@ do_test(const unsigned int fe_degree,
                      time_step,
                      bdf_order,
                      use_skew_symmetric_convective_formulation,
-                     use_divergence_formulation);
+                     use_divergence_formulation,
+                     /*upwind_factor*/ 1.0,
+                     penalty_divergence,
+                     penalty_continuity,
+                     /*penalty parameter*/ 1.0);
 
   momentum_op.set_viscosity(viscosity);
   momentum_op.set_time(0.0);
@@ -749,7 +843,7 @@ do_test(const unsigned int fe_degree,
   unsigned int n_performed_steps = 0;
 
   const bool         write_output    = true;
-  const unsigned int output_interval = 10;
+  const unsigned int output_interval = 1;
   const bool         write_vtk       = false;
 
   while (current_time <= end_time)
@@ -760,6 +854,9 @@ do_test(const unsigned int fe_degree,
       momentum_op.set_time(current_time);
 
       // Pressure step
+      // exact_pressure.set_time(current_time);
+      // VectorTools::interpolate(mapping, dof_handler_p, exact_pressure,
+      // vec_p);
       vec_p     = 0.;
       vec_p_rhs = 0.;
       if (use_leray_projection)
@@ -821,7 +918,7 @@ do_test(const unsigned int fe_degree,
         }
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p);
-      if (write_output)// && (n_performed_steps - 1) % output_interval == 0)
+      if (write_output && (n_performed_steps - 1) % output_interval == 0)
         pcout << "Pressure solver: " << iteration_count << " iterations"
               << std::endl;
       n_pressure_iterations += iteration_count;
@@ -857,7 +954,7 @@ do_test(const unsigned int fe_degree,
       else
         solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
 
-      if (write_output) // && (n_performed_steps - 1) % output_interval == 0)
+      if (write_output && (n_performed_steps - 1) % output_interval == 0)
         pcout << "Momentum solver: " << control_mom.last_step() << " iterations"
               << std::endl;
 
@@ -938,12 +1035,21 @@ do_test(const unsigned int fe_degree,
                 << pressure_error / pressure_norm << std::endl;
           pcout << std::endl;
 
+          VectorTools::interpolate(mapping,
+                                   dof_handler_p,
+                                   exact_pressure,
+                                   vec_p_rhs);
+          const double norm = vec_p_rhs.l2_norm();
+          vec_p_rhs.add(-1.0, vec_p_old[0]);
+          pcout << "Pressure difference: " << vec_p_rhs.l2_norm() / norm
+                << std::endl;
+
           if (write_vtk)
             {
               DataOut<dim> data_out;
 
               DataOutBase::VtkFlags flags;
-              flags.write_higher_order_cells = true;
+              flags.write_higher_order_cells = false;
               data_out.set_flags(flags);
 
               data_out.add_data_vector(dof_handler_u, vec_u_old[0], "solution");
@@ -970,7 +1076,8 @@ do_test(const unsigned int fe_degree,
                                      DataOut<dim>::curved_inner_cells);
 
               const std::string filename =
-                "solution-L2-" + std::to_string(time_step_number) + ".vtu";
+                "fluent_hex_core_reordered_solution-L2-" +
+                std::to_string(time_step_number) + ".vtu";
               // "solution-L2-" + std::to_string(n_refinements) + "_p_" +
               // std::to_string(degree) + ".vtu";
               data_out.write_vtu_in_parallel(filename, MPI_COMM_WORLD);
