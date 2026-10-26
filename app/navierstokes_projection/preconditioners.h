@@ -759,47 +759,55 @@ public:
         Quadrature<1>      quadrature_dummy = QGauss<1>(1);
         Quadrature<1>      quadrature_p     = QGauss<1>(fe_degree_p + 1);
 
-        FE_PyramidP<dim>           mapping_fe_pyramid(1, true);
-        FE_WedgeP<dim>             mapping_fe_wedge(1, true);
-        MappingFE<dim>             mapping_pyramid(mapping_fe_pyramid);
-        MappingFE<dim>             mapping_wedge(mapping_fe_wedge);
-        MappingP1<dim>             mapping_simplex;
-        MappingQ1<dim>             mapping_hypercube;
         hp::MappingCollection<dim> mapping;
         hp::QCollection<dim>       quadrature_collection_dummy;
         hp::QCollection<dim>       quadrature_collection_p;
-        for (const auto &ref_cell :
-             dof_handlers[level].get_triangulation().get_reference_cells())
+
+        if constexpr (dim == 3)
           {
-            if (ref_cell.is_hyper_cube())
+            FE_PyramidP<dim> mapping_fe_pyramid(1, true);
+            FE_WedgeP<dim>   mapping_fe_wedge(1, true);
+            MappingFE<dim>   mapping_pyramid(mapping_fe_pyramid);
+            MappingFE<dim>   mapping_wedge(mapping_fe_wedge);
+            MappingP1<dim>   mapping_simplex;
+            MappingQ1<dim>   mapping_hypercube;
+
+            for (const auto &ref_cell :
+                 dof_handlers[level].get_triangulation().get_reference_cells())
               {
-                mapping.push_back(mapping_hypercube);
-                quadrature_collection_p.push_back(QGauss<dim>(fe_degree_p + 1));
-                quadrature_collection_dummy.push_back(QGauss<dim>(1));
+                if (ref_cell.is_hyper_cube())
+                  {
+                    mapping.push_back(mapping_hypercube);
+                    quadrature_collection_p.push_back(
+                      QGauss<dim>(fe_degree_p + 1));
+                    quadrature_collection_dummy.push_back(QGauss<dim>(1));
+                  }
+                else if (ref_cell.is_simplex())
+                  {
+                    quadrature_collection_p.push_back(
+                      QGaussSimplex<dim>(fe_degree_p + 1));
+                    quadrature_collection_dummy.push_back(
+                      QGaussSimplex<dim>(1));
+                    mapping.push_back(mapping_simplex);
+                  }
+                else if (ref_cell == ReferenceCells::Pyramid)
+                  {
+                    quadrature_collection_p.push_back(
+                      QGaussPyramid<dim>(fe_degree_p + 1));
+                    quadrature_collection_dummy.push_back(
+                      QGaussPyramid<dim>(1));
+                    mapping.push_back(mapping_pyramid);
+                  }
+                else if (ref_cell == ReferenceCells::Wedge)
+                  {
+                    quadrature_collection_p.push_back(
+                      QGaussWedge<dim>(fe_degree_p + 1));
+                    quadrature_collection_dummy.push_back(QGaussWedge<dim>(1));
+                    mapping.push_back(mapping_wedge);
+                  }
+                else
+                  DEAL_II_NOT_IMPLEMENTED();
               }
-            else if (ref_cell.is_simplex())
-              {
-                quadrature_collection_p.push_back(
-                  QGaussSimplex<dim>(fe_degree_p + 1));
-                quadrature_collection_dummy.push_back(QGaussSimplex<dim>(1));
-                mapping.push_back(mapping_simplex);
-              }
-            else if (ref_cell == ReferenceCells::Pyramid)
-              {
-                quadrature_collection_p.push_back(
-                  QGaussPyramid<dim>(fe_degree_p + 1));
-                quadrature_collection_dummy.push_back(QGaussPyramid<dim>(1));
-                mapping.push_back(mapping_pyramid);
-              }
-            else if (ref_cell == ReferenceCells::Wedge)
-              {
-                quadrature_collection_p.push_back(
-                  QGaussWedge<dim>(fe_degree_p + 1));
-                quadrature_collection_dummy.push_back(QGaussWedge<dim>(1));
-                mapping.push_back(mapping_wedge);
-              }
-            else
-              DEAL_II_NOT_IMPLEMENTED();
           }
 
         typename MatrixFree<dim, number>::AdditionalData data;

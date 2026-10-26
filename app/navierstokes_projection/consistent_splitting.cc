@@ -40,13 +40,14 @@ const bool use_divergence_formulation                = false;
 const bool use_leray_projection                      = true;
 const bool use_traction_boundary_condition_for_PPE   = false;
 
-const bool use_mixed_mesh      = true;
+const bool use_mixed_mesh      = false;
 const bool use_hyper_cube_mesh = false;
 const bool use_simplex_mesh    = false;
+const bool use_grid_in         = true;
 
-const bool use_preconditioning_pressure = false;
+const bool use_preconditioning_pressure = true;
 // const bool use_amg                       = false;
-const bool use_hmg = true;
+const bool use_hmg = false;
 const bool use_pmg = true;
 const bool use_cmg = true;
 // const bool use_pointjacobi_pressure      = false;
@@ -348,6 +349,64 @@ do_test(const unsigned int fe_degree,
                                                               -L / 2.,
                                                               L / 2.);
         }
+      else if (use_grid_in)
+        {
+          const bool reorder_grid = true;
+          if (reorder_grid)
+            {
+              dealii::Triangulation<dim, dim> tria_in;
+              dealii::GridIn<dim>             grid_in;
+              grid_in.attach_triangulation(tria_in);
+              std::ifstream input_file("fluent_hex_core.vtk");
+              grid_in.read_vtk(input_file);
+              // const std::string input_file("fluent_hex_core_to_hex.e");
+              // grid_in.read_exodusii(input_file);
+
+              dealii::DynamicSparsityPattern cell_connectivity;
+              dealii::GridTools::get_vertex_connectivity_of_cells(
+                tria_in, cell_connectivity);
+              std::vector<long unsigned int> cell_numbering;
+              cell_numbering.resize(tria_in.n_cells(0));
+              SparsityTools::reorder_hierarchical(cell_connectivity,
+                                                  cell_numbering);
+              std::vector<long unsigned int> cell_numbering_inverse =
+                Utilities::invert_permutation(cell_numbering);
+
+              const std::vector<Point<dim>> &vertices = tria_in.get_vertices();
+
+              std::vector<CellData<dim>> cells(tria_in.n_cells(0));
+              for (unsigned int idx = 0; idx < tria_in.n_cells(0); ++idx)
+                {
+                  const unsigned int coarse_cell_idx =
+                    cell_numbering_inverse[idx];
+                  typename Triangulation<dim, dim>::cell_iterator coarse_cell(
+                    &tria_in, 0, coarse_cell_idx);
+
+                  CellData<dim> tet(0);
+
+                  for (const unsigned int v : coarse_cell->vertex_indices())
+                    tet.vertices.emplace_back(coarse_cell->vertex_index(v));
+                  cells[idx] = tet; //
+                }
+
+              tria_serial.create_triangulation(vertices, cells, SubCellData());
+
+              std::cout << "write vtk";
+              std::ofstream out("fluent_hex_core_reordered.vtk");
+              GridOut       grid_out;
+              grid_out.write_vtk(tria_serial, out);
+              std::cout << " ... done" << std::endl;
+            }
+          else
+            {
+              dealii::GridIn<dim> grid_in;
+              grid_in.attach_triangulation(tria_serial);
+              std::ifstream input_file("fluent_tet_to_hex_reordered.vtk");
+              grid_in.read_vtk(input_file);
+              // const std::string input_file("fluent_tet_to_hex_reordered.e");
+              // grid_in.read_exodusii(input_file);
+            }
+        }
       else
         DEAL_II_NOT_IMPLEMENTED();
 
@@ -365,8 +424,19 @@ do_test(const unsigned int fe_degree,
     [&](dealii::Triangulation<dim, dim> &tria_serial,
         const MPI_Comm                   comm,
         const unsigned int) {
-      dealii::GridTools::partition_triangulation_zorder(
-        dealii::Utilities::MPI::n_mpi_processes(comm), tria_serial);
+      std::vector<unsigned int> weights(tria_serial.n_active_cells(), 1);
+      for (const auto &cell : tria_serial.active_cell_iterators())
+        if (cell->reference_cell().is_hyper_cube())
+          weights[cell->active_cell_index()] = 1;
+        else if (cell->reference_cell().is_simplex())
+          weights[cell->active_cell_index()] = 10;
+        else if (cell->reference_cell() == ReferenceCells::Pyramid)
+          weights[cell->active_cell_index()] = 12;
+        else if (cell->reference_cell() == ReferenceCells::Wedge)
+          weights[cell->active_cell_index()] = 8;
+
+      dealii::GridTools::partition_triangulation(
+        dealii::Utilities::MPI::n_mpi_processes(comm), weights, tria_serial);
     };
 
   const unsigned int group_size = 32;
@@ -517,10 +587,10 @@ do_test(const unsigned int fe_degree,
   // MPI_COMM_WORLD));
   pcout << "Time step size: " << time_step << std::endl;
 
-  const unsigned int bdf_order          = 4;
-  const unsigned int bdf_order_p        = 3;
-  const unsigned int bdf_order_c        = 3;
-  const unsigned int bdf_order_traction = 3;
+  const unsigned int bdf_order          = 2;
+  const unsigned int bdf_order_p        = 2;
+  const unsigned int bdf_order_c        = 2;
+  const unsigned int bdf_order_traction = 2;
 
   BDFTimeIntegratorConstants bdf(bdf_order);
   BDFTimeIntegratorConstants bdf_p(bdf_order_p);
@@ -751,7 +821,7 @@ do_test(const unsigned int fe_degree,
         }
       if (!use_neumann_boundary)
         VectorTools::subtract_mean_value(vec_p);
-      if (write_output && (n_performed_steps - 1) % output_interval == 0)
+      if (write_output)// && (n_performed_steps - 1) % output_interval == 0)
         pcout << "Pressure solver: " << iteration_count << " iterations"
               << std::endl;
       n_pressure_iterations += iteration_count;
@@ -787,7 +857,7 @@ do_test(const unsigned int fe_degree,
       else
         solver_mom.solve(momentum_op, vec_u, vec_u_rhs, PreconditionIdentity());
 
-      if (write_output && (n_performed_steps - 1) % output_interval == 0)
+      if (write_output) // && (n_performed_steps - 1) % output_interval == 0)
         pcout << "Momentum solver: " << control_mom.last_step() << " iterations"
               << std::endl;
 
@@ -987,5 +1057,5 @@ main(int argc, char **argv)
 
   // for (unsigned int i = 1; i < 15; ++i)
   //   do_test<2, double>(5, 4, 14 - i);
-  do_test<3, double>(3, 1, 6);
+  do_test<3, double>(2, 0, 8);
 }
